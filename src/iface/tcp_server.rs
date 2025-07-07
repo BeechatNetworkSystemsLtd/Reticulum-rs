@@ -26,8 +26,11 @@ impl TcpServer {
 
     pub async fn spawn(context: InterfaceContext<Self>) {
         let addr = { context.inner.lock().unwrap().addr.clone() };
+        /*FIXME:debug*/ println!("ADDR: {addr}");
 
         let iface_manager = { context.inner.lock().unwrap().iface_manager.clone() };
+        /*FIXME:debug*/ println!("LOCAL INTERFACES: {:?}",
+            iface_manager.lock().await.ifaces.iter().map(|iface| iface.address.to_string()).collect::<Vec<_>>());
 
         let (_, tx_channel) = context.channel.split();
         let tx_channel = Arc::new(tokio::sync::Mutex::new(tx_channel));

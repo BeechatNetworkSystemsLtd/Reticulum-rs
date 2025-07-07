@@ -83,8 +83,10 @@ pub trait Interface {
     fn mtu() -> usize;
 }
 
-struct LocalInterface {
-    address: AddressHash,
+// FIXME: pub
+pub struct LocalInterface {
+    // FIXME: pub
+    pub address: AddressHash,
     tx_send: InterfaceTxSender,
     stop: CancellationToken,
 }
@@ -100,7 +102,8 @@ pub struct InterfaceManager {
     rx_recv: Arc<tokio::sync::Mutex<InterfaceRxReceiver>>,
     rx_send: InterfaceRxSender,
     cancel: CancellationToken,
-    ifaces: Vec<LocalInterface>,
+    // FIXME: pub
+    pub ifaces: Vec<LocalInterface>,
 }
 
 impl InterfaceManager {
