@@ -1,3 +1,15 @@
+//! To communicate with a local instance of Python RNS should use a config like:
+//!
+//! ```text
+//! [[UDP Interface]]
+//! type = UDPInterface
+//! enabled = yes
+//! listen_ip = 0.0.0.0
+//! listen_port = 4242
+//! forward_ip = 127.0.0.1
+//! forward_port = 4243
+//! ```
+
 use std::time::Duration;
 
 use rand_core::OsRng;
