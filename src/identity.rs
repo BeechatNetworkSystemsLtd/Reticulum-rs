@@ -56,7 +56,6 @@ impl Identity {
         );
 
         let address_hash = AddressHash::new_from_hash(&hash);
-        /*FIXME:debug*/ println!("NEW ADDRESS: {}", address_hash.to_string());
 
         Self {
             public_key,

@@ -9,28 +9,24 @@ use crate::iface::RxMessage;
 use crate::packet::Packet;
 use crate::serde::Serialize;
 
-use super::hdlc::Hdlc;
-use super::{Interface, InterfaceContext, InterfaceManager};
+use super::{Interface, InterfaceContext};
 
 // TODO: Configure via features
-const PACKET_TRACE: bool = false;
+const PACKET_TRACE: bool = true;
 
 pub struct UdpInterface {
     bind_addr: String,
-    forward_addr: Option<String>,
-    iface_manager: Arc<tokio::sync::Mutex<InterfaceManager>>,
+    forward_addr: Option<String>
 }
 
 impl UdpInterface {
     pub fn new<T: Into<String>>(
         bind_addr: T,
-        forward_addr: Option<T>,
-        iface_manager: Arc<tokio::sync::Mutex<InterfaceManager>>,
+        forward_addr: Option<T>
     ) -> Self {
         Self {
             bind_addr: bind_addr.into(),
             forward_addr: forward_addr.map(Into::into),
-            iface_manager
         }
     }
 
@@ -38,7 +34,6 @@ impl UdpInterface {
         let bind_addr = { context.inner.lock().unwrap().bind_addr.clone() };
         let forward_addr = { context.inner.lock().unwrap().forward_addr.clone() };
         let iface_address = context.channel.address;
-        /*FIXME:debug*/ println!("IFACE ADDRESS: {iface_address}");
 
         let (rx_channel, tx_channel) = context.channel.split();
         let tx_channel = Arc::new(tokio::sync::Mutex::new(tx_channel));
@@ -73,12 +68,11 @@ impl UdpInterface {
             let rx_task = {
                 let cancel = cancel.clone();
                 let stop = stop.clone();
-                let mut socket = read_socket;
+                let socket = read_socket;
                 let rx_channel = rx_channel.clone();
 
                 tokio::spawn(async move {
                     loop {
-                        let mut hdlc_rx_buffer = [0u8; BUFFER_SIZE];
                         let mut rx_buffer = [0u8; BUFFER_SIZE];
 
                         tokio::select! {
@@ -89,33 +83,28 @@ impl UdpInterface {
                                     break;
                             }
                             result = socket.recv_from(&mut rx_buffer) => {
-                                    match result {
-                                        Ok((0, _)) => {
-                                            log::warn!("udp_interface: connection closed");
-                                            stop.cancel();
-                                            break;
-                                        }
-                                        Ok((n, _in_addr)) => {
-                                            let mut output = OutputBuffer::new(&mut hdlc_rx_buffer[..]);
-                                            if let Ok(_) = Hdlc::decode(&rx_buffer[..n], &mut output) {
-                                                if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(output.as_slice())) {
-                                                    if PACKET_TRACE {
-                                                        log::trace!("udp_interface: rx << ({}) {}", iface_address, packet);
-                                                    }
-                                                    let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
-                                                } else {
-                                                    log::warn!("udp_interface: couldn't decode packet");
-                                                }
-                                            } else {
-                                                log::warn!("udp_interface: couldn't decode hdlc frame");
+                                match result {
+                                    Ok((0, _)) => {
+                                        log::warn!("udp_interface: connection closed");
+                                        stop.cancel();
+                                        break;
+                                    }
+                                    Ok((n, _in_addr)) => {
+                                        if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(&rx_buffer[..n])) {
+                                            if PACKET_TRACE {
+                                                log::trace!("udp_interface: rx << ({}) {}", iface_address, packet);
                                             }
-                                        }
-                                        Err(e) => {
-                                            log::warn!("udp_interface: connection error {}", e);
-                                            break;
+                                            let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
+                                        } else {
+                                            log::warn!("udp_interface: couldn't decode packet");
                                         }
                                     }
-                                },
+                                    Err(e) => {
+                                        log::warn!("udp_interface: connection error {}", e);
+                                        break;
+                                    }
+                                }
+                            },
                         };
                     }
                 })
@@ -126,7 +115,7 @@ impl UdpInterface {
                 let tx_task = {
                     let cancel = cancel.clone();
                     let tx_channel = tx_channel.clone();
-                    let mut socket = write_socket;
+                    let socket = write_socket;
 
                     tokio::spawn(async move {
                         loop {
@@ -134,7 +123,6 @@ impl UdpInterface {
                                 break;
                             }
 
-                            let mut hdlc_tx_buffer = [0u8; BUFFER_SIZE];
                             let mut tx_buffer = [0u8; BUFFER_SIZE];
 
                             let mut tx_channel = tx_channel.lock().await;
@@ -153,12 +141,7 @@ impl UdpInterface {
                                     }
                                     let mut output = OutputBuffer::new(&mut tx_buffer);
                                     if let Ok(_) = packet.serialize(&mut output) {
-
-                                        let mut hdlc_output = OutputBuffer::new(&mut hdlc_tx_buffer[..]);
-
-                                        if let Ok(_) = Hdlc::encode(output.as_slice(), &mut hdlc_output) {
-                                            let _ = socket.send_to(hdlc_output.as_slice(), &forward_addr).await;
-                                        }
+                                        let _ = socket.send_to(output.as_slice(), &forward_addr).await;
                                     }
                                 }
                             };

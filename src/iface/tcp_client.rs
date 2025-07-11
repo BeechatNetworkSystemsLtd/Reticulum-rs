@@ -44,7 +44,6 @@ impl TcpClient {
         let iface_stop = context.channel.stop.clone();
         let addr = { context.inner.lock().unwrap().addr.clone() };
         let iface_address = context.channel.address;
-        /*FIXME:debug*/ println!("IFACE ADDRESS: {iface_address}");
         let mut stream = { context.inner.lock().unwrap().stream.take() };
 
         let (rx_channel, tx_channel) = context.channel.split();
