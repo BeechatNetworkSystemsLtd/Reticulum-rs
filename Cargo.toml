@@ -53,6 +53,10 @@ name = "tcp-client"
 path = "examples/tcp_client.rs"
 
 [[example]]
+name = "udp-announce"
+path = "examples/udp_announce.rs"
+
+[[example]]
 name = "link-client"
 path = "examples/link_client.rs"
 
