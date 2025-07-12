@@ -17,6 +17,7 @@ use reticulum::destination::{DestinationName, SingleInputDestination};
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::udp::UdpInterface;
 use reticulum::transport::{Transport, TransportConfig};
+use reticulum::packet::{self, Packet};
 
 #[tokio::main]
 async fn main() {
@@ -34,7 +35,29 @@ async fn main() {
 
     let dest = std::sync::Arc::new(tokio::sync::Mutex::new (destination));
 
+    let mut announce_recv = transport.recv_announces().await;
+
     loop {
+        while let Ok(announce) = announce_recv.try_recv() {
+            let destination = announce.destination.lock().await;
+            //println!("ANNOUNCE: {}", destination.desc.address_hash);
+            let packet = Packet {
+                header: packet::Header {
+                    ifac_flag: packet::IfacFlag::Open,
+                    header_type: packet::HeaderType::Type1,
+                    propagation_type: packet::PropagationType::Transport,
+                    destination_type: packet::DestinationType::Single,
+                    packet_type: packet::PacketType::Data,
+                    hops: 0
+                },
+                ifac: None,
+                destination: destination.desc.address_hash,
+                transport: None,
+                context: packet::PacketContext::None,
+                data: packet::PacketDataBuffer::new_from_slice(b"foo")
+            };
+            transport.send_packet(packet).await;
+        }
         transport
             .send_announce(&dest, None)
             .await;
