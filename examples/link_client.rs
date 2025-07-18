@@ -1,6 +1,7 @@
 use rand_core::OsRng;
 
-use reticulum::destination::DestinationName;
+use reticulum::destination::link::LinkEvent;
+use reticulum::destination::{DestinationAnnounce, DestinationName};
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::tcp_client::TcpClient;
 use reticulum::transport::{Transport, TransportConfig};
@@ -34,13 +35,21 @@ async fn main() {
         .send_packet(in_destination.lock().await.announce(OsRng, None).unwrap())
         .await;
 
-    // let mut recv = transport.recv();
-    // loop {
-    //     if let Ok(packet) = recv.recv().await {
-    //         if let Ok(dest) = DestinationAnnounce::validate(&packet) {
-    //             log::debug!("destination announce {}", dest.desc);
-    //             // let link = transport.link(dest.desc);
-    //         }
-    //     }
-    // }
+    tokio::spawn(async move {
+        let recv = transport.recv_announces();
+        let mut recv = recv.await;
+        loop {
+            if let Ok(announce) = recv.recv().await {
+                log::debug!(
+                    "destination announce {}",
+                    announce.destination.lock().await.desc.address_hash
+                );
+
+                let _link = transport.link(announce.destination.lock().await.desc).await;
+            }
+        }
+    });
+
+
+    let _ = tokio::signal::ctrl_c().await;
 }
