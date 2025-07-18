@@ -14,6 +14,12 @@ use crate::{
 
 pub const PUBLIC_KEY_LENGTH: usize = ed25519_dalek::PUBLIC_KEY_LENGTH;
 
+#[cfg(feature = "fernet-aes128")]
+pub const DERIVED_KEY_LENGTH: usize = 256 / 8;
+
+#[cfg(not(feature = "fernet-aes128"))]
+pub const DERIVED_KEY_LENGTH: usize = 512 / 8;
+
 pub trait EncryptIdentity {
     fn encrypt<'a, R: CryptoRngCore + Copy>(
         &self,
@@ -348,8 +354,8 @@ impl EncryptIdentity for PrivateIdentity {
         let mut out_offset = 0;
 
         let token = Fernet::new_from_slices(
-            &derived_key.as_bytes()[..16],
-            &derived_key.as_bytes()[16..],
+            &derived_key.as_bytes()[..DERIVED_KEY_LENGTH / 2],
+            &derived_key.as_bytes()[DERIVED_KEY_LENGTH / 2..],
             rng,
         )
         .encrypt(PlainText::from(text), &mut out_buf[out_offset..])?;
@@ -372,15 +378,9 @@ impl DecryptIdentity for PrivateIdentity {
             return Err(RnsError::InvalidArgument);
         }
 
-        let _public_key = {
-            let mut public_key_bytes = [0u8; PUBLIC_KEY_LENGTH];
-            public_key_bytes[..].copy_from_slice(&data[..PUBLIC_KEY_LENGTH]);
-            PublicKey::from(public_key_bytes)
-        };
-
         let fernet = Fernet::new_from_slices(
-            &derived_key.as_bytes()[..16],
-            &derived_key.as_bytes()[16..],
+            &derived_key.as_bytes()[..DERIVED_KEY_LENGTH / 2],
+            &derived_key.as_bytes()[DERIVED_KEY_LENGTH / 2..],
             rng,
         );
 
@@ -397,12 +397,12 @@ impl DecryptIdentity for PrivateIdentity {
 pub struct GroupIdentity {}
 
 pub struct DerivedKey {
-    key: [u8; 32],
+    key: [u8; DERIVED_KEY_LENGTH],
 }
 
 impl DerivedKey {
     pub fn new(shared_key: &SharedSecret, salt: Option<&[u8]>) -> Self {
-        let mut key = [0u8; 32];
+        let mut key = [0u8; DERIVED_KEY_LENGTH];
 
         let _ = Hkdf::<Sha256>::new(salt, shared_key.as_bytes()).expand(&[], &mut key[..]);
 
@@ -410,7 +410,9 @@ impl DerivedKey {
     }
 
     pub fn new_empty() -> Self {
-        Self { key: [0u8; 32] }
+        Self {
+            key: [0u8; DERIVED_KEY_LENGTH],
+        }
     }
 
     pub fn new_from_private_key(
@@ -431,7 +433,7 @@ impl DerivedKey {
         Self::new(&shared_key, salt)
     }
 
-    pub fn as_bytes(&self) -> &[u8; 32] {
+    pub fn as_bytes(&self) -> &[u8; DERIVED_KEY_LENGTH] {
         &self.key
     }
 
