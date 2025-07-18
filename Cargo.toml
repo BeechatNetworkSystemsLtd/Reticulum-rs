@@ -40,6 +40,7 @@ env_logger = "0.10"
 [features]
 default = ["alloc"]
 alloc = []
+fernet-aes128 = []
 
 [build-dependencies]
 tonic-build = "0.13.0"
