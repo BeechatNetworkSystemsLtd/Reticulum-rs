@@ -36,6 +36,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 # Logging
 log = "0.4.27"
 env_logger = "0.10"
+async-trait = "0.1.88"
 
 [features]
 default = ["alloc"]
@@ -62,6 +63,10 @@ name = "link-client"
 path = "examples/link_client.rs"
 
 [[example]]
+name = "link-and-channel-server"
+path = "examples/link_and_channel_server.rs"
+
+[[example]]
 name = "kaonic-client"
 path = "examples/kaonic_client.rs"
 
@@ -76,3 +81,7 @@ path = "examples/kaonic_tcp_mesh.rs"
 [[example]]
 name = "kaonic-mesh"
 path = "examples/kaonic_mesh.rs"
+
+[[example]]
+name = "channel-client"
+path = "examples/channel_client.rs"
