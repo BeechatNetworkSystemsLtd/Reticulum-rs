@@ -141,6 +141,7 @@ pub struct Link {
     rtt: Duration,
     event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
     proves_messages: bool,
+    channel_tx: Option<tokio::sync::broadcast::Sender<LinkPayload>>,
 }
 
 impl Link {
@@ -159,11 +160,24 @@ impl Link {
             rtt: Duration::from_secs(0),
             event_tx,
             proves_messages: false,
+            channel_tx: None,
         }
     }
 
     pub fn prove_messages(&mut self, setting: bool) {
         self.proves_messages = setting;
+    }
+
+    pub fn bind_to_channel(
+        &mut self
+    ) -> Option<tokio::sync::broadcast::Receiver<LinkPayload>> {
+        // TODO fail if we already have a channel
+
+        let (tx, rx) = tokio::sync::broadcast::channel(16);
+        self.channel_tx = Some(tx);
+        log::trace!("link({}) bound to channel", self.id());
+
+        Some(rx)
     }
 
     pub fn new_from_request(
@@ -195,6 +209,7 @@ impl Link {
             rtt: Duration::from_secs(0),
             event_tx,
             proves_messages: false,
+            channel_tx: None,
         };
 
         link.handshake(peer_identity);
@@ -329,6 +344,20 @@ impl Link {
                     }
                 } else {
                     log::error!("link({}): can't decrypt link close packet", self.id);
+                }
+            }
+            PacketContext::Channel => {
+                if let Some(ref channel_tx) = self.channel_tx {
+                    let mut buffer = [0u8; PACKET_MDU];
+                    if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer) {
+                        log::trace!("link({}): data over channel {}B", self.id, plain_text.len());
+                        self.request_time = Instant::now();
+                        channel_tx.send(LinkPayload::new_from_slice(plain_text)).ok();
+                    } else {
+                        log::error!("link({}): can't decrypt channel packet", self.id);
+                    }
+                } else {
+                    log::error!("link({}): received channel packet but have no channel", self.id);
                 }
             }
             _ => {}
