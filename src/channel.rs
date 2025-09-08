@@ -1,22 +1,43 @@
 use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, VecDeque};
-use alloc::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use alloc::collections::VecDeque;
+use alloc::sync::{Arc, Weak};
 
-use async_trait::async_trait;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::{broadcast, Mutex, MutexGuard, mpsc};
+use tokio::task::spawn;
+use tokio::time::{Duration, Instant, sleep};
 
-use crate::destination::link::{Link, LinkStatus};
-use crate::packet::{Packet, PacketContext, PacketDataBuffer, PACKET_MDU};
+use crate::destination::link::{Link, LinkId, LinkPayload, LinkStatus};
+use crate::packet::{DestinationType, Packet, PacketContext, PacketDataBuffer, PACKET_MDU};
 use crate::transport::Transport;
 
 
-fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+pub type MessageType = u16;
+
+pub struct PackedMessage {
+    payload: Vec<u8>,
+    message_type: MessageType
 }
 
+impl PackedMessage {
+    pub fn new(payload: Vec<u8>, message_type: MessageType) -> Self {
+        Self { payload, message_type }
+    }
 
-pub type MessageType = u16;
+    pub fn payload(self) -> Vec<u8> {
+        self.payload
+    }
+
+    pub fn message_type(&self) -> MessageType {
+        self.message_type
+    }
+}
+
+pub trait Message: Clone + Send + Sized + Sync + 'static {
+    fn pack(&self) -> PackedMessage;
+
+    fn unpack(packed: PackedMessage) -> Result<Self, ChannelError>;
+}
+
 static SMT_STREAM_DATA: MessageType = 0xff00;
 
 
@@ -34,114 +55,138 @@ fn get_packet_state(packet: &Packet) -> MessageState {
 }
 
 
-#[async_trait]
-trait PacketCallback: Send + Sync {
-    async fn run(&self, packet: &Packet);
+async fn outlet_send(
+    link: &Arc<Mutex<Link>>,
+    raw: &[u8],
+    transport: &Arc<Mutex<Transport>>
+) -> (Packet, bool) {
+    let mut packet;
+    let active;
+
+    {
+        let link = link.lock().await;
+        packet = link.data_packet(raw).unwrap();
+        active = link.status() == LinkStatus::Active;
+    }
+
+    packet.context = PacketContext::Channel;
+
+    if active {
+        transport.lock().await.send_packet(packet).await;
+    }
+
+    (packet, active)
+}
+
+async fn outlet_resend(
+    _: &Arc<Mutex<Link>>,
+    packet: Packet,
+    transport: Weak<Mutex<Transport>>,
+) {
+    // TODO obtain new ciphertext for encrypted destinations?
+
+    if let Some(transport) = transport.upgrade() {
+        transport.lock().await.send_packet(packet).await;
+    }
 }
 
 
-trait ChannelOutlet: Send + Sync + 'static {
-    async fn send(
-        &self,
-        raw: &[u8],
-        transport: &Arc<Mutex<Transport>>
-    ) -> Packet;
+async fn outlet_is_usable(link: &Arc<Mutex<Link>>) -> bool {
+    link.lock().await.status() == LinkStatus::Active
+    // This diverges from the reference implementation. The value is
+    // hardcoded to true in the reference implementation, citing
+    // "issues looking at Link.status".
+}
 
-    fn resend(&self, packet: &mut Packet);
-
-    fn mdu(&self) -> usize;
-
-    fn outlet_rtt(&self) -> f32;
-
-    fn is_usable(&self) -> bool;
-
-    fn timed_out(&self) -> bool;
-
-    fn set_packet_timeout_callback(
-        &mut self,
-        packet: &Packet,
-        callback: Option<Box<dyn PacketCallback>>,
-        timeout: f32,
-    );
-
-    fn set_packet_delivered_callback(
-        &mut self,
-        packet: &Packet,
-        callback: Option<Box<dyn PacketCallback>>
-    );
+async fn outlet_timed_out(_: &Arc<Mutex<Link>>) -> bool {
+    todo!();
 }
 
 
-impl ChannelOutlet for Link {
-    async fn send(
-        &self,
-        raw: &[u8],
-        transport: &Arc<Mutex<Transport>>
-    ) -> Packet {
-        let mut packet: Packet = Default::default();
-        packet.data = PacketDataBuffer::new_from_slice(raw);
-        packet.context = PacketContext::Channel;
-        // TODO link
+fn schedule_packet_timeout_callback<M: Message>(
+    callback: PacketTimeoutCallback<M>,
+    mut timeout: Instant,
+) -> mpsc::Sender<Option<Instant>> {
+    let (tx, mut rx) = mpsc::channel(16);
 
-        if self.status() == LinkStatus::Active {
-            let transport = Arc::clone(transport);
-            transport.lock().await.send_packet(packet).await;
+    spawn(async move {
+        loop {
+            sleep(timeout - Instant::now()).await;
+
+            if rx.is_empty() {
+                callback.run().await;
+                break;
+            }
+
+            if let Ok(Some(new_timeout)) = rx.try_recv() {
+                timeout = new_timeout;
+                continue;
+            }
+
+            break;
         }
+    });
 
-        packet
-    }
+    tx
+}
 
-    fn resend(&self, packet: &mut Packet) {
-        let receipt: Option<bool> = todo!(); // Packet::resend, receipt type
-        if receipt.is_none() {
-            log::error!("Failed to resend packet.");
+fn schedule_packet_delivered_callback<M: Message>(
+    callback: PacketDeliveredCallback<M>
+) -> mpsc::Sender<bool> {
+    let (tx, mut rx) = mpsc::channel(1);
+
+    spawn(async move {
+        let delivered = rx.recv().await.unwrap_or(false);
+
+        if delivered {
+            callback.run().await;
         }
-    }
+    });
 
-    fn mdu(&self) -> usize {
-        PACKET_MDU
-    }
-
-    fn outlet_rtt(&self) -> f32 {
-        5.0 // TODO implement rtt in link
-    }
-
-    fn is_usable(&self) -> bool {
-        self.status() == LinkStatus::Active
-        // This diverges from the reference implementation. The value is
-        // hardcoded to true in the reference implementation, citing
-        // "issues looking at Link.status".
-    }
-
-    fn timed_out(&self) -> bool {
-        todo!();
-    }
-
-    fn set_packet_timeout_callback(
-        &mut self,
-        packet: &Packet,
-        callback: Option<Box<dyn PacketCallback>>,
-        timeout: f32
-    ) {
-        // TODO
-    }
-
-    fn set_packet_delivered_callback(
-        &mut self,
-        packet: &Packet,
-        callback: Option<Box<dyn PacketCallback>>
-    ) {
-        // TODO
-    }
+    tx
 }
 
 
-pub trait Message: Send + Sync {
-    fn message_type(&self) -> Option<MessageType>;
+struct PacketCallbacks {
+    timeout: Instant,
+    timeout_tx: mpsc::Sender<Option<Instant>>,
+    delivery_tx: mpsc::Sender<bool>,
+}
 
-    fn pack(&self) -> Vec<u8>;
 
-    fn unpack(&mut self, raw: &[u8]);
+impl PacketCallbacks {
+    fn new<M: Message>(
+        timeout: Instant,
+        timeout_callback: PacketTimeoutCallback<M>,
+        delivered_callback: PacketDeliveredCallback<M>,
+    ) -> Self {
+        let timeout_tx = schedule_packet_timeout_callback(
+            timeout_callback,
+            timeout.clone(),
+        );
+
+        let delivery_tx = schedule_packet_delivered_callback(
+            delivered_callback,
+        );
+
+        Self { timeout, timeout_tx, delivery_tx }
+    }
+
+    async fn update(&mut self, new_timeout: Instant) {
+        if new_timeout > self.timeout {
+            self.timeout_tx.send(Some(new_timeout)).await.ok();
+            self.timeout = new_timeout;
+        }
+    }
+
+    async fn cancel(&self) {
+        self.timeout_tx.send(None).await.ok();
+        self.delivery_tx.send(false).await.ok();
+    }
+
+    pub fn delivery_sender(&self) -> mpsc::Sender<bool> {
+        self.delivery_tx.clone()
+    }
 }
 
 
@@ -156,43 +201,19 @@ pub enum ChannelError {
 }
 
 
-#[derive(Default)]
-struct MessageFactory(BTreeMap<MessageType, Box<fn() -> Arc<dyn Message>>>);
-
-
-impl MessageFactory {
-    fn register_type(
-        &mut self,
-        message_type: MessageType,
-        factory: fn() -> Arc<dyn Message>,
-    ) {
-        // TODO reserve 0xf...
-        self.0.insert(message_type, Box::new(factory));
-    }
-
-    fn create(
-        &self,
-        message_type: MessageType
-    ) -> Result<Arc<dyn Message>, ChannelError> {
-        match self.0.get(&message_type) {
-            Some(factory) => Ok(factory()),
-            None => Err(ChannelError::NotRegistered)
-        }
-    }
-}
-
-
-pub struct Envelope<O: ChannelOutlet> {
-    timestamp: u64,
-    message: Option<Arc<dyn Message>>,
+pub struct Envelope<M: Message> {
+    timestamp: Instant,
+    message: Option<M>,
     raw: Option<Vec<u8>>,
     packet: Option<Packet>,
     sequence: Option<u16>,
-    outlet: Arc<Mutex<O>>,
+    outlet_id: LinkId,
     tries: u64,
     unpacked: bool,
     packed: bool,
-    tracked: bool
+    tracked: bool,
+    sent: bool,
+    callbacks: Option<PacketCallbacks>,
 }
 
 
@@ -237,47 +258,44 @@ fn deenvelope_raw(data: &[u8]) -> Result<(u16, u16, u16), ChannelError>
 }
 
 
-impl<O: ChannelOutlet> Envelope<O> {
+impl<M: Message> Envelope<M> {
     fn new(
-        outlet: Arc<Mutex<O>>,
-        message: Option<Arc<dyn Message>>,
+        outlet_id: LinkId,
+        message: Option<M>,
         raw: Option<Vec<u8>>,
         sequence: Option<u16>
     ) -> Self {
         Self {
-            timestamp: now(),
+            timestamp: Instant::now(),
             message,
             raw,
             packet: None,
             sequence,
-            outlet,
+            outlet_id,
             tries: 0,
             unpacked: false,
             packed: false,
-            tracked: false
+            tracked: false,
+            sent: false,
+            callbacks: None,
         }
     }
 
     fn pack(&mut self) -> Result<(), ChannelError> {
-        let msg = match self.message.as_ref() {
-            Some(m) => m,
-            None => {
-                return Err(ChannelError::Misc);
-            }
-        };
+        if let Some(ref message) = self.message {
+            let packed = message.pack();
+            let message_type = packed.message_type();
+            let payload = packed.payload();
 
-        let msg_type = match msg.message_type() {
-            Some(m) => m,
-            None => {
-                return Err(ChannelError::NoMessageType);
-            }
-        };
-        
-        let data = msg.pack(); 
-        self.raw = Some(envelope_raw(&data, msg_type, self.sequence));
-        self.packed = true;
+            self.raw = Some(
+                envelope_raw(payload.as_ref(), message_type, self.sequence)
+            );
+            self.packed = true;
 
-        Ok(())
+            Ok(())
+        } else {
+            Err(ChannelError::Misc)
+        }
     }
 
     fn get_raw(&mut self) -> Result<&[u8], ChannelError> {
@@ -289,7 +307,6 @@ impl<O: ChannelOutlet> Envelope<O> {
 
     fn unpack(
         &mut self,
-        message_factory: &MessageFactory,
     ) -> Result<(), ChannelError> {
         let raw = self.raw.as_ref().expect(
             "Reference implementation does not check if initialized here."
@@ -302,7 +319,9 @@ impl<O: ChannelOutlet> Envelope<O> {
             );
         }
 
-        self.message = Some(message_factory.create(message_type)?);
+        let packed = PackedMessage::new(raw[6..].to_vec(), message_type);
+
+        self.message = Some(M::unpack(packed)?);
         self.sequence = Some(sequence);
         self.unpacked = true;
 
@@ -324,13 +343,12 @@ impl<O: ChannelOutlet> Envelope<O> {
 
     fn get_message(
         &mut self,
-        message_factory: &MessageFactory
-    ) -> Result<Arc<dyn Message>, ChannelError> {
+    ) -> Result<&M, ChannelError> {
         if !self.unpacked {
-            self.unpack(message_factory)?;
+            self.unpack()?;
         }
 
-        Ok(Arc::clone(self.message.as_ref().unwrap()))
+        Ok(self.message.as_ref().unwrap())
     }
 
     fn is_same_packet(&self, other: &Packet) -> bool {
@@ -342,6 +360,38 @@ impl<O: ChannelOutlet> Envelope<O> {
     }
 }
 
+
+fn packet_timeout_time(
+    rtt: Duration,
+    ring_len: usize,
+    tries: u64
+) -> Duration {
+    let rtt_f32 = rtt.as_secs_f32();
+    let rtt_factor = if rtt_f32 >= 0.01 { 2.5 * rtt_f32 } else { 0.025 };
+
+    let tries_factor = 1.5f32.powi(tries.saturating_sub(1) as i32);
+    let total = tries_factor * rtt_factor * (ring_len as f32 + 1.5);
+
+    Duration::from_secs_f32(total)
+}
+
+
+async fn update_packet_timeouts<M: Message>(
+    ring: &Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+    rtt: Duration,
+) {
+    let ring = ring.lock().await;
+    let ring_len = ring.len();
+
+    for envelope in ring.iter() {
+        let mut env = envelope.lock().await;
+        let tries = env.tries;
+        if let Some(ref mut cb) = env.callbacks {
+            let until_timeout = packet_timeout_time(rtt, ring_len, tries);
+            cb.update(Instant::now() + until_timeout).await;
+        }
+    }
+}
 
 static WINDOW: u16 = 2;
 
@@ -367,9 +417,6 @@ static RTT_SLOW: f32 = 1.45;
 static WINDOW_FLEXIBILITY: u16 = 4;
 
 static SEQ_MAX: u32 = 0xFFFF;
-
-
-type MessageCallback = fn(&Arc<dyn Message>) -> Result<bool, ChannelError>;
 
 
 struct ChannelParams {
@@ -398,32 +445,12 @@ impl ChannelParams {
 }
 
 
-async fn find_tx_envelope<O:ChannelOutlet>(
-    outlet: Arc<Mutex<O>>,
-    tx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<O>>>>>>,
-    packet: &Packet
-) -> Option<Arc<Mutex<Envelope<O>>>> 
-{
-    let outlet = outlet.lock().await;
-    let tx_ring = tx_ring.lock().await;
- 
-    for ref env in tx_ring.iter() {
-        if env.lock().await.is_same_packet(packet) {
-            return Some(Arc::clone(env));
-        }
-    }
-
-    log::trace!("Spurious message received");
-    None
-}
-
-
-async fn pop_tx_from_ring<O: ChannelOutlet>(
-    tx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<O>>>>>>,
-    envelope: Arc<Mutex<Envelope<O>>>,
+async fn pop_tx_from_ring<'a, M: Message>(
+    mut ring: MutexGuard<'a, VecDeque<Arc<Mutex<Envelope<M>>>>>,
+    envelope: Arc<Mutex<Envelope<M>>>,
 ) {
     let mut i: Option<usize> = None;
-    for (j, e) in tx_ring.lock().await.iter().enumerate() {
+    for (j, e) in ring.iter().enumerate() {
         if Arc::ptr_eq(e, &envelope) {
             i = Some(j)
         }
@@ -434,20 +461,20 @@ async fn pop_tx_from_ring<O: ChannelOutlet>(
         return;
     }
 
-    tx_ring.lock().await.remove(i.unwrap());
+    ring.remove(i.unwrap());
 
 }
 
 
-fn adjust_params<O: ChannelOutlet>(
-    outlet: &mut MutexGuard<O>,
+fn adjust_params(
+    outlet: &mut MutexGuard<Link>,
     params: &mut MutexGuard<ChannelParams>
 ) {     
     if params.window < params.window_max {
         params.window += 1
     }
 
-    let rtt = outlet.outlet_rtt();
+    let rtt = outlet.rtt().as_secs_f32();
     if rtt != 0.0 {
         if rtt > RTT_FAST {
             params.fast_rate_rounds = 0;
@@ -477,40 +504,33 @@ fn adjust_params<O: ChannelOutlet>(
 }
 
 
-struct PacketDeliveredCallback<O: ChannelOutlet> {
-    outlet: Arc<Mutex<O>>,
-    tx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<O>>>>>>,
-    params: Arc<Mutex<ChannelParams>>
+struct PacketDeliveredCallback<M: Message> {
+    outlet: Arc<Mutex<Link>>,
+    tx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+    params: Arc<Mutex<ChannelParams>>,
+    env: Weak<Mutex<Envelope<M>>>,
 }
 
 
-impl<O: ChannelOutlet> PacketDeliveredCallback<O> {
+impl<M: Message> PacketDeliveredCallback<M> {
     fn new(
-        outlet: &Arc<Mutex<O>>,
-        tx_ring: &Arc<Mutex<VecDeque<Arc<Mutex<Envelope<O>>>>>>,
-        params: &Arc<Mutex<ChannelParams>>
+        outlet: &Arc<Mutex<Link>>,
+        tx_ring: &Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+        params: &Arc<Mutex<ChannelParams>>,
+        env: Weak<Mutex<Envelope<M>>>,
     ) -> Self {
         Self {
             outlet: Arc::clone(&outlet),
             tx_ring: Arc::clone(&tx_ring),
-            params: Arc::clone(&params)
+            params: Arc::clone(&params),
+            env,
         }
     }
-}
 
-
-#[async_trait]
-impl<O: ChannelOutlet> PacketCallback for PacketDeliveredCallback<O> {
-    async fn run(&self, packet: &Packet) {
-        let maybe_envelope = find_tx_envelope(
-            Arc::clone(&self.outlet),
-            Arc::clone(&self.tx_ring),
-            packet
-        ).await;
-
-        if let Some(env) = maybe_envelope {
-            env.lock().await.tracked = false;
-            pop_tx_from_ring(Arc::clone(&self.tx_ring), env).await;
+    async fn run(&self) {
+        if let Some(envelope) = self.env.upgrade() {
+            envelope.lock().await.tracked = false;
+            pop_tx_from_ring(self.tx_ring.lock().await, envelope).await;
             
             adjust_params(
                 &mut self.outlet.lock().await, 
@@ -522,67 +542,62 @@ impl<O: ChannelOutlet> PacketCallback for PacketDeliveredCallback<O> {
 
 
 #[derive(Clone)]
-struct PacketTimeoutCallback<O: ChannelOutlet> {
-    outlet: Arc<Mutex<O>>,
-    tx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<O>>>>>>,
-    params: Arc<Mutex<ChannelParams>>
+struct PacketTimeoutCallback<M: Message> {
+    outlet: Arc<Mutex<Link>>,
+    rx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+    tx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+    params: Arc<Mutex<ChannelParams>>,
+    transport: Arc<Mutex<Transport>>,
+    env: Weak<Mutex<Envelope<M>>>,
 }
 
 
-impl<O: ChannelOutlet> PacketTimeoutCallback<O> {
+impl<M: Message> PacketTimeoutCallback<M> {
     fn new(
-        outlet: &Arc<Mutex<O>>,
-        tx_ring: &Arc<Mutex<VecDeque<Arc<Mutex<Envelope<O>>>>>>,
-        params: &Arc<Mutex<ChannelParams>>
+        outlet: &Arc<Mutex<Link>>,
+        rx_ring: &Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+        tx_ring: &Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+        params: &Arc<Mutex<ChannelParams>>,
+        transport: &Arc<Mutex<Transport>>,
+        env: Weak<Mutex<Envelope<M>>>,
     ) -> Self {
         Self {
             outlet: Arc::clone(&outlet),
+            rx_ring: Arc::clone(&rx_ring),
             tx_ring: Arc::clone(&tx_ring),
-            params: Arc::clone(&params)
+            params: Arc::clone(&params),
+            transport: Arc::clone(&transport),
+            env,
         }
     }
 
-    fn new_delivered_callback(&self) -> Option<Box<dyn PacketCallback>> {
-        Some(Box::new(PacketDeliveredCallback::new(
-            &self.outlet,
-            &self.tx_ring,
-            &self.params
-        )))
-    }
-
-    fn new_timeout_callback(&self) ->Option<Box<dyn PacketCallback>> {
-        Some(Box::new(PacketTimeoutCallback::new(
-            &self.outlet,
-            &self.tx_ring,
-            &self.params
-        )))
-    }
-
-    async fn run_callback(&self, env: &Arc<Mutex<Envelope<O>>>) -> bool {
+    async fn run_callback(&self, env: &Arc<Mutex<Envelope<M>>>) -> bool {
         let max_tries = self.params.lock().await.max_tries;
 
-        if env.lock().await.tries as u16 > self.params.lock().await.max_tries {
-            log::error!("Retry count exceeded, tearing down link.");
-            // TODO shutdown();
-            self.outlet.lock().await.timed_out();
-            return true;
-        }
-            
-        env.lock().await.tries += 1;
-        self.outlet.lock().await.resend(env.lock().await.packet.as_mut().unwrap());
+        let packet;
+        {
+            let mut envelope = env.lock().await;
         
-        self.outlet.lock().await.set_packet_delivered_callback(
-            env.lock().await.packet.as_ref().unwrap(),
-            self.new_delivered_callback()
-        );
+            if !envelope.sent {
+                log::error!("Timeout was set for a packet not yet sent.");
+            }
+            
+            if envelope.tries as u16 > max_tries {
+                log::error!("Retry count exceeded, tearing down link.");
+                self.shutdown_channel().await;
+                outlet_timed_out(&self.outlet).await;
+                return true;
+            }
 
-        self.outlet.lock().await.set_packet_timeout_callback(
-            env.lock().await.packet.as_ref().unwrap(),
-            self.new_timeout_callback(),
-            1.0 // TODO proper value
-        );
+            envelope.tries += 1;
+            packet = envelope.packet.as_ref().unwrap().clone();
+        }
 
-        // TODO update_packet_timeouts();
+        let transport = Arc::downgrade(&self.transport);
+        outlet_resend(&self.outlet, packet, transport).await;
+
+        let rtt = *self.outlet.lock().await.rtt();
+        update_packet_timeouts(&self.tx_ring, rtt).await;
 
         let mut params = self.params.lock().await;
         if params.window > params.window_min {
@@ -593,29 +608,27 @@ impl<O: ChannelOutlet> PacketTimeoutCallback<O> {
         }
         false
     }
-}
 
+    async fn shutdown_channel(&self) {
+        // TODO close received messages channel (=drop Sender)
 
-#[async_trait]
-impl<O: ChannelOutlet> PacketCallback for PacketTimeoutCallback<O> {
-    async fn run(&self, packet: &Packet) {
-        let maybe_envelope = find_tx_envelope(
-            Arc::clone(&self.outlet),
-            Arc::clone(&self.tx_ring),
-            packet
-        ).await;
+        let mut tx_ring = self.tx_ring.lock().await;
 
-        if let Some(env) = maybe_envelope {
-            let flag = self.run_callback(&env).await;
-
-            if flag {
-                env.lock().await.tracked = false;
-                pop_tx_from_ring(Arc::clone(&self.tx_ring), env).await;
-                adjust_params(
-                    &mut self.outlet.lock().await, 
-                    &mut self.params.lock().await
-                );
+        for ref envelope in tx_ring.iter() {
+            let env = envelope.lock().await;
+            if let Some(ref cb) = env.callbacks {
+                cb.cancel().await;
             }
+        }
+
+        tx_ring.clear();
+
+        self.rx_ring.lock().await.clear();
+    }
+
+    async fn run(&self) {
+        if let Some(env) = self.env.upgrade() {
+            self.run_callback(&env).await;
         }
     }
 }
@@ -624,151 +637,75 @@ impl<O: ChannelOutlet> PacketCallback for PacketTimeoutCallback<O> {
 pub type MessageCallbackId = usize;
 
 
-pub struct Channel<O: ChannelOutlet> {
-    outlet: Arc<Mutex<O>>,
-    tx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<O>>>>>>,
-    rx_ring: VecDeque<Arc<Mutex<Envelope<O>>>>,
-    message_callbacks: Vec<Option<Box<MessageCallback>>>,
-    next_sequence: u16,
-    next_rx_sequence: u16,
-    message_factory: MessageFactory,
-    params: Arc<Mutex<ChannelParams>>
+async fn emplace_envelope<M: Message>(
+    ring: &Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+    envelope: Arc<Mutex<Envelope<M>>>,
+) -> bool {
+    let env_sequence = envelope.lock().await.sequence;
+    let mut inserted = false;
+    let mut ring = ring.lock().await;
+
+    for (i, existing) in ring.iter().enumerate() {
+        let ex_sequence = existing.lock().await.sequence;
+        if env_sequence == ex_sequence {
+            log::trace!("Envelope: Emplacement of duplicate envelope");
+            return false;
+        }
+
+        if env_sequence < ex_sequence {
+            // if !2*(self.next_rx_sequence - env_sequence.unwrap_or(0)) as u32 > SEQ_MAX {
+            if true { // TODO
+                ring.insert(i, envelope.clone());
+                inserted = true;
+                break;
+            }
+        }
+    }
+
+    if !inserted {
+        ring.push_back(envelope.clone());
+    }
+
+    envelope.lock().await.tracked = true;
+    true
 }
 
 
-impl<O: ChannelOutlet + 'static> Channel<O> {
-    async fn new(outlet: Arc<Mutex<O>>) -> Self {
-        let slow = outlet.lock().await.outlet_rtt() > RTT_SLOW;
-        let params = Arc::new(Mutex::new(ChannelParams::new(slow)));
 
+pub struct ChannelReceiver<M: Message> {
+    rx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+    incoming: broadcast::Sender<M>,
+    next_rx_sequence: u16,
+    link_id: LinkId,
+}
+
+
+impl<M: Message> ChannelReceiver<M> {
+    fn new(
+        rx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+        link_id: LinkId,
+    ) -> Self {
         Self {
-            outlet,
-            tx_ring: Default::default(),
-            rx_ring: Default::default(),
-            message_callbacks: Default::default(),
-            next_sequence: 0,
+            rx_ring,
+            incoming: broadcast::Sender::new(16),
             next_rx_sequence: 0,
-            message_factory: Default::default(),
-            params
+            link_id,
         }
     }
 
-    fn register_message_type(
-        &mut self,
-        message_type: MessageType,
-        factory: fn() -> Arc<dyn Message>,
-        is_system_type: bool
-    ) -> Result<(), ChannelError> {
-        if message_type >= 0xf000 && !is_system_type {
-            return Err(ChannelError::InvalidMessageType);
-        }
-        self.message_factory.register_type(message_type, factory);
-        Ok(())
-    }
-
-    fn add_message_handler(
-        &mut self,
-        callback: MessageCallback
-    ) -> MessageCallbackId {
-        let id = self.message_callbacks.len();
-        self.message_callbacks.push(Some(Box::new(callback)));
-        return id;
-    }
-
-    fn remove_message_handler(&mut self, id: MessageCallbackId) -> bool {
-        let found = self.message_callbacks.get(id).unwrap_or(&None).is_some();
-
-        if found {
-            self.message_callbacks[id] = None;
-        }
-
-        found
-    }
-    
-    async fn clear_rings(&mut self) {
-        let mut tx_ring = self.tx_ring.lock().await;
-        let mut outlet = self.outlet.lock().await;
-
-        for ref envelope in tx_ring.iter() {
-            let env = envelope.lock().await;
-            if let Some(ref packet) = env.packet {
-                outlet.set_packet_timeout_callback(packet, None, 0.0);
-                outlet.set_packet_delivered_callback(packet, None);
-            }
-        }
-        tx_ring.clear();
-        self.rx_ring.clear();
-    }
-
-    async fn shutdown(&mut self) {
-        self.message_callbacks.clear();
-        self.clear_rings().await;
-    }
-
-    async fn emplace_envelope(
-        &mut self,
-        envelope: Arc<Mutex<Envelope<O>>>,
-        rx: bool
-    ) -> bool {
-        let env_sequence = envelope.lock().await.sequence;
-
-        let ring = if rx {
-            &mut self.rx_ring
-        } else {
-            &mut *self.tx_ring.lock().await
-        };
-
-        let mut inserted = false;
-
-        for (i, existing) in ring.iter().enumerate() {
-            let ex_sequence = existing.lock().await.sequence;
-            if env_sequence == ex_sequence {
-                log::trace!("Envelope: Emplacement of duplicate envelope");
-                return false;
-            }
-
-            if env_sequence < ex_sequence {
-                if !2*(self.next_rx_sequence - env_sequence.unwrap_or(0)) as u32 > SEQ_MAX {
-                    ring.insert(i, envelope.clone());
-                    inserted = true;
-                    break;
-                }
-            }
-        }
-
-        if !inserted {
-            ring.push_back(envelope.clone());
-        }
-
-        envelope.lock().await.tracked = true;
-        true
-    }
-
-    fn run_callbacks(&self, message: &Arc<dyn Message>) {
-        for maybe_callback in self.message_callbacks.iter() {
-            if let Some(callback) = maybe_callback {
-                match (* callback)(message) {
-                    Ok(is_done) => {
-                        if is_done {
-                            return;
-                        }
-                    },
-                    Err(_) => {
-                        log::error!("Error running message callback");
-                    }
-                }
-            }
-        }
+    fn get_incoming(&self) -> broadcast::Sender<M> {
+        self.incoming.clone()
     }
 
     async fn receive_traverse_ring(
         &mut self,
-        contiguous: &mut Vec<Arc<Mutex<Envelope<O>>>>
+        contiguous: &mut Vec<Arc<Mutex<Envelope<M>>>>
     ) -> bool {
+        let mut rx_ring = self.rx_ring.lock().await;
         let mut retained = VecDeque::new();
         let mut start_over = false;
 
-        while let Some(env) = self.rx_ring.pop_front() {
+        while let Some(env) = rx_ring.pop_front() {
             let seq = match env.lock().await.get_sequence() {
                 Ok(s) => s,
                 Err(_) => {
@@ -791,24 +728,22 @@ impl<O: ChannelOutlet + 'static> Channel<O> {
             }
         }
 
-        if start_over {
-            retained.append(&mut self.rx_ring);
-        }
-
-        self.rx_ring = retained;
+        rx_ring.append(&mut retained);
 
         start_over
     }
 
-    async fn receive(&mut self, raw: &[u8]) {
-        let mut envelope = Envelope::new(
-            self.outlet.clone(),
+    pub async fn receive(&mut self, raw: &[u8]) {
+        log::trace!("channel received {}B", raw.len());
+
+        let mut envelope = Envelope::<M>::new(
+            self.link_id,
             None,
             Some(raw.to_vec()),
             None
         );
         
-        if envelope.unpack(&self.message_factory).is_err() {
+        if envelope.unpack().is_err() {
             log::error!("Message could not be unpacked");
             return;
         }
@@ -821,13 +756,13 @@ impl<O: ChannelOutlet + 'static> Channel<O> {
             let overflow = sequence.saturating_add(WINDOW_MAX);
             
             if overflow >= self.next_rx_sequence || sequence > overflow {
-                log::trace!("Incalid packet sequence");
+                log::trace!("Invalid packet sequence");
                 return;
             }
         }
 
-        let envelope = Arc::new(Mutex::new(envelope));
-        let is_new = self.emplace_envelope(envelope, true).await;
+        let is_new = true;
+        emplace_envelope(&self.rx_ring, Arc::new(Mutex::new(envelope))).await;
 
         if !is_new {
             log::trace!("Duplicate message received");
@@ -840,28 +775,58 @@ impl<O: ChannelOutlet + 'static> Channel<O> {
         }
 
         for env in contiguous {
-            match env.lock().await.get_message(&self.message_factory) {
-                Ok(ref message) => {
-                    self.run_callbacks(message);
-                },
-                Err(_) => {
-                    log::trace!("Message could not be unpacked");
-                }
+            let res = self.incoming.send(
+                env.lock().await.message.as_ref().unwrap().clone()
+            );
+            if res.is_err() {
+                log::trace!("Channel received message but no handler active.");
             }
         }
+    }
+}
+
+
+pub struct Channel<M: Message> {
+    outlet: Arc<Mutex<Link>>,
+    tx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+    rx_ring: Arc<Mutex<VecDeque<Arc<Mutex<Envelope<M>>>>>>,
+    next_sequence: u16,
+    params: Arc<Mutex<ChannelParams>>
+}
+
+
+impl<M: Message> Channel<M> {
+    async fn new(outlet: Arc<Mutex<Link>>) -> Self {
+        let slow = outlet.lock().await.rtt().as_secs_f32() > RTT_SLOW;
+        let params = Arc::new(Mutex::new(ChannelParams::new(slow)));
+
+        Self {
+            outlet,
+            tx_ring: Default::default(),
+            rx_ring: Default::default(),
+            next_sequence: 0,
+            params
+        }
+    }
+
+    async fn receiver(&self) -> ChannelReceiver<M> {
+        let link_id = *self.outlet.lock().await.id();
+        
+        ChannelReceiver::new(Arc::clone(&self.rx_ring), link_id)
     }
 
     async fn is_ready_to_send(&self) -> bool {
         let tx_ring = self.tx_ring.lock().await;
 
-        if !self.outlet.lock().await.is_usable() {
+        if !outlet_is_usable(&self.outlet).await {
             return false
         }
 
         let mut outstanding = 0;
         for envelope in tx_ring.iter() {
             let env = envelope.lock().await;
-            if !Arc::ptr_eq(&env.outlet, &self.outlet) {
+            let our_id = *self.outlet.lock().await.id();
+            if env.outlet_id != our_id {
                 continue;
             }
 
@@ -878,112 +843,151 @@ impl<O: ChannelOutlet + 'static> Channel<O> {
         outstanding < self.params.lock().await.window
     }
 
-    fn update_packet_timeouts(&mut self) {
-        //TODO
-    }
-
-    async fn get_packet_timeout_time(&self, rtt: f32, tries: u64) -> f32 {
-        let ring_len = self.tx_ring.lock().await.len();
-
-        let rtt_factor = if rtt > 0.01 { rtt * 2.5 } else { 0.025 };
-        let tries_factor = 1.5f32.powi(tries.saturating_sub(1) as i32);
-
-        tries_factor * rtt_factor * (ring_len as f32 + 1.5)
-    }
-
-    fn new_delivered_callback(&self) -> Option<Box<dyn PacketCallback>> {
-        Some(Box::new(PacketDeliveredCallback::new(
+    fn new_delivered_callback(
+        &self, 
+        env: Weak<Mutex<Envelope<M>>>
+    ) -> PacketDeliveredCallback<M> {
+        PacketDeliveredCallback::new(
             &self.outlet,
             &self.tx_ring,
-            &self.params
-        )))
+            &self.params,
+            env,
+        )
     }
 
-    fn new_timeout_callback(&self) -> Option<Box<dyn PacketCallback>> {
-        Some(Box::new(PacketTimeoutCallback::new(
+    fn new_timeout_callback(
+        &self,
+        transport: &Arc<Mutex<Transport>>,
+        env: Weak<Mutex<Envelope<M>>>,
+    ) -> PacketTimeoutCallback<M> {
+        PacketTimeoutCallback::new(
             &self.outlet,
+            &self.rx_ring,
             &self.tx_ring,
-            &self.params
-        )))
+            &self.params,
+            transport,
+            env,
+        )
     }
-    
+
+    fn packet_callbacks(
+        &self,
+        timeout: Instant,
+        transport: &Arc<Mutex<Transport>>,
+        env: Weak<Mutex<Envelope<M>>>
+    ) -> PacketCallbacks {
+        let timeout_callback = self.new_timeout_callback(transport, env.clone());
+        let delivered_callback = self.new_delivered_callback(env);
+
+        PacketCallbacks::new(timeout, timeout_callback, delivered_callback)
+    }
+
     pub async fn send(
         &mut self,
-        message: &Arc<dyn Message>,
+        message: &M,
         transport: &Arc<Mutex<Transport>>,
-    ) -> Result<Arc<Mutex<Envelope<O>>>, ChannelError> {
+    ) -> Result<Arc<Mutex<Envelope<M>>>, ChannelError> {
         if !self.is_ready_to_send().await {
             return Err(ChannelError::LinkNotReady);
         }
 
-        let mut envelope = Arc::new(Mutex::new(Envelope::new(
-            Arc::clone(&self.outlet),
-            Some(Arc::clone(message)), 
+        let envelope = Arc::new(Mutex::new(Envelope::new(
+            *self.outlet.lock().await.id(),
+            Some(message.clone()),
             None,
             Some(self.next_sequence)
         )));
 
+        let env_weak = Arc::downgrade(&envelope);
+
         self.next_sequence += 1;
 
-        self.emplace_envelope(Arc::clone(&envelope), false).await;
+        emplace_envelope(&self.tx_ring, Arc::clone(&envelope)).await;
 
+        let rtt;
         {
             let env = &mut envelope.lock().await;
-            let mut outlet = self.outlet.lock().await;
-
             let raw = env.get_raw()?;
 
-            if raw.len() > outlet.mdu() as usize {
+            if raw.len() > PACKET_MDU as usize {
                 return Err(ChannelError::TooBig);
             }
 
-            let packet = outlet.send(&raw, transport).await;
+            let (packet, sent) = outlet_send(&self.outlet, &raw, transport).await;
 
             env.tries += 1;
-            let rtt = outlet.outlet_rtt();
-           
-            outlet.set_packet_delivered_callback(
-                &packet,
-                self.new_delivered_callback()
-            );
-            outlet.set_packet_timeout_callback(
-                &packet,
-                self.new_timeout_callback(),
-                self.get_packet_timeout_time(rtt, env.tries).await
+            env.packet = Some(packet);
+            env.sent = sent;
+
+            let outlet = self.outlet.lock().await;
+            rtt = *outlet.rtt();
+            let timeout = Instant::now() + packet_timeout_time(
+                rtt,
+                self.tx_ring.lock().await.len(),
+                env.tries,
             );
 
-            env.packet = Some(packet);
+            env.callbacks = Some(self.packet_callbacks(
+                timeout,
+                transport,
+                env_weak
+            ));
         }
 
-        self.update_packet_timeouts();
+        update_packet_timeouts(&self.tx_ring, rtt).await;
 
         Ok(envelope)
     }
 
-    async fn mdu(&self) -> usize {
-        self.outlet.lock().await.mdu() - 6
+    pub async fn mdu(&self) -> usize {
+        PACKET_MDU - 6
     }
 }
 
 
-pub struct WrappedLink {
-    link: Arc<Mutex<Link>>,
-    channel: Channel<Link>
+async fn spawn_receiver<M: Message>(
+    channel: &Channel<M>,
+    mut rx: broadcast::Receiver<LinkPayload>,
+) -> broadcast::Sender<M> {
+    let mut channel_receiver = channel.receiver().await;
+    let incoming = channel_receiver.get_incoming();
+
+    tokio::spawn(async move {
+        while let Ok(payload) = rx.recv().await {
+            channel_receiver.receive(payload.as_slice()).await;
+        }
+    });
+
+    incoming
 }
 
 
-impl WrappedLink {
+pub struct WrappedLink<M: Message> {
+    link: Arc<Mutex<Link>>,
+    channel: Channel<M>,
+    incoming: broadcast::Sender<M>,
+}
+
+
+impl<M: Message> WrappedLink<M> {
     pub async fn new(link: Arc<Mutex<Link>>) -> Self {
         let channel = Channel::new(Arc::clone(&link)).await;
-        Self { link, channel }
+        let rx = link.lock().await.bind_to_channel().unwrap();
+        let incoming = spawn_receiver(&channel, rx).await;
+
+        Self { link, channel, incoming }
     }
 
-    fn get_link(&self) -> Arc<Mutex<Link>> {
+    pub fn get_link(&self) -> Arc<Mutex<Link>> {
         Arc::clone(&self.link)
     }
 
-    pub fn get_channel(&mut self) -> &mut Channel<Link> {
+    pub fn get_channel(&mut self) -> &mut Channel<M> {
         &mut self.channel
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<M> {
+        self.incoming.subscribe()
     }
 }
 

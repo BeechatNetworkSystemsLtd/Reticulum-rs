@@ -132,6 +132,7 @@ pub struct Link {
     request_time: Instant,
     rtt: Duration,
     event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
+    channel_tx: Option<tokio::sync::broadcast::Sender<LinkPayload>>,
 }
 
 impl Link {
@@ -149,7 +150,20 @@ impl Link {
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
             event_tx,
+            channel_tx: None,
         }
+    }
+
+    pub fn bind_to_channel(
+        &mut self
+    ) -> Option<tokio::sync::broadcast::Receiver<LinkPayload>> {
+        // TODO fail if we already have a channel
+
+        let (tx, rx) = tokio::sync::broadcast::channel(16);
+        self.channel_tx = Some(tx);
+        log::trace!("link({}) bound to channel", self.id());
+
+        Some(rx)
     }
 
     pub fn new_from_request(
@@ -180,6 +194,7 @@ impl Link {
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
             event_tx,
+            channel_tx: None,
         };
 
         link.handshake(peer_identity);
@@ -273,6 +288,20 @@ impl Link {
                     log::trace!("link({}): keep-alive response", self.id);
                     self.request_time = Instant::now();
                     return LinkHandleResult::None;
+                }
+            }
+            PacketContext::Channel => {
+                if let Some(ref channel_tx) = self.channel_tx {
+                    let mut buffer = [0u8; PACKET_MDU];
+                    if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer) {
+                        log::trace!("link({}): data over channel {}B", self.id, plain_text.len());
+                        self.request_time = Instant::now();
+                        channel_tx.send(LinkPayload::new_from_slice(plain_text)).ok();
+                    } else {
+                        log::error!("link({}): can't decrypt channel packet", self.id);
+                    }
+                } else {
+                    log::error!("link({}): received channel packet but have no channel", self.id);
                 }
             }
             _ => {}
@@ -459,6 +488,10 @@ impl Link {
 
     pub fn id(&self) -> &LinkId {
         &self.id
+    }
+
+    pub fn rtt(&self) -> &Duration {
+        &self.rtt
     }
 }
 
