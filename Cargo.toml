@@ -62,8 +62,8 @@ name = "link-client"
 path = "examples/link_client.rs"
 
 [[example]]
-name = "link-and-channel-server"
-path = "examples/link_and_channel_server.rs"
+name = "channel-server"
+path = "examples/channel_server.rs"
 
 [[example]]
 name = "kaonic-client"
