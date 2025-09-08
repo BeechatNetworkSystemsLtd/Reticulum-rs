@@ -98,3 +98,11 @@ path = "examples/kaonic_mesh.rs"
 [[example]]
 name = "multihop"
 path = "examples/multihop.rs"
+
+[[example]]
+name = "channel_server"
+path = "examples/channel_server.rs"
+
+[[example]]
+name = "channel_client"
+path = "examples/channel_client.rs"

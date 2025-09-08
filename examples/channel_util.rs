@@ -1,5 +1,6 @@
+use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
-use reticulum::channel::{Message, MessageType};
+use reticulum::channel::{ChannelError, Message, MessageType, PackedMessage};
 
 
 fn now() -> u64 {
@@ -12,33 +13,21 @@ fn unpack_timestamp(bytes: &[u8]) -> u64 {
 }
 
 
-pub struct TextMessage {
+#[derive(Clone)]
+struct TextPayload {
     text: String,
     timestamp: u64
 }
 
 
-impl TextMessage {
-    pub fn new(text: &str) -> Self {
-        Self {
-            text: text.to_string(),
-            timestamp: now()
-        }
-    }
-
-    fn unpack_failed(&mut self, reason: &str) {
-        log::info!("Message could not be unpacked: {}", reason);
-        self.text = String::new();
-        self.timestamp = 0;
+impl TextPayload {
+    fn new(text: String) -> Self {
+        Self { text, timestamp: now() }
     }
 }
 
 
-impl Message for TextMessage {
-    fn message_type(&self) -> Option<MessageType> {
-        Some(0x0101)
-    }
-
+impl TextPayload {
     fn pack(&self) -> Vec<u8> {
         // Packing format mimicks that of Python Reticulum, so the
         // channel example can be tested against the Channel.py example
@@ -55,21 +44,64 @@ impl Message for TextMessage {
         raw
     }
 
-    fn unpack(&mut self, raw: &[u8]) {
+    fn unpack(raw: &[u8]) -> Result<Self, ChannelError> {
         if raw.len() <= 12 {
-            self.unpack_failed("Too short");
-            return;
-        } 
+            return Err(ChannelError::Misc)
+        }
 
         match String::from_utf8(raw[12..].to_vec()) {
             Ok(text) => {
-                self.text = text;
-                self.timestamp = unpack_timestamp(&raw[3..11]);
+                let mut payload = TextPayload::new(text);
+                payload.timestamp = unpack_timestamp(&raw[3..11]);
+                Ok(payload)
             },
             Err(_) => {
-                self.unpack_failed("Invalid utf8");
+                Err(ChannelError::Misc)
             }
         }
     }
 }
 
+
+const MESSAGE_TYPE_TEXT: MessageType = 0x0101;
+
+
+#[derive(Clone)]
+pub enum ExampleMessage {
+    Text(TextPayload)
+}
+
+
+impl ExampleMessage {
+    pub fn new_text(text: &str) -> Self {
+        Self::Text(TextPayload::new(text.to_string()))
+    }
+}
+
+
+impl fmt::Display for ExampleMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Text(t) => write!(f, "Text at {}: {}", t.timestamp, t.text)
+        }
+    }
+}
+
+
+impl Message for ExampleMessage {
+    fn pack(&self) -> PackedMessage {
+        match self {
+            Self::Text(t) => PackedMessage::new(t.pack(), MESSAGE_TYPE_TEXT)
+        }
+    }
+
+    fn unpack(packed: PackedMessage) -> Result<Self, ChannelError> {
+        let message_type = packed.message_type();
+
+        match message_type {
+            MESSAGE_TYPE_TEXT =>
+                Ok(Self::Text(TextPayload::unpack(&packed.payload())?)),
+            _ => Err(ChannelError::InvalidMessageType)
+        }
+    }
+}
