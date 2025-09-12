@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use announce_table::AnnounceTable;
 use packet_cache::PacketCache;
 use path_table::PathTable;
 use rand_core::OsRng;
@@ -36,6 +37,7 @@ use crate::packet::Header;
 use crate::packet::PacketDataBuffer;
 use crate::packet::{Packet, PacketType};
 
+mod announce_table;
 mod packet_cache;
 mod path_table;
 
@@ -49,6 +51,7 @@ const INTERVAL_OUTPUT_LINK_RESTART: Duration = Duration::from_secs(60);
 const INTERVAL_OUTPUT_LINK_REPEAT: Duration = Duration::from_secs(6);
 const INTERVAL_OUTPUT_LINK_KEEP: Duration = Duration::from_secs(5);
 const INTERVAL_IFACE_CLEANUP: Duration = Duration::from_secs(10);
+const INTERVAL_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(1);
 
 pub struct TransportConfig {
     name: String,
@@ -69,6 +72,7 @@ struct TransportHandler {
     announce_tx: broadcast::Sender<AnnounceEvent>,
 
     path_table: PathTable,
+    announce_table: AnnounceTable,
     single_in_destinations: HashMap<AddressHash, Arc<Mutex<SingleInputDestination>>>,
     single_out_destinations: HashMap<AddressHash, Arc<Mutex<SingleOutputDestination>>>,
 
@@ -137,6 +141,7 @@ impl Transport {
         let handler = Arc::new(Mutex::new(TransportHandler {
             config,
             iface_manager: iface_manager.clone(),
+            announce_table: AnnounceTable::new(),
             path_table: PathTable::new(),
             single_in_destinations: HashMap::new(),
             single_out_destinations: HashMap::new(),
@@ -452,7 +457,11 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
     }
 }
 
-async fn handle_announce<'a>(packet: &Packet, mut handler: MutexGuard<'a, TransportHandler>) {
+async fn handle_announce<'a>(
+    packet: &Packet, 
+    mut handler: MutexGuard<'a, TransportHandler>,
+    iface: AddressHash
+) {
     if let Ok(result) = DestinationAnnounce::validate(packet) {
         let destination = result.0;
         let app_data = result.1;
@@ -472,6 +481,18 @@ async fn handle_announce<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transp
                 .single_out_destinations
                 .insert(packet.destination, destination.clone());
         }
+
+        handler.announce_table.add(
+            packet,
+            destination.lock().await.identity.address_hash, // TODO
+            iface, // TODO
+        );
+
+        handler.path_table.handle_announce(
+            packet, 
+            packet.transport,
+            iface, // TODO
+        );
 
         let _ = handler.announce_tx.send(AnnounceEvent {
             destination,
@@ -595,6 +616,26 @@ async fn handle_cleanup<'a>(handler: MutexGuard<'a, TransportHandler>) {
     handler.iface_manager.lock().await.cleanup();
 }
 
+async fn retransmit_announces<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
+    let transport_id = handler.config.identity.address_hash().clone();
+    let announces = handler.announce_table.to_retransmit(&transport_id);
+
+    if announces.is_empty() {
+        return;
+    }
+
+    for (received_from, announce) in announces {
+        let message = TxMessage {
+            tx_type: TxMessageType::Broadcast(Some(received_from)),
+            packet: announce,
+        };
+
+        handler.send(message).await;
+    }
+
+    log::trace!("Retransmitted announces");
+}
+
 fn create_retransmit_packet(packet: &Packet) -> Packet {
     Packet {
         header: Header {
@@ -613,11 +654,13 @@ fn create_retransmit_packet(packet: &Packet) -> Packet {
     }
 }
 
+
 async fn manage_transport(
     handler: Arc<Mutex<TransportHandler>>,
     rx_receiver: Arc<Mutex<InterfaceRxReceiver>>,
 ) {
     let cancel = handler.lock().await.cancel.clone();
+    let retransmit = handler.lock().await.config.retransmit;
 
     let _packet_task = {
         let handler = handler.clone();
@@ -656,7 +699,11 @@ async fn manage_transport(
                         }
 
                         match packet.header.packet_type {
-                            PacketType::Announce => handle_announce(&packet, handler).await,
+                            PacketType::Announce => handle_announce(
+                                &packet,
+                                handler,
+                                message.address
+                            ).await,
                             PacketType::LinkRequest => handle_link_request(&packet, handler).await,
                             PacketType::Proof => handle_proof(&packet, handler).await,
                             PacketType::Data => handle_data(&packet, handler).await,
@@ -749,6 +796,28 @@ async fn manage_transport(
                     },
                     _ = time::sleep(INTERVAL_IFACE_CLEANUP) => {
                         handle_cleanup(handler.lock().await).await;
+                    }
+                }
+            }
+        });
+    }
+
+    if retransmit { // TODO
+        let handler = handler.clone();
+        let cancel = cancel.clone();
+
+        tokio::spawn(async move {
+            loop {
+                if cancel.is_cancelled() {
+                    break;
+                }
+
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        break;
+                    },
+                    _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
+                        retransmit_announces(handler.lock().await).await;
                     }
                 }
             }
