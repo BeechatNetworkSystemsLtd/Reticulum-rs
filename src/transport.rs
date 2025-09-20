@@ -684,8 +684,7 @@ async fn manage_transport(
                         break;
                     },
                     Some(message) = rx_receiver.recv() => {
-                        let packet = message.packet;
-
+                        let mut packet = message.packet;
 
                         let handler = handler.lock().await;
 
@@ -694,8 +693,10 @@ async fn manage_transport(
                         }
 
                         if handler.config.broadcast {
+                            packet.header.hops += 1;
                             // Send broadcast message expect current iface address
                             handler.send(TxMessage { tx_type: TxMessageType::Broadcast(Some(message.address)), packet }).await;
+                            packet.header.hops -= 1;
                         }
 
                         match packet.header.packet_type {
