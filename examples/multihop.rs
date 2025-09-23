@@ -14,7 +14,7 @@ async fn main() {
     // Call: cargo run --example multihop <place in chain>
     let place = args().nth(1).map_or(0, |s| s.parse::<u16>().unwrap_or(0));
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     log::info!(">>> MULTIHOP EXAMPLE (place in chain: {}) <<<", place);
 

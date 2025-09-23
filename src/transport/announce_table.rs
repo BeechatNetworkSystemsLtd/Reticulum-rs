@@ -25,7 +25,7 @@ impl AnnounceEntry {
         if self.retries == 0 || Instant::now() >= self.timeout {
             return None;
         }
-        
+
         self.retries = self.retries.saturating_sub(1);
 
         let new_packet = Packet {
@@ -94,6 +94,16 @@ impl AnnounceTable {
     pub fn stale(&mut self, destination: &AddressHash) {
         self.map.remove(destination);
     }
+
+    pub fn new_packet(
+        &mut self,
+        dest_hash: &AddressHash,
+        transport_id: &AddressHash,
+    ) -> Option<(AddressHash, Packet)> {
+        // temporary hack
+        self.map.get_mut(dest_hash).map_or(None, |e| e.retransmit(transport_id))
+    }
+
 
     pub fn to_retransmit(
         &mut self,

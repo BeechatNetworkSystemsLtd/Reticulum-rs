@@ -458,7 +458,7 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
 }
 
 async fn handle_announce<'a>(
-    packet: &Packet, 
+    packet: &Packet,
     mut handler: MutexGuard<'a, TransportHandler>,
     iface: AddressHash
 ) {
@@ -482,17 +482,34 @@ async fn handle_announce<'a>(
                 .insert(packet.destination, destination.clone());
         }
 
+        let dest_hash = destination.lock().await.identity.address_hash;
+
         handler.announce_table.add(
             packet,
-            destination.lock().await.identity.address_hash, // TODO
-            iface, // TODO
+            dest_hash,
+            iface,
         );
 
         handler.path_table.handle_announce(
-            packet, 
+            packet,
             packet.transport,
-            iface, // TODO
+            iface,
         );
+
+        // temporary hack
+        let broadcast = handler.config.broadcast;
+        if broadcast {
+            let transport_id = handler.config.identity.address_hash().clone();
+            if let Some((recv_from, packet)) = handler.announce_table.new_packet(
+                &dest_hash,
+                &transport_id,
+            ) {
+                handler.send(TxMessage {
+                    tx_type: TxMessageType::Broadcast(Some(recv_from)),
+                    packet
+                }).await;
+            }
+        }
 
         let _ = handler.announce_tx.send(AnnounceEvent {
             destination,
@@ -692,11 +709,10 @@ async fn manage_transport(
                             log::trace!("tp: << rx({}) = {} {}", message.address, packet, packet.hash());
                         }
 
-                        if handler.config.broadcast {
-                            packet.header.hops += 1;
+                        if handler.config.broadcast && packet.header.packet_type != PacketType::Announce {
+                            // TODO: remove seperate handling for announces in handle_announce.
                             // Send broadcast message expect current iface address
                             handler.send(TxMessage { tx_type: TxMessageType::Broadcast(Some(message.address)), packet }).await;
-                            packet.header.hops -= 1;
                         }
 
                         match packet.header.packet_type {
