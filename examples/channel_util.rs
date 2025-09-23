@@ -34,13 +34,13 @@ impl TextPayload {
         // in the reference implementation too.
 
         let mut raw = Vec::with_capacity(self.text.len() + 12);
-        
-        raw.extend_from_slice(&[0x92, 0xd7, 0xff]);
+
+        raw.extend_from_slice(&[0x92, 0xa3]);
+        raw.extend_from_slice(self.text.as_bytes());
+
+        raw.extend_from_slice(&[0xd7, 0xff]);
         raw.extend_from_slice(&self.timestamp.to_be_bytes());
 
-        raw.push(0xa7);
-        raw.extend_from_slice(self.text.as_bytes());
-        
         raw
     }
 
@@ -49,10 +49,10 @@ impl TextPayload {
             return Err(ChannelError::Misc)
         }
 
-        match String::from_utf8(raw[12..].to_vec()) {
+        match String::from_utf8(raw[2..raw.len()-10].to_vec()) {
             Ok(text) => {
                 let mut payload = TextPayload::new(text);
-                payload.timestamp = unpack_timestamp(&raw[3..11]);
+                payload.timestamp = unpack_timestamp(&raw[raw.len()-8..]);
                 Ok(payload)
             },
             Err(_) => {

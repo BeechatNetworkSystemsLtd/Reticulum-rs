@@ -190,6 +190,7 @@ impl PacketCallbacks {
 }
 
 
+#[derive(Debug)]
 pub enum ChannelError {
     NoMessageType,
     InvalidMessageType,
@@ -227,15 +228,15 @@ fn envelope_raw(
     let mut enveloped = Vec::<u8>::with_capacity(raw_size + 6);
     
     enveloped.extend_from_slice(
-        message_type.to_le_bytes().as_slice()
+        message_type.to_be_bytes().as_slice()
     );
     
     enveloped.extend_from_slice(
-        sequence.unwrap_or(0u16).to_le_bytes().as_slice()
+        sequence.unwrap_or(0u16).to_be_bytes().as_slice()
     );
     
     enveloped.extend_from_slice(
-        (raw_size as u16).to_le_bytes().as_slice()
+        (raw_size as u16).to_be_bytes().as_slice()
     );
     
     enveloped.extend_from_slice(data);
@@ -250,9 +251,9 @@ fn deenvelope_raw(data: &[u8]) -> Result<(u16, u16, u16), ChannelError>
         return Err(ChannelError::Misc);
     }
 
-    let message_type: MessageType = u16::from_le_bytes([data[0], data[1]]);
-    let sequence = u16::from_le_bytes([data[2], data[3]]);
-    let size = u16::from_le_bytes([data[4], data[5]]);
+    let message_type: MessageType = u16::from_be_bytes([data[0], data[1]]);
+    let sequence = u16::from_be_bytes([data[2], data[3]]);
+    let size = u16::from_be_bytes([data[4], data[5]]);
 
     Ok((message_type, sequence, size))
 }
