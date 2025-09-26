@@ -168,6 +168,22 @@ impl Transport {
         }
     }
 
+    pub async fn outbound(&self, packet: &Packet) {
+        let (packet, maybe_iface) = self
+            .handler
+            .lock()
+            .await
+            .path_table
+            .handle_packet(packet);
+
+        if let Some(iface) = maybe_iface {
+            self.send_direct(iface, packet.clone()).await;
+            log::trace!("Sent outbound packet to {}", iface);
+        }
+
+        // TODO handle other cases
+    }
+
     pub fn iface_manager(&self) -> Arc<Mutex<InterfaceManager>> {
         self.iface_manager.clone()
     }
@@ -443,7 +459,22 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
             data_handled = true;
 
             // todo
+        } else {
+            let (packet, maybe_iface) = handler
+                .path_table
+                .handle_inbound_packet(packet);
+
+            if let Some(iface) = maybe_iface {
+                handler.send(TxMessage {
+                    tx_type: TxMessageType::Direct(iface),
+                    packet,
+                })
+                .await;
+
+                data_handled = true;
+            }
         }
+
     }
 
     if data_handled {
@@ -497,7 +528,7 @@ async fn handle_announce<'a>(
         );
 
         // temporary hack
-        let broadcast = handler.config.broadcast;
+        let broadcast = true; // handler.config.broadcast;
         if broadcast {
             let transport_id = handler.config.identity.address_hash().clone();
             if let Some((recv_from, packet)) = handler.announce_table.new_packet(
@@ -701,7 +732,7 @@ async fn manage_transport(
                         break;
                     },
                     Some(message) = rx_receiver.recv() => {
-                        let mut packet = message.packet;
+                        let packet = message.packet;
 
                         let handler = handler.lock().await;
 
