@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use announce_table::AnnounceTable;
 use packet_cache::PacketCache;
 use path_table::PathTable;
 use rand_core::OsRng;
@@ -36,6 +37,7 @@ use crate::packet::Header;
 use crate::packet::PacketDataBuffer;
 use crate::packet::{Packet, PacketType};
 
+mod announce_table;
 mod packet_cache;
 mod path_table;
 
@@ -49,6 +51,13 @@ const INTERVAL_OUTPUT_LINK_RESTART: Duration = Duration::from_secs(60);
 const INTERVAL_OUTPUT_LINK_REPEAT: Duration = Duration::from_secs(6);
 const INTERVAL_OUTPUT_LINK_KEEP: Duration = Duration::from_secs(5);
 const INTERVAL_IFACE_CLEANUP: Duration = Duration::from_secs(10);
+const INTERVAL_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(1);
+
+#[derive(Clone)]
+pub struct ReceivedData {
+    pub destination: AddressHash,
+    pub data: PacketDataBuffer,
+}
 
 pub struct TransportConfig {
     name: String,
@@ -69,6 +78,7 @@ struct TransportHandler {
     announce_tx: broadcast::Sender<AnnounceEvent>,
 
     path_table: PathTable,
+    announce_table: AnnounceTable,
     single_in_destinations: HashMap<AddressHash, Arc<Mutex<SingleInputDestination>>>,
     single_out_destinations: HashMap<AddressHash, Arc<Mutex<SingleOutputDestination>>>,
 
@@ -78,6 +88,7 @@ struct TransportHandler {
     packet_cache: Mutex<PacketCache>,
 
     link_in_event_tx: broadcast::Sender<LinkEventData>,
+    received_data_tx: broadcast::Sender<ReceivedData>,
 
     cancel: CancellationToken,
 }
@@ -86,6 +97,7 @@ pub struct Transport {
     name: String,
     link_in_event_tx: broadcast::Sender<LinkEventData>,
     link_out_event_tx: broadcast::Sender<LinkEventData>,
+    received_data_tx: broadcast::Sender<ReceivedData>,
     handler: Arc<Mutex<TransportHandler>>,
     iface_manager: Arc<Mutex<InterfaceManager>>,
     cancel: CancellationToken,
@@ -125,6 +137,7 @@ impl Transport {
         let (announce_tx, _) = tokio::sync::broadcast::channel(16);
         let (link_in_event_tx, _) = tokio::sync::broadcast::channel(16);
         let (link_out_event_tx, _) = tokio::sync::broadcast::channel(16);
+        let (received_data_tx, _) = tokio::sync::broadcast::channel(16);
 
         let iface_manager = InterfaceManager::new(16);
 
@@ -137,6 +150,7 @@ impl Transport {
         let handler = Arc::new(Mutex::new(TransportHandler {
             config,
             iface_manager: iface_manager.clone(),
+            announce_table: AnnounceTable::new(),
             path_table: PathTable::new(),
             single_in_destinations: HashMap::new(),
             single_out_destinations: HashMap::new(),
@@ -145,6 +159,7 @@ impl Transport {
             packet_cache: Mutex::new(PacketCache::new()),
             announce_tx,
             link_in_event_tx: link_in_event_tx.clone(),
+            received_data_tx: received_data_tx.clone(),
             cancel: cancel.clone(),
         }));
 
@@ -158,9 +173,26 @@ impl Transport {
             iface_manager,
             link_in_event_tx,
             link_out_event_tx,
+            received_data_tx,
             handler,
             cancel,
         }
+    }
+
+    pub async fn outbound(&self, packet: &Packet) {
+        let (packet, maybe_iface) = self
+            .handler
+            .lock()
+            .await
+            .path_table
+            .handle_packet(packet);
+
+        if let Some(iface) = maybe_iface {
+            self.send_direct(iface, packet.clone()).await;
+            log::trace!("Sent outbound packet to {}", iface);
+        }
+
+        // TODO handle other cases
     }
 
     pub fn iface_manager(&self) -> Arc<Mutex<InterfaceManager>> {
@@ -336,6 +368,10 @@ impl Transport {
         self.link_in_event_tx.subscribe()
     }
 
+    pub fn received_data_events(&self) -> broadcast::Receiver<ReceivedData> {
+        self.received_data_tx.subscribe()
+    }
+
     pub async fn add_destination(
         &mut self,
         identity: PrivateIdentity,
@@ -437,8 +473,26 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
         {
             data_handled = true;
 
-            // todo
+            handler.received_data_tx.send(ReceivedData {
+                destination: packet.destination.clone(),
+                data: packet.data.clone(),
+            }).ok();
+        } else {
+            let (packet, maybe_iface) = handler
+                .path_table
+                .handle_inbound_packet(packet);
+
+            if let Some(iface) = maybe_iface {
+                handler.send(TxMessage {
+                    tx_type: TxMessageType::Direct(iface),
+                    packet,
+                })
+                .await;
+
+                data_handled = true;
+            }
         }
+
     }
 
     if data_handled {
@@ -452,7 +506,11 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
     }
 }
 
-async fn handle_announce<'a>(packet: &Packet, mut handler: MutexGuard<'a, TransportHandler>) {
+async fn handle_announce<'a>(
+    packet: &Packet,
+    mut handler: MutexGuard<'a, TransportHandler>,
+    iface: AddressHash
+) {
     if let Ok(result) = DestinationAnnounce::validate(packet) {
         let destination = result.0;
         let app_data = result.1;
@@ -471,6 +529,35 @@ async fn handle_announce<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transp
             handler
                 .single_out_destinations
                 .insert(packet.destination, destination.clone());
+        }
+
+        let dest_hash = destination.lock().await.identity.address_hash;
+
+        handler.announce_table.add(
+            packet,
+            dest_hash,
+            iface,
+        );
+
+        handler.path_table.handle_announce(
+            packet,
+            packet.transport,
+            iface,
+        );
+
+        // temporary hack
+        let broadcast = true; // handler.config.broadcast;
+        if broadcast {
+            let transport_id = handler.config.identity.address_hash().clone();
+            if let Some((recv_from, packet)) = handler.announce_table.new_packet(
+                &dest_hash,
+                &transport_id,
+            ) {
+                handler.send(TxMessage {
+                    tx_type: TxMessageType::Broadcast(Some(recv_from)),
+                    packet
+                }).await;
+            }
         }
 
         let _ = handler.announce_tx.send(AnnounceEvent {
@@ -595,6 +682,26 @@ async fn handle_cleanup<'a>(handler: MutexGuard<'a, TransportHandler>) {
     handler.iface_manager.lock().await.cleanup();
 }
 
+async fn retransmit_announces<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
+    let transport_id = handler.config.identity.address_hash().clone();
+    let announces = handler.announce_table.to_retransmit(&transport_id);
+
+    if announces.is_empty() {
+        return;
+    }
+
+    for (received_from, announce) in announces {
+        let message = TxMessage {
+            tx_type: TxMessageType::Broadcast(Some(received_from)),
+            packet: announce,
+        };
+
+        handler.send(message).await;
+    }
+
+    log::trace!("Retransmitted announces");
+}
+
 fn create_retransmit_packet(packet: &Packet) -> Packet {
     Packet {
         header: Header {
@@ -613,11 +720,13 @@ fn create_retransmit_packet(packet: &Packet) -> Packet {
     }
 }
 
+
 async fn manage_transport(
     handler: Arc<Mutex<TransportHandler>>,
     rx_receiver: Arc<Mutex<InterfaceRxReceiver>>,
 ) {
     let cancel = handler.lock().await.cancel.clone();
+    let retransmit = handler.lock().await.config.retransmit;
 
     let _packet_task = {
         let handler = handler.clone();
@@ -643,20 +752,24 @@ async fn manage_transport(
                     Some(message) = rx_receiver.recv() => {
                         let packet = message.packet;
 
-
                         let handler = handler.lock().await;
 
                         if PACKET_TRACE {
                             log::trace!("tp: << rx({}) = {} {}", message.address, packet, packet.hash());
                         }
 
-                        if handler.config.broadcast {
+                        if handler.config.broadcast && packet.header.packet_type != PacketType::Announce {
+                            // TODO: remove seperate handling for announces in handle_announce.
                             // Send broadcast message expect current iface address
                             handler.send(TxMessage { tx_type: TxMessageType::Broadcast(Some(message.address)), packet }).await;
                         }
 
                         match packet.header.packet_type {
-                            PacketType::Announce => handle_announce(&packet, handler).await,
+                            PacketType::Announce => handle_announce(
+                                &packet,
+                                handler,
+                                message.address
+                            ).await,
                             PacketType::LinkRequest => handle_link_request(&packet, handler).await,
                             PacketType::Proof => handle_proof(&packet, handler).await,
                             PacketType::Data => handle_data(&packet, handler).await,
@@ -749,6 +862,28 @@ async fn manage_transport(
                     },
                     _ = time::sleep(INTERVAL_IFACE_CLEANUP) => {
                         handle_cleanup(handler.lock().await).await;
+                    }
+                }
+            }
+        });
+    }
+
+    if retransmit { // TODO
+        let handler = handler.clone();
+        let cancel = cancel.clone();
+
+        tokio::spawn(async move {
+            loop {
+                if cancel.is_cancelled() {
+                    break;
+                }
+
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        break;
+                    },
+                    _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
+                        retransmit_announces(handler.lock().await).await;
                     }
                 }
             }
