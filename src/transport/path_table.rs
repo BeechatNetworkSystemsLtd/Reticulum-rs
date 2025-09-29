@@ -38,14 +38,15 @@ impl PathTable {
         transport_id: Option<AddressHash>,
         iface: AddressHash,
     ) {
-        if self.map.contains_key(&announce.destination) {
-            // TODO replace existing paths by shorter ones
-            return;
+        let hops = announce.header.hops + 1;
+
+        if let Some(existing_entry) = self.map.get(&announce.destination) {
+            if hops >= existing_entry.hops {
+                return;
+            }
         }
 
         let received_from = transport_id.unwrap_or(announce.destination);
-        let hops = announce.header.hops + 1;
-
         let new_entry = PathEntry {
             timestamp: Instant::now(),
             received_from,
