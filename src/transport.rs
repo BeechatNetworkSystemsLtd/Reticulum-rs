@@ -394,11 +394,7 @@ impl Transport {
     }
 
     pub async fn has_destination(&self, address: &AddressHash) -> bool {
-        self.handler
-            .lock()
-            .await
-            .single_in_destinations
-            .contains_key(address)
+        self.handler.lock().await.has_destination(address)
     }
 }
 
@@ -421,6 +417,10 @@ impl TransportHandler {
     async fn send(&self, message: TxMessage) {
         self.packet_cache.lock().await.update(&message.packet);
         self.iface_manager.lock().await.send(message).await;
+    }
+
+    fn has_destination(&self, address: &AddressHash) -> bool {
+        self.single_in_destinations.contains_key(address)
     }
 }
 
@@ -511,6 +511,10 @@ async fn handle_announce<'a>(
     mut handler: MutexGuard<'a, TransportHandler>,
     iface: AddressHash
 ) {
+    if handler.has_destination(&packet.destination) {
+        return;
+    }
+
     if let Ok(result) = DestinationAnnounce::validate(packet) {
         let destination = result.0;
         let app_data = result.1;
