@@ -517,6 +517,7 @@ async fn handle_announce<'a>(
 
     if let Ok(result) = DestinationAnnounce::validate(packet) {
         let destination = result.0;
+
         let app_data = result.1;
         let destination = Arc::new(Mutex::new(destination));
 
@@ -549,9 +550,8 @@ async fn handle_announce<'a>(
             iface,
         );
 
-        // temporary hack
-        let broadcast = true; // handler.config.broadcast;
-        if broadcast {
+        let retransmit = handler.config.retransmit;
+        if retransmit {
             let transport_id = handler.config.identity.address_hash().clone();
             if let Some((recv_from, packet)) = handler.announce_table.new_packet(
                 &dest_hash,
@@ -872,7 +872,7 @@ async fn manage_transport(
         });
     }
 
-    if retransmit { // TODO
+    if retransmit {
         let handler = handler.clone();
         let cancel = cancel.clone();
 
