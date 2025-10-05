@@ -34,8 +34,10 @@ use crate::iface::TxMessageType;
 
 use crate::packet::DestinationType;
 use crate::packet::Header;
+use crate::packet::Packet;
+use crate::packet::PacketContext;
 use crate::packet::PacketDataBuffer;
-use crate::packet::{Packet, PacketType};
+use crate::packet::PacketType;
 
 mod announce_table;
 mod packet_cache;
@@ -52,6 +54,8 @@ const INTERVAL_OUTPUT_LINK_REPEAT: Duration = Duration::from_secs(6);
 const INTERVAL_OUTPUT_LINK_KEEP: Duration = Duration::from_secs(5);
 const INTERVAL_IFACE_CLEANUP: Duration = Duration::from_secs(10);
 const INTERVAL_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(1);
+const INTERVAL_KEEP_PACKET_CACHED: Duration = Duration::from_secs(180);
+const INTERVAL_PACKET_CACHE_CLEANUP: Duration = Duration::from_secs(90);
 
 #[derive(Clone)]
 pub struct ReceivedData {
@@ -422,6 +426,30 @@ impl TransportHandler {
     fn has_destination(&self, address: &AddressHash) -> bool {
         self.single_in_destinations.contains_key(address)
     }
+
+    async fn filter_duplicate_packets(&self, packet: &Packet) -> bool {
+        let mut allow_duplicate = false;
+
+        match packet.header.packet_type {
+            PacketType::Announce => {
+                return true;
+            },
+            PacketType::Proof => {
+                if packet.context == PacketContext::LinkRequestProof {
+                    if let Some(link) = self.in_links.get(&packet.destination) {
+                        if link.lock().await.status().not_yet_active() {
+                            allow_duplicate = true;
+                        }
+                    }
+                }
+            },
+            _ => {}
+        }
+
+        let is_new = self.packet_cache.lock().await.update(packet);
+
+        is_new || allow_duplicate
+    }
 }
 
 async fn handle_proof<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandler>) {
@@ -762,6 +790,10 @@ async fn manage_transport(
                             log::trace!("tp: << rx({}) = {} {}", message.address, packet, packet.hash());
                         }
 
+                        if !handler.filter_duplicate_packets(&packet).await {
+                            break;
+                        }
+
                         if handler.config.broadcast && packet.header.packet_type != PacketType::Announce {
                             // TODO: remove seperate handling for announces in handle_announce.
                             // Send broadcast message expect current iface address
@@ -867,6 +899,34 @@ async fn manage_transport(
                     _ = time::sleep(INTERVAL_IFACE_CLEANUP) => {
                         handle_cleanup(handler.lock().await).await;
                     }
+                }
+            }
+        });
+    }
+
+    {
+        let handler = handler.clone();
+        let cancel = cancel.clone();
+
+        tokio::spawn(async move {
+            loop {
+                if cancel.is_cancelled() {
+                    break;
+                }
+
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        break;
+                    },
+                    _ = time::sleep(INTERVAL_PACKET_CACHE_CLEANUP) => {
+                        handler
+                            .lock()
+                            .await
+                            .packet_cache
+                            .lock()
+                            .await
+                            .release(INTERVAL_KEEP_PACKET_CACHED);
+                    },
                 }
             }
         });
