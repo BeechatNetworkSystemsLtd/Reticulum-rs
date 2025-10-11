@@ -81,7 +81,7 @@ impl TcpClient {
 
             log::info!("tcp_client connected to <{}>", addr);
 
-            const BUFFER_SIZE: usize = core::mem::size_of::<Packet>() * 3;
+            const BUFFER_SIZE: usize = core::mem::size_of::<Packet>() * 2;
 
             // Start receive task
             let rx_task = {
@@ -91,10 +91,11 @@ impl TcpClient {
                 let rx_channel = rx_channel.clone();
 
                 tokio::spawn(async move {
-                    loop {
-                        let mut hdlc_rx_buffer = [0u8; BUFFER_SIZE];
-                        let mut rx_buffer = [0u8; BUFFER_SIZE];
+                    let mut hdlc_rx_buffer = [0u8; BUFFER_SIZE];
+                    let mut rx_buffer = [0u8; BUFFER_SIZE + (BUFFER_SIZE / 2)];
+                    let mut tcp_buffer = [0u8; (BUFFER_SIZE * 16)];
 
+                    loop {
                         tokio::select! {
                             _ = cancel.cancelled() => {
                                     break;
@@ -102,7 +103,7 @@ impl TcpClient {
                             _ = stop.cancelled() => {
                                     break;
                             }
-                            result = stream.read(&mut rx_buffer) => {
+                            result = stream.read(&mut tcp_buffer[..]) => {
                                     match result {
                                         Ok(0) => {
                                             log::warn!("tcp_client: connection closed");
@@ -110,18 +111,36 @@ impl TcpClient {
                                             break;
                                         }
                                         Ok(n) => {
-                                            let mut output = OutputBuffer::new(&mut hdlc_rx_buffer[..]);
-                                            if let Ok(_) = Hdlc::decode(&rx_buffer[..n], &mut output) {
-                                                if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(output.as_slice())) {
-                                                    if PACKET_TRACE {
-                                                        log::trace!("tcp_client: rx << ({}) {}", iface_address, packet);
+                                            // TCP stream may contain several or partial HDLC frames
+                                            for i in 0..n {
+                                                // Push new byte from the end of buffer
+                                                rx_buffer[BUFFER_SIZE-1] = tcp_buffer[i];
+
+                                                // Check if it is contains a HDLC frame
+                                                let frame = Hdlc::find(&rx_buffer[..]);
+                                                if let Some(frame) = frame {
+                                                    // Decode HDLC frame and deserialize packet
+                                                    let frame_buffer = &mut rx_buffer[frame.0..frame.1+1];
+                                                    let mut output = OutputBuffer::new(&mut hdlc_rx_buffer[..]);
+                                                    if let Ok(_) = Hdlc::decode(frame_buffer, &mut output) {
+                                                        if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(output.as_slice())) {
+                                                            if PACKET_TRACE {
+                                                                log::trace!("tcp_client: rx << ({}) {}", iface_address, packet);
+                                                            }
+                                                            let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
+                                                        } else {
+                                                            log::warn!("tcp_client: couldn't decode packet");
+                                                        }
+                                                    } else {
+                                                        log::warn!("tcp_client: couldn't decode hdlc frame");
                                                     }
-                                                    let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
+
+                                                    // Remove current HDLC frame data
+                                                    frame_buffer.fill(0);
                                                 } else {
-                                                    log::warn!("tcp_client: couldn't decode packet");
+                                                    // Move data left
+                                                    rx_buffer.copy_within(1.., 0);
                                                 }
-                                            } else {
-                                                log::warn!("tcp_client: couldn't decode hdlc frame");
                                             }
                                         }
                                         Err(e) => {
