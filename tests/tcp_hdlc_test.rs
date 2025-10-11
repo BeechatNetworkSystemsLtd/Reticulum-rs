@@ -1,14 +1,10 @@
-use std::time::Duration;
-
-use rand_core::{CryptoRngCore, OsRng};
+use rand_core::OsRng;
 use reticulum::{
-    destination::DestinationName,
     identity::PrivateIdentity,
     iface::{tcp_client::TcpClient, tcp_server::TcpServer},
-    packet::{Packet, PacketDataBuffer},
+    packet::Packet,
     transport::{Transport, TransportConfig},
 };
-use tokio::time;
 use tokio_util::sync::CancellationToken;
 
 async fn build_transport(name: &str, server_addr: &str, client_addr: &[&str]) -> Transport {
@@ -40,19 +36,8 @@ async fn build_transport(name: &str, server_addr: &str, client_addr: &[&str]) ->
 async fn packet_overload() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
 
-    let mut transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
-    let mut transport_b = build_transport("b", "127.0.0.1:8082", &["127.0.0.1:8081"]).await;
-
-    let id_a = PrivateIdentity::new_from_name("a");
-    let id_b = PrivateIdentity::new_from_name("b");
-
-    let dest_a = transport_a
-        .add_destination(id_a, DestinationName::new("test", "tcp"))
-        .await;
-
-    let dest_b = transport_b
-        .add_destination(id_b, DestinationName::new("test", "tcp"))
-        .await;
+    let transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
+    let transport_b = build_transport("b", "127.0.0.1:8082", &["127.0.0.1:8081"]).await;
 
     let stop = CancellationToken::new();
 
@@ -98,7 +83,7 @@ async fn packet_overload() {
                     _ = stop.cancelled() => {
                             break;
                     },
-                    Ok(message) = messages.recv() => {
+                    Ok(_) = messages.recv() => {
                         rx_counter += 1;
                     },
                 };

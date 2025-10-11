@@ -81,7 +81,7 @@ impl TcpClient {
 
             log::info!("tcp_client connected to <{}>", addr);
 
-            const BUFFER_SIZE: usize = core::mem::size_of::<Packet>() * 3;
+            const BUFFER_SIZE: usize = core::mem::size_of::<Packet>() * 2;
 
             // Start receive task
             let rx_task = {
@@ -92,8 +92,8 @@ impl TcpClient {
 
                 tokio::spawn(async move {
                     let mut hdlc_rx_buffer = [0u8; BUFFER_SIZE];
-                    let mut rx_buffer = [0u8; BUFFER_SIZE];
-                    let mut tcp_buffer = [0u8; BUFFER_SIZE];
+                    let mut rx_buffer = [0u8; BUFFER_SIZE + (BUFFER_SIZE / 2)];
+                    let mut tcp_buffer = [0u8; (BUFFER_SIZE * 16)];
 
                     loop {
                         tokio::select! {
@@ -111,13 +111,18 @@ impl TcpClient {
                                             break;
                                         }
                                         Ok(n) => {
+                                            // TCP stream may contain several or partial HDLC frames
                                             for i in 0..n {
+                                                // Push new byte from the end of buffer
                                                 rx_buffer[BUFFER_SIZE-1] = tcp_buffer[i];
 
+                                                // Check if it is contains a HDLC frame
                                                 let frame = Hdlc::find(&rx_buffer[..]);
                                                 if let Some(frame) = frame {
+                                                    // Decode HDLC frame and deserialize packet
+                                                    let frame_buffer = &mut rx_buffer[frame.0..frame.1+1];
                                                     let mut output = OutputBuffer::new(&mut hdlc_rx_buffer[..]);
-                                                    if let Ok(_) = Hdlc::decode(&rx_buffer[frame.0..frame.1+1], &mut output) {
+                                                    if let Ok(_) = Hdlc::decode(frame_buffer, &mut output) {
                                                         if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(output.as_slice())) {
                                                             if PACKET_TRACE {
                                                                 log::trace!("tcp_client: rx << ({}) {}", iface_address, packet);
@@ -129,9 +134,9 @@ impl TcpClient {
                                                     } else {
                                                         log::warn!("tcp_client: couldn't decode hdlc frame");
                                                     }
-                                                
-                                                    // TODO: optimize frame reset
-                                                    rx_buffer.fill(0);
+
+                                                    // Remove current HDLC frame data
+                                                    frame_buffer.fill(0);
                                                 } else {
                                                     // Move data left
                                                     rx_buffer.copy_within(1.., 0);

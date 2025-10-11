@@ -168,10 +168,6 @@ impl<'a> OutputBuffer<'a> {
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         &mut self.buffer[..self.offset]
     }
-
-    pub fn local_buffer(&mut self) -> OutputBuffer {
-        OutputBuffer::new(&mut self.buffer[self.offset..])
-    }
 }
 
 impl<'a> fmt::Display for OutputBuffer<'a> {

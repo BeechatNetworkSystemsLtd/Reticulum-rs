@@ -26,6 +26,7 @@ impl Hdlc {
         Ok(buffer.offset())
     }
 
+    /// Returns start and end index of HDLC frame or None
     pub fn find(data: &[u8]) -> Option<(usize, usize)> {
         let mut start = false;
         let mut end = false;
@@ -34,17 +35,22 @@ impl Hdlc {
         let mut end_index: usize = 0;
 
         for i in 0..data.len() {
+            // Search for HDLC frame flags only
             if data[i] != HDLC_FRAME_FLAG {
                 continue;
             }
+
+            // Find start of HDLC frame
             if !start {
                 start_index = i;
                 start = true;
             }
+            // Find end of HDLC frame
             else if !end {
                 end_index = i;
                 end = true;
             }
+
             if start && end {
                 return Option::Some((start_index, end_index));
             }
