@@ -91,10 +91,11 @@ impl TcpClient {
                 let rx_channel = rx_channel.clone();
 
                 tokio::spawn(async move {
-                    loop {
-                        let mut hdlc_rx_buffer = [0u8; BUFFER_SIZE];
-                        let mut rx_buffer = [0u8; BUFFER_SIZE];
+                    let mut hdlc_rx_buffer = [0u8; BUFFER_SIZE];
+                    let mut rx_buffer = [0u8; BUFFER_SIZE];
+                    let mut tcp_buffer = [0u8; BUFFER_SIZE];
 
+                    loop {
                         tokio::select! {
                             _ = cancel.cancelled() => {
                                     break;
@@ -102,7 +103,7 @@ impl TcpClient {
                             _ = stop.cancelled() => {
                                     break;
                             }
-                            result = stream.read(&mut rx_buffer) => {
+                            result = stream.read(&mut tcp_buffer[..]) => {
                                     match result {
                                         Ok(0) => {
                                             log::warn!("tcp_client: connection closed");
@@ -110,18 +111,31 @@ impl TcpClient {
                                             break;
                                         }
                                         Ok(n) => {
-                                            let mut output = OutputBuffer::new(&mut hdlc_rx_buffer[..]);
-                                            if let Ok(_) = Hdlc::decode(&rx_buffer[..n], &mut output) {
-                                                if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(output.as_slice())) {
-                                                    if PACKET_TRACE {
-                                                        log::trace!("tcp_client: rx << ({}) {}", iface_address, packet);
+                                            for i in 0..n {
+                                                rx_buffer[BUFFER_SIZE-1] = tcp_buffer[i];
+
+                                                let frame = Hdlc::find(&rx_buffer[..]);
+                                                if let Some(frame) = frame {
+                                                    let mut output = OutputBuffer::new(&mut hdlc_rx_buffer[..]);
+                                                    if let Ok(_) = Hdlc::decode(&rx_buffer[frame.0..frame.1+1], &mut output) {
+                                                        if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(output.as_slice())) {
+                                                            if PACKET_TRACE {
+                                                                log::trace!("tcp_client: rx << ({}) {}", iface_address, packet);
+                                                            }
+                                                            let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
+                                                        } else {
+                                                            log::warn!("tcp_client: couldn't decode packet");
+                                                        }
+                                                    } else {
+                                                        log::warn!("tcp_client: couldn't decode hdlc frame");
                                                     }
-                                                    let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
+                                                
+                                                    // TODO: optimize frame reset
+                                                    rx_buffer.fill(0);
                                                 } else {
-                                                    log::warn!("tcp_client: couldn't decode packet");
+                                                    // Move data left
+                                                    rx_buffer.copy_within(1.., 0);
                                                 }
-                                            } else {
-                                                log::warn!("tcp_client: couldn't decode hdlc frame");
                                             }
                                         }
                                         Err(e) => {

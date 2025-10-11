@@ -26,6 +26,33 @@ impl Hdlc {
         Ok(buffer.offset())
     }
 
+    pub fn find(data: &[u8]) -> Option<(usize, usize)> {
+        let mut start = false;
+        let mut end = false;
+
+        let mut start_index: usize = 0;
+        let mut end_index: usize = 0;
+
+        for i in 0..data.len() {
+            if data[i] != HDLC_FRAME_FLAG {
+                continue;
+            }
+            if !start {
+                start_index = i;
+                start = true;
+            }
+            else if !end {
+                end_index = i;
+                end = true;
+            }
+            if start && end {
+                return Option::Some((start_index, end_index));
+            }
+        }
+
+        return Option::None;
+    }
+
     pub fn decode(data: &[u8], output: &mut OutputBuffer) -> Result<usize, RnsError> {
         let mut started = false;
         let mut finished = false;

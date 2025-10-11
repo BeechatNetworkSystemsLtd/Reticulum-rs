@@ -28,6 +28,7 @@ use crate::identity::PrivateIdentity;
 
 use crate::iface::InterfaceManager;
 use crate::iface::InterfaceRxReceiver;
+use crate::iface::RxMessage;
 use crate::iface::TxMessage;
 use crate::iface::TxMessageType;
 
@@ -40,7 +41,7 @@ mod packet_cache;
 mod path_table;
 
 // TODO: Configure via features
-const PACKET_TRACE: bool = true;
+const PACKET_TRACE: bool = false;
 pub const PATHFINDER_M: usize = 128; // Max hops
 
 const INTERVAL_LINKS_CHECK: Duration = Duration::from_secs(1);
@@ -86,6 +87,7 @@ pub struct Transport {
     name: String,
     link_in_event_tx: broadcast::Sender<LinkEventData>,
     link_out_event_tx: broadcast::Sender<LinkEventData>,
+    iface_messages_tx: broadcast::Sender<RxMessage>,
     handler: Arc<Mutex<TransportHandler>>,
     iface_manager: Arc<Mutex<InterfaceManager>>,
     cancel: CancellationToken,
@@ -125,6 +127,7 @@ impl Transport {
         let (announce_tx, _) = tokio::sync::broadcast::channel(16);
         let (link_in_event_tx, _) = tokio::sync::broadcast::channel(16);
         let (link_out_event_tx, _) = tokio::sync::broadcast::channel(16);
+        let (iface_messages_tx, _) = tokio::sync::broadcast::channel(16);
 
         let iface_manager = InterfaceManager::new(16);
 
@@ -150,7 +153,11 @@ impl Transport {
 
         {
             let handler = handler.clone();
-            tokio::spawn(manage_transport(handler, rx_receiver))
+            tokio::spawn(manage_transport(
+                handler,
+                rx_receiver,
+                iface_messages_tx.clone(),
+            ))
         };
 
         Self {
@@ -158,6 +165,7 @@ impl Transport {
             iface_manager,
             link_in_event_tx,
             link_out_event_tx,
+            iface_messages_tx,
             handler,
             cancel,
         }
@@ -165,6 +173,10 @@ impl Transport {
 
     pub fn iface_manager(&self) -> Arc<Mutex<InterfaceManager>> {
         self.iface_manager.clone()
+    }
+
+    pub fn iface_rx(&self) -> broadcast::Receiver<RxMessage> {
+        self.iface_messages_tx.subscribe()
     }
 
     pub async fn recv_announces(&self) -> broadcast::Receiver<AnnounceEvent> {
@@ -616,6 +628,7 @@ fn create_retransmit_packet(packet: &Packet) -> Packet {
 async fn manage_transport(
     handler: Arc<Mutex<TransportHandler>>,
     rx_receiver: Arc<Mutex<InterfaceRxReceiver>>,
+    iface_messages_tx: broadcast::Sender<RxMessage>,
 ) {
     let cancel = handler.lock().await.cancel.clone();
 
@@ -641,8 +654,9 @@ async fn manage_transport(
                         break;
                     },
                     Some(message) = rx_receiver.recv() => {
-                        let packet = message.packet;
+                        let _ = iface_messages_tx.send(message);
 
+                        let packet = message.packet;
 
                         let handler = handler.lock().await;
 
