@@ -3,6 +3,19 @@ name = "reticulum"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs"
+categories = ["network-programming"]
+keywords = ["reticulum", "mesh", "radio", "async"]
+
+description = """
+Reticulum-rs is a Rust implementation of the Reticulum Network Stack - a cryptographic, 
+decentralised, and resilient mesh networking protocol designed for communication over any physical 
+layer.
+
+This project brings Reticulum's capabilities to the Rust ecosystem, enabling embedded, and 
+constrained deployments with maximum performance and minimal dependencies.
+"""
 
 [dependencies]
 
