@@ -60,10 +60,10 @@ cargo build --release
 
 ```bash
 # TCP client example
-cargo run --example tcp_client
+cargo run --example tcp-client
 
 # Kaonic mesh test client
-cargo run --example kaonic_client
+cargo run --example kaonic-client
 ```
 
 ## Use Cases
