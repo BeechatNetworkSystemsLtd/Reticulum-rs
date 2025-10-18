@@ -1,5 +1,6 @@
 pub mod hdlc;
 
+#[cfg(feature = "protobuf")]
 pub mod kaonic;
 pub mod tcp_client;
 pub mod tcp_server;
@@ -189,7 +190,7 @@ impl InterfaceManager {
                     }
 
                     should_send
-                },
+                }
                 TxMessageType::Direct(address) => address == iface.address,
             };
 

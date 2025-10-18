@@ -14,6 +14,10 @@ This project brings Reticulum's capabilities to the Rust ecosystem, enabling emb
 - 🔌 Easily embeddable in embedded devices and tactical radios
 - 🧪 Example clients for testnets and real deployments
 
+### Optional Features
+
+- **protobuf**: Enables Protocol Buffers support for Kaonic gRPC interface (disabled by default)
+
 ## Structure
 
 
@@ -48,22 +52,26 @@ Reticulum-rs/
 ### Prerequisites
 
 * Rust (edition 2021+)
-* `protoc` for compiling `.proto` files (if using gRPC/Kaonic modules)
+* `protoc` for compiling `.proto` files (if using protobuf feature for Kaonic modules)
 
 ### Build
 
 ```bash
+# Basic build (without protobuf support)
 cargo build --release
+
+# Build with protobuf support for Kaonic interfaces
+cargo build --release --features protobuf
 ```
 
 ### Run Examples
 
 ```bash
-# TCP client example
+# TCP client example (works without protobuf feature)
 cargo run --example tcp-client
 
-# Kaonic mesh test client
-cargo run --example kaonic-client
+# Kaonic mesh test client (requires protobuf feature)
+cargo run --example kaonic-client --features protobuf
 ```
 
 ## Use Cases
