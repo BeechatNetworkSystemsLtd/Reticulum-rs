@@ -24,6 +24,10 @@ impl PathTable {
         }
     }
 
+    pub fn next_hop_full(&self, destination: &AddressHash) -> Option<(AddressHash, AddressHash)> {
+        self.map.get(destination).map(|entry| (entry.received_from, entry.iface))
+    }
+
     pub fn next_hop_iface(&self, destination: &AddressHash) -> Option<AddressHash> {
         self.map.get(destination).map(|entry| entry.iface)
     }
@@ -65,8 +69,14 @@ impl PathTable {
         );
     }
 
-    pub fn handle_inbound_packet(&self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
-        let entry = match self.map.get(&original_packet.destination) {
+    pub fn handle_inbound_packet(
+        &self,
+        original_packet: &Packet,
+        lookup: Option<AddressHash>,
+    ) -> (Packet, Option<AddressHash>) {
+        let lookup = lookup.unwrap_or(original_packet.destination);
+
+        let entry = match self.map.get(&lookup) {
             Some(entry) => entry,
             None => return (*original_packet, None),
         };
