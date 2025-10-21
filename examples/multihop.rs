@@ -6,6 +6,7 @@ use tokio::io::AsyncBufReadExt;
 use rand_core::OsRng;
 
 use reticulum::destination::{DestinationName, SingleInputDestination};
+use reticulum::destination::link::{LinkEvent, LinkStatus};
 use reticulum::hash::AddressHash;
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::tcp_client::TcpClient;
@@ -26,11 +27,14 @@ fn create_data_packet(message: &String, destination: AddressHash) -> Packet {
 #[tokio::main]
 async fn main() {
     // Call: cargo run --example multihop <number of our hop> <number of last hop>
+    // Once the chain is set up, type a line to send it as a message to the last hop
+    // or type "link" to request a link to the last hop.
+
     let mut args = args();
     let our_hop = args.nth(1).map_or(0, |s| s.parse::<u16>().unwrap_or(0));
     let last_hop = args.next().map_or(128, |s| s.parse::<u16>().unwrap_or(128));
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
 
     log::info!(">>> MULTIHOP EXAMPLE (place in chain: {}/{}) <<<", our_hop, last_hop);
 
@@ -92,19 +96,44 @@ async fn main() {
     }
 
     if our_hop == last_hop {
-        let mut data = transport.received_data_events();
+        let mut data_event = transport.received_data_events();
+        let mut link_event = transport.in_link_events();
 
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
                     break;
                 },
-                event = data.recv() => {
+
+                event = data_event.recv() => {
                     if let Ok(event) = event {
                         if let Ok(text) = from_utf8(event.data.as_slice()) {
                             log::info!("Message received: {}", text);
                         } else {
                             log::info!("Broken message received (invalid utf8)");
+                        }
+                    }
+                },
+
+                result = link_event.recv() => {
+                    match result {
+                        Ok(event_data) => match event_data.event {
+                            LinkEvent::Activated => {
+                                log::info!("Inbound link {} established", event_data.id);
+                            },
+                            LinkEvent::Data(payload) => {
+                                if let Ok(text) = from_utf8(payload.as_slice()) {
+                                    log::info!("Message over link received: {}", text);
+                                } else {
+                                    log::info!("Broken message over link (invalid utf8)");
+                                }
+                            },
+                            LinkEvent::Closed => {
+                                log::info!("Link closed");
+                            }
+                        },
+                        Err(error) => {
+                            log::info!("Link error: {}", error);
                         }
                     }
                 }
@@ -113,6 +142,7 @@ async fn main() {
 
     } else {
         let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+        let mut link = None;
 
         loop {
             tokio::select! {
@@ -127,6 +157,25 @@ async fn main() {
                             continue;
                         }
                     };
+
+                    if link.is_none() && message == "link" {
+                        log::info!("Requesting link to last hop");
+
+                        link = Some(transport.link(last_hop_destination.desc).await);
+                        continue;
+                    }
+
+                    if let Some(ref link) = link {
+                        let link = link.lock().await;
+
+                        if link.status() == LinkStatus::Active {
+                            log::info!("Sending message over link: {}", &message);
+
+                            let packet = link.data_packet(message.as_bytes()).unwrap();
+                            transport.send_packet(packet).await;
+                            continue;
+                        }
+                    }
 
                     log::info!("Sending message: {}", &message);
 
