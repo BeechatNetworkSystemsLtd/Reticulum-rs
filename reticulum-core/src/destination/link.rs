@@ -128,7 +128,6 @@ pub struct Link<E: LinkEventSink> {
     status: LinkStatus,
     request_time: Instant,
     rtt: Duration,
-    // event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
     event_sink: E,
 }
 
