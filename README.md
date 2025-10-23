@@ -16,33 +16,31 @@ This project brings Reticulum's capabilities to the Rust ecosystem, enabling emb
 
 ## Structure
 
-
 ```
 Reticulum-rs/
-├── src/                 # Core Reticulum protocol implementation
-│   ├── buffer.rs
-│   ├── crypt.rs
-│   ├── destination.rs
-│   ├── error.rs
-│   ├── hash.rs
-│   ├── identity.rs
-│   ├── iface.rs
-│   ├── lib.rs
-│   ├── transport.rs
-│   └── packet.rs
-├── proto/               # Protocol definitions (e.g. for Kaonic)
-│   └── kaonic/
-│       └── kaonic.proto
-├── examples/            # Example clients and servers
-│   ├── kaonic_client.rs
-│   ├── link_client.rs
-│   ├── tcp_client.rs
-│   ├── tcp_server.rs
-│   └── testnet_client.rs
-├── Cargo.toml           # Crate configuration
-├── LICENSE              # License (MIT/Apache)
-└── build.rs             
-````
+├── Cargo.toml
+├── reticulum-async      # Async interface and transport management
+│   ├── Cargo.toml
+│   ├── examples         # Example clients and servers
+│   ├── proto            # Protocol definitions (e.g. for Kaonic)
+│   └── src
+│       ├── iface.rs
+│       ├── lib.rs
+│       ├── transport.rs
+│       └── utils.rs
+└── reticulum-core       # Core Reticulum protocol implementation
+    ├── Cargo.toml
+    └── src
+        ├── buffer.rs
+        ├── codec.rs
+        ├── crypt.rs
+        ├── destination.rs
+        ├── error.rs
+        ├── hash.rs
+        ├── identity.rs
+        ├── lib.rs
+        └── packet.rs
+```
 ## Getting Started
 
 ### Prerequisites
