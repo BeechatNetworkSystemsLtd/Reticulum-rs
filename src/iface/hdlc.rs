@@ -56,7 +56,7 @@ impl Hdlc {
             }
         }
 
-        return Option::None;
+        Option::None
     }
 
     pub fn decode(data: &[u8], output: &mut OutputBuffer) -> Result<usize, RnsError> {

@@ -8,6 +8,12 @@ pub struct LinkMap {
     map: HashMap<AddressHash, LinkId>,
 }
 
+impl Default for LinkMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LinkMap {
     pub fn new() -> Self {
         Self {

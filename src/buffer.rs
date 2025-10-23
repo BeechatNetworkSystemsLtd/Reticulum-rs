@@ -82,7 +82,7 @@ impl<const N: usize> StaticBuffer<N> {
             return Err(RnsError::InvalidArgument);
         }
 
-        self.len = self.len - mid;
+        self.len -= mid;
 
         self.buffer.rotate_left(mid);
 

@@ -222,7 +222,7 @@ pub enum DestinationHandleStatus {
 impl Destination<PrivateIdentity, Input, Single> {
     pub fn new(identity: PrivateIdentity, name: DestinationName) -> Self {
         let address_hash = create_address_hash(&identity, &name);
-        let pub_identity = identity.as_identity().clone();
+        let pub_identity = *identity.as_identity();
 
         Self {
             direction: PhantomData,
@@ -297,12 +297,9 @@ impl Destination<PrivateIdentity, Input, Single> {
             return DestinationHandleStatus::None;
         }
 
-        match packet.header.packet_type {
-            PacketType::LinkRequest => {
-                // TODO: check prove strategy
-                return DestinationHandleStatus::LinkProof;
-            }
-            _ => {}
+        if packet.header.packet_type == PacketType::LinkRequest {
+            // TODO: check prove strategy
+            return DestinationHandleStatus::LinkProof;
         }
 
         DestinationHandleStatus::None

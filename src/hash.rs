@@ -30,19 +30,17 @@ impl Hash {
     }
 
     pub const fn new(hash: [u8; HASH_SIZE]) -> Self {
-        Self { 0: hash }
+        Self(hash)
     }
 
     pub const fn new_empty() -> Self {
-        Self {
-            0: [0u8; HASH_SIZE],
-        }
+        Self([0u8; HASH_SIZE])
     }
 
     pub fn new_from_slice(data: &[u8]) -> Self {
         let mut hash = [0u8; HASH_SIZE];
         create_hash(data, &mut hash);
-        Self { 0: hash }
+        Self(hash)
     }
 
     pub fn new_from_rand<R: CryptoRngCore>(mut rng: R) -> Self {
@@ -52,7 +50,7 @@ impl Hash {
         rng.fill_bytes(&mut data[..]);
 
         create_hash(&data, &mut hash);
-        Self { 0: hash }
+        Self(hash)
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -74,19 +72,19 @@ impl Hash {
 
 impl AddressHash {
     pub const fn new(hash: [u8; ADDRESS_HASH_SIZE]) -> Self {
-        Self { 0: hash }
+        Self(hash)
     }
 
     pub fn new_from_slice(data: &[u8]) -> Self {
         let mut hash = [0u8; ADDRESS_HASH_SIZE];
         create_hash(data, &mut hash);
-        Self { 0: hash }
+        Self(hash)
     }
 
     pub fn new_from_hash(hash: &Hash) -> Self {
         let mut address_hash = [0u8; ADDRESS_HASH_SIZE];
         address_hash.copy_from_slice(&hash.0[0..ADDRESS_HASH_SIZE]);
-        Self { 0: address_hash }
+        Self(address_hash)
     }
 
     pub fn new_from_rand<R: CryptoRngCore>(rng: R) -> Self {
@@ -104,13 +102,11 @@ impl AddressHash {
             bytes[i] = u8::from_str_radix(&hex_string[i * 2..(i * 2) + 2], 16).unwrap();
         }
 
-        Ok(Self { 0: bytes })
+        Ok(Self(bytes))
     }
 
     pub const fn new_empty() -> Self {
-        Self {
-            0: [0u8; ADDRESS_HASH_SIZE],
-        }
+        Self([0u8; ADDRESS_HASH_SIZE])
     }
 
     pub fn as_slice(&self) -> &[u8] {
