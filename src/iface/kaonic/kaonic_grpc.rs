@@ -1,37 +1,58 @@
+#[cfg(feature = "protobuf")]
 pub mod proto {
     tonic::include_proto!("kaonic");
 }
 
+#[cfg(feature = "protobuf")]
 use std::sync::Arc;
+#[cfg(feature = "protobuf")]
 use std::time::Duration;
 
+#[cfg(feature = "protobuf")]
 use proto::device_client::DeviceClient;
+#[cfg(feature = "protobuf")]
 use proto::radio_client::RadioClient;
+#[cfg(feature = "protobuf")]
 use proto::RadioFrame;
+#[cfg(feature = "protobuf")]
 use tokio::sync::mpsc::Receiver;
+#[cfg(feature = "protobuf")]
 use tokio::sync::Mutex;
+#[cfg(feature = "protobuf")]
 use tokio_stream::StreamExt;
+#[cfg(feature = "protobuf")]
 use tokio_util::sync::CancellationToken;
+#[cfg(feature = "protobuf")]
 use tonic::transport::Channel;
 
+#[cfg(feature = "protobuf")]
 use crate::buffer::{InputBuffer, OutputBuffer};
+#[cfg(feature = "protobuf")]
 use crate::error::RnsError;
+#[cfg(feature = "protobuf")]
 use crate::iface::{Interface, InterfaceContext, RxMessage};
+#[cfg(feature = "protobuf")]
 use crate::packet::Packet;
+#[cfg(feature = "protobuf")]
 use crate::serde::Serialize;
 
+#[cfg(feature = "protobuf")]
 use alloc::string::String;
 
+#[cfg(feature = "protobuf")]
 use super::RadioConfig;
 
+#[cfg(feature = "protobuf")]
 pub const KAONIC_GRPC_URL: &str = "http://192.168.10.1:8080";
 
+#[cfg(feature = "protobuf")]
 pub struct KaonicGrpc {
     addr: String,
     config: Arc<Mutex<RadioConfig>>,
     config_channel: Arc<Mutex<Option<Receiver<RadioConfig>>>>,
 }
 
+#[cfg(feature = "protobuf")]
 impl KaonicGrpc {
     pub fn new<T: Into<String>>(
         addr: T,
@@ -280,6 +301,7 @@ fn decode_frame_to_buffer<'a>(
     Ok(&buffer[..length])
 }
 
+#[cfg(feature = "protobuf")]
 impl Interface for KaonicGrpc {
     fn mtu() -> usize {
         2048
