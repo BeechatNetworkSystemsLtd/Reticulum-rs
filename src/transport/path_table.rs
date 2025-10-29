@@ -24,6 +24,10 @@ impl PathTable {
         }
     }
 
+    pub fn next_hop_full(&self, destination: &AddressHash) -> Option<(AddressHash, AddressHash)> {
+        self.map.get(destination).map(|entry| (entry.received_from, entry.iface))
+    }
+
     pub fn next_hop_iface(&self, destination: &AddressHash) -> Option<AddressHash> {
         self.map.get(destination).map(|entry| entry.iface)
     }
@@ -38,14 +42,15 @@ impl PathTable {
         transport_id: Option<AddressHash>,
         iface: AddressHash,
     ) {
-        if self.map.contains_key(&announce.destination) {
-            // TODO replace existing paths by shorter ones
-            return;
+        let hops = announce.header.hops + 1;
+
+        if let Some(existing_entry) = self.map.get(&announce.destination) {
+            if hops >= existing_entry.hops {
+                return;
+            }
         }
 
         let received_from = transport_id.unwrap_or(announce.destination);
-        let hops = announce.header.hops + 1;
-
         let new_entry = PathEntry {
             timestamp: Instant::now(),
             received_from,
@@ -64,8 +69,14 @@ impl PathTable {
         );
     }
 
-    pub fn handle_inbound_packet(&self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
-        let entry = match self.map.get(&original_packet.destination) {
+    pub fn handle_inbound_packet(
+        &self,
+        original_packet: &Packet,
+        lookup: Option<AddressHash>,
+    ) -> (Packet, Option<AddressHash>) {
+        let lookup = lookup.unwrap_or(original_packet.destination);
+
+        let entry = match self.map.get(&lookup) {
             Some(entry) => entry,
             None => return (*original_packet, None),
         };

@@ -31,6 +31,12 @@ pub enum LinkStatus {
     Closed = 0x04,
 }
 
+impl LinkStatus {
+    pub fn not_yet_active(&self) -> bool {
+        *self == LinkStatus::Pending || *self == LinkStatus::Handshake
+    }
+}
+
 pub type LinkId = AddressHash;
 
 #[derive(Clone)]
