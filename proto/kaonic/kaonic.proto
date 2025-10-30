@@ -37,6 +37,11 @@ message RadioPhyConfigOFDM {
   uint32 opt = 2;
 }
 
+message RadioPhyConfigQPSK {
+  uint32 chip_freq = 1;
+  uint32 rate_mode = 2;
+}
+
 message RadioPhyConfigFSK {
   uint32 bt = 1;
   uint32 midxs = 2;
@@ -81,6 +86,7 @@ message ConfigurationRequest {
   oneof phy_config {
     RadioPhyConfigOFDM ofdm = 8;
     RadioPhyConfigFSK fsk = 9;
+    RadioPhyConfigQPSK qpsk = 10;
   }
 }
 
@@ -110,3 +116,5 @@ service Radio {
 }
 
 //***************************************************************************//
+
+

@@ -59,33 +59,33 @@ fernet-aes128 = []
 tonic-build = "0.13.0"
 
 [[example]]
-name = "tcp-server"
+name = "tcp_server"
 path = "examples/tcp_server.rs"
 
 [[example]]
-name = "tcp-client"
+name = "tcp_client"
 path = "examples/tcp_client.rs"
 
 [[example]]
-name = "udp-link"
+name = "udp_link"
 path = "examples/udp_link.rs"
 
 [[example]]
-name = "link-client"
+name = "link_client"
 path = "examples/link_client.rs"
 
 [[example]]
-name = "kaonic-client"
+name = "kaonic_client"
 path = "examples/kaonic_client.rs"
 
 [[example]]
-name = "testnet-client"
+name = "testnet_client"
 path = "examples/testnet_client.rs"
 
 [[example]]
-name = "kaonic-tcp-mesh"
+name = "kaonic_tcp_mesh"
 path = "examples/kaonic_tcp_mesh.rs"
 
 [[example]]
-name = "kaonic-mesh"
+name = "kaonic_mesh"
 path = "examples/kaonic_mesh.rs"
