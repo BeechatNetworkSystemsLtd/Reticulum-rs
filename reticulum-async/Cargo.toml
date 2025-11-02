@@ -1,0 +1,78 @@
+[package]
+name = "reticulum"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs"
+categories = ["network-programming"]
+keywords = ["reticulum", "mesh", "radio", "async"]
+
+description = """
+Reticulum-rs is a Rust implementation of the Reticulum Network Stack - a cryptographic,
+decentralised, and resilient mesh networking protocol designed for communication over any physical
+layer.
+
+This project brings Reticulum's capabilities to the Rust ecosystem, enabling embedded, and
+constrained deployments with maximum performance and minimal dependencies.
+"""
+
+[dependencies]
+reticulum-core = { path = "../reticulum-core" }
+
+# Protobuf and gRPC
+tonic = "0.13.0"
+prost = "0.13.5"
+
+# Random Number generator
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+
+# Async IO
+tokio = { version = "1.44.2", features = ["full"] }
+tokio-stream = "0.1.17"
+tokio-util = "0.7.15"
+
+serde = { version = "1.0.219", features = ["derive"] }
+
+# Logging
+log = "0.4.27"
+env_logger = "0.10"
+
+[features]
+default = ["alloc"]
+alloc = []
+
+[build-dependencies]
+tonic-build = "0.13.0"
+
+[[example]]
+name = "tcp_server"
+path = "examples/tcp_server.rs"
+
+[[example]]
+name = "tcp_client"
+path = "examples/tcp_client.rs"
+
+[[example]]
+name = "udp_link"
+path = "examples/udp_link.rs"
+
+[[example]]
+name = "link_client"
+path = "examples/link_client.rs"
+
+[[example]]
+name = "kaonic_client"
+path = "examples/kaonic_client.rs"
+
+[[example]]
+name = "testnet_client"
+path = "examples/testnet_client.rs"
+
+[[example]]
+name = "kaonic_tcp_mesh"
+path = "examples/kaonic_tcp_mesh.rs"
+
+[[example]]
+name = "kaonic_mesh"
+path = "examples/kaonic_mesh.rs"
