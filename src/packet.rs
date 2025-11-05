@@ -184,7 +184,7 @@ impl Header {
             | (self.header_type as u8) << 6
             | (self.propagation_type as u8) << 4
             | (self.destination_type as u8) << 2
-            | ((self.packet_type as u8))
+            | (self.packet_type as u8)
     }
 
     pub fn from_meta(meta: u8) -> Self {

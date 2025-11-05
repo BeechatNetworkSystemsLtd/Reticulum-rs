@@ -156,7 +156,7 @@ impl KaonicGrpc {
                                 },
                                 Some(config) = config_channel.as_mut().unwrap().recv() => {
                                     log::warn!("kaonic_grpc: change config");
-                                    if let Ok(_) = radio_client.configure(config).await {
+                                    if (radio_client.configure(config).await).is_ok() {
                                         let mut current_config = current_config.lock().await;
                                         *current_config = config;
                                         log::info!("kaonic_grpc: config has been changed");
@@ -235,8 +235,8 @@ fn encode_buffer_to_frame(buffer: &mut [u8]) -> RadioFrame {
             let mut work = 0u32;
             let chunk = chunk.iter().as_slice();
 
-            for i in 0..chunk.len() {
-                work |= (chunk[i] as u32) << (i * 8);
+            for (i, item) in chunk.iter().enumerate() {
+                work |= (*item as u32) << (i * 8);
             }
 
             work

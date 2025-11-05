@@ -47,6 +47,7 @@ impl PathTable {
             return (*original_packet, None);
         }
 
+        #[allow(unused_variables)]
         let entry = match self.map.get(&original_packet.destination) {
             Some(entry) => entry,
             None => return (*original_packet, None),

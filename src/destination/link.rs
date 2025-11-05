@@ -63,12 +63,11 @@ impl LinkPayload {
         Self { buffer, len }
     }
 
-    pub fn new_from_vec(data: &Vec<u8>) -> Self {
+    pub fn new_from_vec(data: &[u8]) -> Self {
         let mut buffer = [0u8; PACKET_MDU];
 
-        for i in 0..min(buffer.len(), data.len()) {
-            buffer[i] = data[i];
-        }
+        let len = min(buffer.len(), data.len());
+        buffer[..len].copy_from_slice(&data[..len]);
 
         Self {
             buffer,
@@ -78,6 +77,9 @@ impl LinkPayload {
 
     pub fn len(&self) -> usize {
         self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -270,12 +272,12 @@ impl Link {
                 }
             }
             PacketContext::KeepAlive => {
-                if packet.data.len() >= 1 && packet.data.as_slice()[0] == 0xFF {
+                if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFF {
                     self.request_time = Instant::now();
                     log::trace!("link({}): keep-alive request", self.id);
                     return LinkHandleResult::KeepAlive;
                 }
-                if packet.data.len() >= 1 && packet.data.as_slice()[0] == 0xFE {
+                if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFE {
                     log::trace!("link({}): keep-alive response", self.id);
                     self.request_time = Instant::now();
                     return LinkHandleResult::None;
