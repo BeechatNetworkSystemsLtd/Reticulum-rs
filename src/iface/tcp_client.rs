@@ -67,7 +67,7 @@ impl TcpClient {
                 }
             };
 
-            if let Err(_) = stream {
+            if stream.is_err() {
                 log::info!("tcp_client: couldn't connect to <{}>", addr);
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
@@ -112,9 +112,9 @@ impl TcpClient {
                                         }
                                         Ok(n) => {
                                             // TCP stream may contain several or partial HDLC frames
-                                            for i in 0..n {
+                                            for item in tcp_buffer.iter().take(n) {
                                                 // Push new byte from the end of buffer
-                                                rx_buffer[BUFFER_SIZE-1] = tcp_buffer[i];
+                                                rx_buffer[BUFFER_SIZE-1] = *item;
 
                                                 // Check if it is contains a HDLC frame
                                                 let frame = Hdlc::find(&rx_buffer[..]);
@@ -122,7 +122,7 @@ impl TcpClient {
                                                     // Decode HDLC frame and deserialize packet
                                                     let frame_buffer = &mut rx_buffer[frame.0..frame.1+1];
                                                     let mut output = OutputBuffer::new(&mut hdlc_rx_buffer[..]);
-                                                    if let Ok(_) = Hdlc::decode(frame_buffer, &mut output) {
+                                                    if Hdlc::decode(frame_buffer, &mut output).is_ok() {
                                                         if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(output.as_slice())) {
                                                             if PACKET_TRACE {
                                                                 log::trace!("tcp_client: rx << ({}) {}", iface_address, packet);
@@ -184,11 +184,11 @@ impl TcpClient {
                                     log::trace!("tcp_client: tx >> ({}) {}", iface_address, packet);
                                 }
                                 let mut output = OutputBuffer::new(&mut tx_buffer);
-                                if let Ok(_) = packet.serialize(&mut output) {
+                                if packet.serialize(&mut output).is_ok() {
 
                                     let mut hdlc_output = OutputBuffer::new(&mut hdlc_tx_buffer[..]);
 
-                                    if let Ok(_) = Hdlc::encode(output.as_slice(), &mut hdlc_output) {
+                                    if Hdlc::encode(output.as_slice(), &mut hdlc_output).is_ok() {
                                         let _ = stream.write_all(hdlc_output.as_slice()).await;
                                         let _ = stream.flush().await;
                                     }

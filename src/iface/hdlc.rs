@@ -34,9 +34,9 @@ impl Hdlc {
         let mut start_index: usize = 0;
         let mut end_index: usize = 0;
 
-        for i in 0..data.len() {
+        for (i, item) in data.iter().enumerate() {
             // Search for HDLC frame flags only
-            if data[i] != HDLC_FRAME_FLAG {
+            if *item != HDLC_FRAME_FLAG {
                 continue;
             }
 
@@ -56,7 +56,7 @@ impl Hdlc {
             }
         }
 
-        return Option::None;
+        Option::None
     }
 
     pub fn decode(data: &[u8], output: &mut OutputBuffer) -> Result<usize, RnsError> {

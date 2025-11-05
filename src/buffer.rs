@@ -36,6 +36,9 @@ impl<const N: usize> StaticBuffer<N> {
     pub fn len(&self) -> usize {
         self.len
     }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 
     pub fn chain_write(&mut self, data: &[u8]) -> Result<&mut Self, RnsError> {
         self.write(data)?;
@@ -82,7 +85,7 @@ impl<const N: usize> StaticBuffer<N> {
             return Err(RnsError::InvalidArgument);
         }
 
-        self.len = self.len - mid;
+        self.len -= mid;
 
         self.buffer.rotate_left(mid);
 
