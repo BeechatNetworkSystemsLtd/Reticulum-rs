@@ -97,7 +97,6 @@ impl LinkTable {
     }
 
     pub fn remove_stale(&mut self) {
-        // TODO schedule this in transport.rs
         let mut stale = vec![];
         let now = Instant::now();
 

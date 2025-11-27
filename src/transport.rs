@@ -59,6 +59,10 @@ const INTERVAL_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(1);
 const INTERVAL_KEEP_PACKET_CACHED: Duration = Duration::from_secs(180);
 const INTERVAL_PACKET_CACHE_CLEANUP: Duration = Duration::from_secs(90);
 
+// Other constants
+const KEEP_ALIVE_REQUEST: u8 = 0xFF;
+const KEEP_ALIVE_RESPONSE: u8 = 0xFE;
+
 #[derive(Clone)]
 pub struct ReceivedData {
     pub destination: AddressHash,
@@ -516,7 +520,7 @@ async fn handle_keepalive_response<'a>(
     handler: &MutexGuard<'a, TransportHandler>
 ) -> bool {
     if packet.context == PacketContext::KeepAlive {
-        if packet.data.as_slice()[0] == 0xFE {
+        if packet.data.as_slice()[0] == KEEP_ALIVE_RESPONSE {
             let lookup = handler.link_table.handle_keepalive(packet);
 
             if let Some((propagated, iface)) = lookup {
@@ -543,7 +547,8 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
             let result = link.handle_packet(packet);
             match result {
                 LinkHandleResult::KeepAlive => {
-                    handler.send_packet(link.keep_alive_packet(0xFE)).await;
+                    let packet = link.keep_alive_packet(KEEP_ALIVE_RESPONSE);
+                    handler.send_packet(packet).await;
                 }
                 _ => {}
             }
@@ -822,7 +827,7 @@ async fn handle_keep_links<'a>(handler: MutexGuard<'a, TransportHandler>) {
         let link = link.lock().await;
 
         if link.status() == LinkStatus::Active {
-            handler.send_packet(link.keep_alive_packet(0xFF)).await;
+            handler.send_packet(link.keep_alive_packet(KEEP_ALIVE_REQUEST)).await;
         }
     }
 }
@@ -951,28 +956,6 @@ async fn manage_transport(
                     },
                     _ = time::sleep(INTERVAL_LINKS_CHECK) => {
                         handle_check_links(handler.lock().await).await;
-                    }
-                }
-            }
-        });
-    }
-
-    {
-        let handler = handler.clone();
-        let cancel = cancel.clone();
-
-        tokio::spawn(async move {
-            loop {
-                if cancel.is_cancelled() {
-                    break;
-                }
-
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        break;
-                    },
-                    _ = time::sleep(Duration::from_secs(1)) => {
-                        handler.lock().await.packet_cache.lock().await.release(Duration::from_secs(4));
                     }
                 }
             }
