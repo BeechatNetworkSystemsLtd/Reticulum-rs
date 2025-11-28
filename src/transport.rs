@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use announce_limits::AnnounceLimits;
 use announce_table::AnnounceTable;
 use link_table::LinkTable;
 use packet_cache::PacketCache;
@@ -40,6 +41,7 @@ use crate::packet::PacketContext;
 use crate::packet::PacketDataBuffer;
 use crate::packet::PacketType;
 
+mod announce_limits;
 mod announce_table;
 mod link_table;
 mod packet_cache;
@@ -92,6 +94,8 @@ struct TransportHandler {
     link_table: LinkTable,
     single_in_destinations: HashMap<AddressHash, Arc<Mutex<SingleInputDestination>>>,
     single_out_destinations: HashMap<AddressHash, Arc<Mutex<SingleOutputDestination>>>,
+
+    announce_limits: AnnounceLimits,
 
     out_links: HashMap<AddressHash, Arc<Mutex<Link>>>,
     in_links: HashMap<AddressHash, Arc<Mutex<Link>>>,
@@ -166,6 +170,7 @@ impl Transport {
             path_table: PathTable::new(),
             single_in_destinations: HashMap::new(),
             single_out_destinations: HashMap::new(),
+            announce_limits: AnnounceLimits::new(),
             out_links: HashMap::new(),
             in_links: HashMap::new(),
             packet_cache: Mutex::new(PacketCache::new()),
@@ -610,44 +615,52 @@ async fn handle_announce<'a>(
     mut handler: MutexGuard<'a, TransportHandler>,
     iface: AddressHash
 ) {
-    if handler.has_destination(&packet.destination) {
+    if let Some(blocked_until) = handler.announce_limits.check(&packet.destination) {
+        log::info!(
+            "tp({}): too many announces from {}, blocked for {} seconds",
+            handler.config.name,
+            &packet.destination,
+            blocked_until.as_secs(),
+        );
         return;
     }
 
+    let destination_known = handler.has_destination(&packet.destination);
+
     if let Ok(result) = DestinationAnnounce::validate(packet) {
         let destination = result.0;
-
         let app_data = result.1;
+        let dest_hash = destination.identity.address_hash;
         let destination = Arc::new(Mutex::new(destination));
 
-        if !handler
-            .single_out_destinations
-            .contains_key(&packet.destination)
-        {
-            log::trace!(
-                "tp({}): new announce for {}",
-                handler.config.name,
-                packet.destination
+        if !destination_known {
+            if !handler
+                .single_out_destinations
+                .contains_key(&packet.destination)
+            {
+                log::trace!(
+                    "tp({}): new announce for {}",
+                    handler.config.name,
+                    packet.destination
+                );
+
+                handler
+                    .single_out_destinations
+                    .insert(packet.destination, destination.clone());
+            }
+
+            handler.announce_table.add(
+                packet,
+                dest_hash,
+                iface,
             );
 
-            handler
-                .single_out_destinations
-                .insert(packet.destination, destination.clone());
+            handler.path_table.handle_announce(
+                packet,
+                packet.transport,
+                iface,
+            );
         }
-
-        let dest_hash = destination.lock().await.identity.address_hash;
-
-        handler.announce_table.add(
-            packet,
-            dest_hash,
-            iface,
-        );
-
-        handler.path_table.handle_announce(
-            packet,
-            packet.transport,
-            iface,
-        );
 
         let retransmit = handler.config.retransmit;
         if retransmit {
