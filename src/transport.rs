@@ -3,6 +3,8 @@ use announce_limits::AnnounceLimits;
 use announce_table::AnnounceTable;
 use link_table::LinkTable;
 use packet_cache::PacketCache;
+use path_requests::PathRequests;
+use path_requests::TagBytes;
 use path_table::PathTable;
 use rand_core::OsRng;
 use std::collections::HashMap;
@@ -46,6 +48,7 @@ mod announce_limits;
 mod announce_table;
 mod link_table;
 mod packet_cache;
+mod path_requests;
 mod path_table;
 
 // TODO: Configure via features
@@ -102,6 +105,8 @@ struct TransportHandler {
     in_links: HashMap<AddressHash, Arc<Mutex<Link>>>,
 
     packet_cache: Mutex<PacketCache>,
+
+    path_requests: PathRequests,
 
     link_in_event_tx: broadcast::Sender<LinkEventData>,
     received_data_tx: broadcast::Sender<ReceivedData>,
@@ -163,6 +168,13 @@ impl Transport {
 
         let iface_manager = Arc::new(Mutex::new(iface_manager));
 
+        let transport_id = if config.retransmit {
+            Some(config.identity.address_hash().clone())
+        } else {
+            None
+        };
+        let path_requests = PathRequests::new(transport_id);
+
         let cancel = CancellationToken::new();
         let name = config.name.clone();
         let handler = Arc::new(Mutex::new(TransportHandler {
@@ -177,6 +189,7 @@ impl Transport {
             out_links: HashMap::new(),
             in_links: HashMap::new(),
             packet_cache: Mutex::new(PacketCache::new()),
+            path_requests,
             announce_tx,
             link_in_event_tx: link_in_event_tx.clone(),
             received_data_tx: received_data_tx.clone(),
@@ -389,6 +402,15 @@ impl Transport {
         link
     }
 
+    pub async fn request_path(
+        &self,
+        destination: &AddressHash,
+        on_iface: Option<AddressHash>,
+        tag: Option<TagBytes>,
+    ) {
+        self.handler.lock().await.request_path(destination, on_iface, tag).await
+    }
+
     pub fn out_link_events(&self) -> broadcast::Receiver<LinkEventData> {
         self.link_out_event_tx.subscribe()
     }
@@ -479,6 +501,20 @@ impl TransportHandler {
         let is_new = self.packet_cache.lock().await.update(packet);
 
         is_new || allow_duplicate
+    }
+
+    async fn request_path(
+        &mut self,
+        address: &AddressHash,
+        on_iface: Option<AddressHash>,
+        tag: Option<TagBytes>
+    ) {
+        let packet = self.path_requests.generate(address, tag);
+
+        self.send(TxMessage {
+            tx_type: TxMessageType::Broadcast(on_iface),
+            packet,
+        }).await;
     }
 }
 
