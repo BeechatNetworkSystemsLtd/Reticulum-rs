@@ -18,6 +18,10 @@ fn main() -> Result<()> {
             "#[derive(serde::Deserialize, serde::Serialize)]",
         )
         .type_attribute(
+            "RadioPhyConfigQPSK",
+            "#[derive(serde::Deserialize, serde::Serialize)]",
+        )
+        .type_attribute(
             "kaonic.ConfigurationRequest.phy_config",
             "#[derive(serde::Deserialize, serde::Serialize)]",
         )
