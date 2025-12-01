@@ -142,3 +142,20 @@ impl PathRequests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_request_roundtrip() {
+        let mut testee = PathRequests::new("", None);
+
+        let dest = AddressHash::new_from_rand(OsRng);
+
+        let encoded = testee.generate(&dest, None);
+        let decoded = testee.decode(encoded.data.as_slice()).unwrap();
+
+        assert_eq!(decoded.destination, dest);
+    }
+}

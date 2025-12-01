@@ -69,3 +69,25 @@ async fn calculate_hop_distance() {
 
     time::sleep(Duration::from_secs(2)).await;
 }
+
+#[tokio::test]
+async fn path_request_and_response() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
+
+    let mut transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
+    let mut transport_b = build_transport("b", "127.0.0.1:8082", &["127.0.0.1:8081"]).await;
+
+    let id_a = PrivateIdentity::new_from_name("a");
+    let id_b = PrivateIdentity::new_from_name("b");
+
+    let dest_b = transport_b
+        .add_destination(id_b, DestinationName::new("test", "hop"))
+        .await;
+    let dest_b_hash = dest_b.lock().await.desc.address_hash;
+
+    time::sleep(Duration::from_secs(2)).await;
+
+    transport_a.request_path(&dest_b_hash, None, None).await;
+
+    time::sleep(Duration::from_secs(2)).await;
+}
