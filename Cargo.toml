@@ -89,3 +89,7 @@ path = "examples/kaonic_tcp_mesh.rs"
 [[example]]
 name = "kaonic_mesh"
 path = "examples/kaonic_mesh.rs"
+
+[[example]]
+name = "multihop"
+path = "examples/multihop.rs"
