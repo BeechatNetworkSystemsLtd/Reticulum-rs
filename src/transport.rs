@@ -3,6 +3,7 @@ use announce_limits::AnnounceLimits;
 use announce_table::AnnounceTable;
 use link_table::LinkTable;
 use packet_cache::PacketCache;
+use path_requests::create_path_request_destination;
 use path_requests::PathRequests;
 use path_requests::TagBytes;
 use path_table::PathTable;
@@ -111,6 +112,8 @@ struct TransportHandler {
     link_in_event_tx: broadcast::Sender<LinkEventData>,
     received_data_tx: broadcast::Sender<ReceivedData>,
 
+    fixed_dest_path_requests: AddressHash,
+
     cancel: CancellationToken,
 }
 
@@ -173,7 +176,9 @@ impl Transport {
         } else {
             None
         };
-        let path_requests = PathRequests::new(transport_id);
+        let path_requests = PathRequests::new(config.name.as_str(), transport_id);
+
+        let path_request_dest = create_path_request_destination().desc.address_hash;
 
         let cancel = CancellationToken::new();
         let name = config.name.clone();
@@ -193,6 +198,7 @@ impl Transport {
             announce_tx,
             link_in_event_tx: link_in_event_tx.clone(),
             received_data_tx: received_data_tx.clone(),
+            fixed_dest_path_requests: path_request_dest,
             cancel: cancel.clone(),
         }));
 
@@ -731,6 +737,27 @@ async fn handle_announce<'a>(
     }
 }
 
+async fn handle_path_request<'a>(
+    packet: &Packet,
+    handler: &mut MutexGuard<'a, TransportHandler>
+) {
+    if let Some(path_request) = handler.path_requests.decode(packet.data.as_slice()) {
+        log::error!("Path request to handle");
+    }
+}
+
+async fn handle_fixed_destinations<'a>(
+    packet: &Packet,
+    handler: &mut MutexGuard<'a, TransportHandler>
+) -> bool {
+    if packet.destination == handler.fixed_dest_path_requests {
+        handle_path_request(packet, handler).await;
+        true
+    } else {
+        false
+    }
+}
+
 async fn handle_link_request_as_destination<'a>(
     destination: Arc<Mutex<SingleInputDestination>>,
     packet: &Packet,
@@ -968,10 +995,14 @@ async fn manage_transport(
 
                         let packet = message.packet;
 
-                        let handler = handler.lock().await;
+                        let mut handler = handler.lock().await;
 
                         if PACKET_TRACE {
                             log::trace!("tp: << rx({}) = {} {}", message.address, packet, packet.hash());
+                        }
+
+                        if handle_fixed_destinations(&packet, &mut handler).await {
+                            break;
                         }
 
                         if !handler.filter_duplicate_packets(&packet).await {
