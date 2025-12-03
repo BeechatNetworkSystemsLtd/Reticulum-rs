@@ -111,67 +111,67 @@ impl fmt::Display for DestinationDesc {
 
 pub type DestinationAnnounce = Packet;
 
-pub fn validate_destination_announce(
-    packet: &Packet,
-) -> Result<(SingleOutputDestination, &[u8]), RnsError> {
-    if packet.header.packet_type != PacketType::Announce {
-        return Err(RnsError::PacketError);
+impl DestinationAnnounce {
+    pub fn validate(packet: &Packet) -> Result<(SingleOutputDestination, &[u8]), RnsError> {
+        if packet.header.packet_type != PacketType::Announce {
+            return Err(RnsError::PacketError);
+        }
+
+        let announce_data = packet.data.as_slice();
+
+        if announce_data.len() < MIN_ANNOUNCE_DATA_LENGTH {
+            return Err(RnsError::OutOfMemory);
+        }
+
+        let mut offset = 0usize;
+
+        let public_key = {
+            let mut key_data = [0u8; PUBLIC_KEY_LENGTH];
+            key_data.copy_from_slice(&announce_data[offset..(offset + PUBLIC_KEY_LENGTH)]);
+            offset += PUBLIC_KEY_LENGTH;
+            PublicKey::from(key_data)
+        };
+
+        let verifying_key = {
+            let mut key_data = [0u8; PUBLIC_KEY_LENGTH];
+            key_data.copy_from_slice(&announce_data[offset..(offset + PUBLIC_KEY_LENGTH)]);
+            offset += PUBLIC_KEY_LENGTH;
+
+            VerifyingKey::from_bytes(&key_data).map_err(|_| RnsError::CryptoError)?
+        };
+
+        let identity = Identity::new(public_key, verifying_key);
+
+        let name_hash = &announce_data[offset..(offset + NAME_HASH_LENGTH)];
+        offset += NAME_HASH_LENGTH;
+        let rand_hash = &announce_data[offset..(offset + RAND_HASH_LENGTH)];
+        offset += RAND_HASH_LENGTH;
+        let signature = &announce_data[offset..(offset + SIGNATURE_LENGTH)];
+        offset += SIGNATURE_LENGTH;
+        let app_data = &announce_data[offset..];
+
+        let destination = &packet.destination;
+
+        // Keeping signed data on stack is only option for now.
+        // Verification function doesn't support prehashed message.
+        let signed_data = PacketDataBuffer::new()
+            .chain_write(destination.as_slice())?
+            .chain_write(public_key.as_bytes())?
+            .chain_write(verifying_key.as_bytes())?
+            .chain_write(name_hash)?
+            .chain_write(rand_hash)?
+            .chain_write(app_data)?
+            .finalize();
+
+        let signature = Signature::from_slice(signature).map_err(|_| RnsError::CryptoError)?;
+
+        identity.verify(signed_data.as_slice(), &signature)?;
+
+        Ok((
+            SingleOutputDestination::new(identity, DestinationName::new_from_hash_slice(name_hash)),
+            app_data,
+        ))
     }
-
-    let announce_data = packet.data.as_slice();
-
-    if announce_data.len() < MIN_ANNOUNCE_DATA_LENGTH {
-        return Err(RnsError::OutOfMemory);
-    }
-
-    let mut offset = 0usize;
-
-    let public_key = {
-        let mut key_data = [0u8; PUBLIC_KEY_LENGTH];
-        key_data.copy_from_slice(&announce_data[offset..(offset + PUBLIC_KEY_LENGTH)]);
-        offset += PUBLIC_KEY_LENGTH;
-        PublicKey::from(key_data)
-    };
-
-    let verifying_key = {
-        let mut key_data = [0u8; PUBLIC_KEY_LENGTH];
-        key_data.copy_from_slice(&announce_data[offset..(offset + PUBLIC_KEY_LENGTH)]);
-        offset += PUBLIC_KEY_LENGTH;
-
-        VerifyingKey::from_bytes(&key_data).map_err(|_| RnsError::CryptoError)?
-    };
-
-    let identity = Identity::new(public_key, verifying_key);
-
-    let name_hash = &announce_data[offset..(offset + NAME_HASH_LENGTH)];
-    offset += NAME_HASH_LENGTH;
-    let rand_hash = &announce_data[offset..(offset + RAND_HASH_LENGTH)];
-    offset += RAND_HASH_LENGTH;
-    let signature = &announce_data[offset..(offset + SIGNATURE_LENGTH)];
-    offset += SIGNATURE_LENGTH;
-    let app_data = &announce_data[offset..];
-
-    let destination = &packet.destination;
-
-    // Keeping signed data on stack is only option for now.
-    // Verification function doesn't support prehashed message.
-    let signed_data = PacketDataBuffer::new()
-        .chain_write(destination.as_slice())?
-        .chain_write(public_key.as_bytes())?
-        .chain_write(verifying_key.as_bytes())?
-        .chain_write(name_hash)?
-        .chain_write(rand_hash)?
-        .chain_write(app_data)?
-        .finalize();
-
-    let signature = Signature::from_slice(signature).map_err(|_| RnsError::CryptoError)?;
-
-    identity.verify(signed_data.as_slice(), &signature)?;
-
-    Ok((
-        SingleOutputDestination::new(identity, DestinationName::new_from_hash_slice(name_hash)),
-        app_data,
-    ))
 }
 
 pub struct Destination<I: HashIdentity, D: Direction, T: Type> {
@@ -368,8 +368,6 @@ mod tests {
     use crate::identity::PrivateIdentity;
     use rand_core::OsRng;
 
-    use crate::destination::validate_destination_announce;
-
     use super::DestinationAnnounce;
     use super::DestinationName;
     use super::SingleInputDestination;
@@ -450,6 +448,6 @@ mod tests {
             .announce(OsRng, None)
             .expect("valid announce packet");
 
-        validate_destination_announce(&announce).expect("valid announce");
+        DestinationAnnounce::validate(&announce).expect("valid announce");
     }
 }

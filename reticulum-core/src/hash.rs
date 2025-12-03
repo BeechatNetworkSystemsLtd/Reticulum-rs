@@ -21,7 +21,7 @@ pub fn create_hash(data: &[u8], out: &mut [u8]) {
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub struct Hash([u8; HASH_SIZE]);
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub struct AddressHash([u8; ADDRESS_HASH_SIZE]);
 
 impl Hash {
