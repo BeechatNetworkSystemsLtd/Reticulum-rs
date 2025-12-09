@@ -739,19 +739,47 @@ async fn handle_announce<'a>(
 
 async fn handle_path_request<'a>(
     packet: &Packet,
-    handler: &mut MutexGuard<'a, TransportHandler>
+    handler: &mut MutexGuard<'a, TransportHandler>,
+    iface: AddressHash,
 ) {
-    if let Some(path_request) = handler.path_requests.decode(packet.data.as_slice()) {
-        log::error!("Path request to handle");
+    if let Some(request) = handler.path_requests.decode(packet.data.as_slice()) {
+        if let Some(dest) = handler.single_in_destinations.get(&request.destination) {
+            let response = dest
+                .lock()
+                .await
+                .path_response(OsRng, None)
+                .expect("valid path response");
+
+            handler.send(TxMessage {
+                tx_type: TxMessageType::Direct(iface),
+                packet: response,
+            }).await;
+
+            return;
+        }
+
+        if handler.config.retransmit {
+            if let Some(entry) = handler.path_table.get(&request.destination) {
+                todo!();
+                return;
+            }
+        }
+
+        log::trace!(
+            "tp({}): dropping path request for unknown destination {}",
+            handler.config.name,
+            request.destination
+        );
     }
 }
 
 async fn handle_fixed_destinations<'a>(
     packet: &Packet,
-    handler: &mut MutexGuard<'a, TransportHandler>
+    handler: &mut MutexGuard<'a, TransportHandler>,
+    iface: AddressHash
 ) -> bool {
     if packet.destination == handler.fixed_dest_path_requests {
-        handle_path_request(packet, handler).await;
+        handle_path_request(packet, handler, iface).await;
         true
     } else {
         false
@@ -1001,7 +1029,11 @@ async fn manage_transport(
                             log::trace!("tp: << rx({}) = {} {}", message.address, packet, packet.hash());
                         }
 
-                        if handle_fixed_destinations(&packet, &mut handler).await {
+                        if handle_fixed_destinations(
+                            &packet,
+                            &mut handler,
+                            message.address
+                        ).await {
                             break;
                         }
 
