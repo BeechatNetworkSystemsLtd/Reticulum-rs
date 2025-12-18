@@ -491,7 +491,7 @@ async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transport
 
     for link in handler.out_links.values() {
         let mut link = link.lock().await;
-        match link.handle_packet(packet) {
+        match link.handle_packet(packet, true) {
             LinkHandleResult::Activated => {
                 let rtt_packet = link.create_rtt();
                 handler.send_packet(rtt_packet).await;
@@ -561,7 +561,7 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
     if packet.header.destination_type == DestinationType::Link {
         if let Some(link) = handler.in_links.get(&packet.destination).cloned() {
             let mut link = link.lock().await;
-            let result = link.handle_packet(packet);
+            let result = link.handle_packet(packet, false);
             match result {
                 LinkHandleResult::KeepAlive => {
                     let packet = link.keep_alive_packet(KEEP_ALIVE_RESPONSE);
@@ -573,7 +573,7 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
 
         for link in handler.out_links.values() {
             let mut link = link.lock().await;
-            let _ = link.handle_packet(packet);
+            let _ = link.handle_packet(packet, true);
             data_handled = true;
         }
 

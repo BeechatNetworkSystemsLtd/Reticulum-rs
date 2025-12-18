@@ -253,7 +253,7 @@ impl Link {
         packet
     }
 
-    fn handle_data_packet(&mut self, packet: &Packet) -> LinkHandleResult {
+    fn handle_data_packet(&mut self, packet: &Packet, out_link: bool) -> LinkHandleResult {
         if self.status != LinkStatus::Active {
             log::warn!("link({}): handling data packet in inactive state", self.id);
         }
@@ -281,19 +281,31 @@ impl Link {
                     return LinkHandleResult::None;
                 }
             }
+            PacketContext::LinkRTT => if !out_link {
+                let mut buffer = [0u8; PACKET_MDU];
+                if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
+                    if let Ok(rtt) = rmp::decode::read_f32(&mut &plain_text[..]) {
+                        self.rtt = Duration::from_secs_f32(rtt);
+                    } else {
+                        log::error!("link({}): failed to decode rtt", self.id);
+                    }
+                } else {
+                    log::error!("link({}): can't decrypt rtt packet", self.id);
+                }
+            }
             _ => {}
         }
 
         LinkHandleResult::None
     }
 
-    pub fn handle_packet(&mut self, packet: &Packet) -> LinkHandleResult {
+    pub fn handle_packet(&mut self, packet: &Packet, out_link: bool) -> LinkHandleResult {
         if packet.destination != self.id {
             return LinkHandleResult::None;
         }
 
         match packet.header.packet_type {
-            PacketType::Data => return self.handle_data_packet(packet),
+            PacketType::Data => return self.handle_data_packet(packet, out_link),
             PacketType::Proof => {
                 if self.status == LinkStatus::Pending
                     && packet.context == PacketContext::LinkRequestProof
@@ -465,6 +477,10 @@ impl Link {
 
     pub fn id(&self) -> &LinkId {
         &self.id
+    }
+
+    pub fn rtt(&self) -> &Duration {
+        &self.rtt
     }
 }
 
