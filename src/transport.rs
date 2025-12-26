@@ -719,14 +719,11 @@ async fn handle_announce<'a>(
         let retransmit = handler.config.retransmit;
         if retransmit {
             let transport_id = handler.config.identity.address_hash().clone();
-            if let Some((recv_from, packet)) = handler.announce_table.new_packet(
+            if let Some(message) = handler.announce_table.new_packet(
                 &dest_hash,
                 &transport_id,
             ) {
-                handler.send(TxMessage {
-                    tx_type: TxMessageType::Broadcast(Some(recv_from)),
-                    packet
-                }).await;
+                handler.send(message).await;
             }
         }
 
@@ -755,12 +752,40 @@ async fn handle_path_request<'a>(
                 packet: response,
             }).await;
 
+            log::trace!(
+                "tp({}): send direct path response over {}",
+                handler.config.name,
+                iface
+            );
+
             return;
         }
 
         if handler.config.retransmit {
             if let Some(entry) = handler.path_table.get(&request.destination) {
-                todo!();
+                if let Some(requestor_id) = request.requesting_transport {
+                    if requestor_id == entry.received_from {
+                        log::trace!(
+                            "tp({}): dropping circular path request from {}",
+                            handler.config.name,
+                            request.destination
+                        );
+                        return;
+                    }
+                }
+
+                let hops = entry.hops;
+
+                handler.announce_table.add_response(request.destination, iface, hops);
+
+                log::trace!(
+                    "tp({}): scheduled remote path response to {} ({} hops) over {}",
+                    handler.config.name,
+                    request.destination,
+                    hops,
+                    iface
+                );
+
                 return;
             }
         }
@@ -954,18 +979,9 @@ async fn handle_cleanup<'a>(handler: MutexGuard<'a, TransportHandler>) {
 
 async fn retransmit_announces<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     let transport_id = handler.config.identity.address_hash().clone();
-    let announces = handler.announce_table.to_retransmit(&transport_id);
+    let messages = handler.announce_table.to_retransmit(&transport_id);
 
-    if announces.is_empty() {
-        return;
-    }
-
-    for (received_from, announce) in announces {
-        let message = TxMessage {
-            tx_type: TxMessageType::Broadcast(Some(received_from)),
-            packet: announce,
-        };
-
+    for message in messages {
         handler.send(message).await;
     }
 }
