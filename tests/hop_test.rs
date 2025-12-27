@@ -71,7 +71,7 @@ async fn calculate_hop_distance() {
 }
 
 #[tokio::test]
-async fn path_request_and_response() {
+async fn direct_path_request_and_response() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
 
     let mut transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
@@ -88,6 +88,32 @@ async fn path_request_and_response() {
     time::sleep(Duration::from_secs(2)).await;
 
     transport_a.request_path(&dest_b_hash, None, None).await;
+
+    time::sleep(Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn remote_path_request_and_response() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
+
+    let mut transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
+    let mut transport_b = build_transport("b", "127.0.0.1:8082", &["127.0.0.1:8081"]).await;
+    let mut transport_c = build_transport("c", "127.0.0.1:8083", &["127.0.0.1:8082"]).await;
+
+    let id_c = PrivateIdentity::new_from_name("c");
+    let dest_c = transport_c
+        .add_destination(id_c, DestinationName::new("test", "hop"))
+        .await;
+    let dest_c_hash = dest_c.lock().await.desc.address_hash;
+
+    time::sleep(Duration::from_secs(2)).await;
+
+    transport_c.send_announce(&dest_c, None).await;
+    transport_b.recv_announces().await;
+
+    time::sleep(Duration::from_secs(2)).await;
+
+    transport_a.request_path(&dest_c_hash, None, None).await;
 
     time::sleep(Duration::from_secs(2)).await;
 }
