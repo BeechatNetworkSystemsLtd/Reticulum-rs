@@ -1,6 +1,8 @@
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeSet, BTreeMap};
 
 use rand_core::OsRng;
+
+use tokio::time::{Duration, Instant};
 
 use crate::destination::DestinationName;
 use crate::destination::PlainInputDestination;
@@ -77,6 +79,7 @@ pub struct PathRequests {
     name: String,
     transport_id: Option<AddressHash>,
     controlled_destination: PlainInputDestination,
+    discovery: BTreeMap<AddressHash, Instant>,
 }
 
 impl PathRequests {
@@ -86,6 +89,7 @@ impl PathRequests {
             name: name.into(),
             transport_id,
             controlled_destination: create_path_request_destination(),
+            discovery: BTreeMap::new(),
         }
     }
 
@@ -139,6 +143,48 @@ impl PathRequests {
             transport: self.transport_id.clone(), // TODO
             context: PacketContext::None,
             data
+        }
+    }
+
+    fn allow_recursive(
+        &mut self,
+        destination: &AddressHash,
+        on_iface: Option<AddressHash>,
+    ) -> bool {
+        let now = Instant::now();
+
+        if let Some(timeout) = self.discovery.get(destination) {
+            if *timeout < now {
+                log::info!(
+                    "tp({}): rejecting discovery path request for destination {} as a request is already pending",
+                    self.name,
+                    destination
+                );
+                return false;
+            }
+        }
+
+        // TODO implement announce queue and announce cap, reject requests based on that
+
+        true
+    }
+
+    pub fn generate_recursive(
+        &mut self,
+        destination: &AddressHash,
+        on_iface: Option<AddressHash>,
+        tag: Option<TagBytes>,
+    ) -> Option<Packet> {
+        if self.allow_recursive(destination, on_iface) {
+            log::trace!(
+                "tp({}): sending discovery path request for {}",
+                self.name,
+                destination
+            );
+
+            Some(self.generate(destination, tag))
+        } else {
+            None
         }
     }
 }

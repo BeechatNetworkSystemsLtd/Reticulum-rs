@@ -790,11 +790,16 @@ async fn handle_path_request<'a>(
             }
         }
 
-        log::trace!(
-            "tp({}): dropping path request for unknown destination {}",
-            handler.config.name,
-            request.destination
-        );
+        if let Some(packet) = handler.path_requests.generate_recursive(
+            &request.destination,
+            Some(iface),
+            None
+        ) {
+            handler.send(TxMessage {
+                tx_type: TxMessageType::Broadcast(Some(iface)),
+                packet
+            }).await;
+        }
     }
 }
 
