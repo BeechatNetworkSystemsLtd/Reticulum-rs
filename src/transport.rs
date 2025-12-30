@@ -473,6 +473,9 @@ impl TransportHandler {
                     }
                 }
             },
+            PacketType::Data => if packet.context == PacketContext::KeepAlive {
+                allow_duplicate = true;
+            },
             _ => {}
         }
 
