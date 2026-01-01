@@ -517,6 +517,55 @@ impl Transport {
             destination
         );
     }
+    pub async fn recall_identity(
+        &self,
+        target_hash: &AddressHash,
+        from_identity_hash: bool,
+    ) -> Option<crate::identity::Identity> {
+        let handler = self.handler.lock().await;
+
+        if from_identity_hash {
+            // Search announce table by iterating through all announces
+            // Extract identity from packet data and compare hashes
+            for announce_packet in handler.announce_table.iter() {
+                // Announce packet data format: [public_key (32 bytes) | verifying_key (32 bytes) | app_data...]
+                let data = announce_packet.data.as_slice();
+                if data.len() >= 64 {
+                    let pub_key = &data[0..32];
+                    let verifying_key = &data[32..64];
+                    let identity =
+                        crate::identity::Identity::new_from_slices(pub_key, verifying_key);
+
+                    if target_hash == &identity.address_hash {
+                        return Some(identity);
+                    }
+                }
+            }
+            None
+        } else {
+            // Search by destination hash in announce table
+            if let Some(announce_packet) = handler.announce_table.get(target_hash) {
+                // Extract identity from packet data
+                let data = announce_packet.data.as_slice();
+                if data.len() >= 64 {
+                    let pub_key = &data[0..32];
+                    let verifying_key = &data[32..64];
+                    return Some(crate::identity::Identity::new_from_slices(
+                        pub_key,
+                        verifying_key,
+                    ));
+                }
+            }
+
+            // Search in registered local destinations
+            if let Some(dest) = handler.single_out_destinations.get(target_hash) {
+                let dest = dest.lock().await;
+                return Some(dest.desc.identity.clone());
+            }
+
+            None
+        }
+    }
 }
 
 impl Drop for Transport {
