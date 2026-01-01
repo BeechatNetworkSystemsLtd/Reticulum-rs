@@ -97,3 +97,7 @@ path = "examples/kaonic_mesh.rs"
 [[example]]
 name = "multihop"
 path = "examples/multihop.rs"
+
+[[example]]
+name = "ratchet"
+path = "examples/ratchet.rs"
