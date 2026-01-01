@@ -50,6 +50,9 @@ serde = { version = "1.0.219", features = ["derive"] }
 log = "0.4.27"
 env_logger = "0.10"
 
+[dev-dependencies]
+hex = "0.4"
+
 [features]
 default = ["alloc"]
 alloc = []
