@@ -458,6 +458,9 @@ impl Transport {
         // direct access to handler for testing purposes
         self.handler.clone()
     }
+    pub async fn has_path(&self, address: &AddressHash) -> bool {
+        self.handler.lock().await.path_table.has_path(address)
+    }
 }
 
 impl Drop for Transport {
