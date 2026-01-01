@@ -137,8 +137,8 @@ impl Identity {
             .map_err(|_| RnsError::IncorrectSignature)
     }
 
-    pub fn derive_key<R: CryptoRngCore + Copy>(&self, rng: R, salt: Option<&[u8]>) -> DerivedKey {
-        DerivedKey::new_from_ephemeral_key(rng, &self.public_key, salt)
+    pub fn derive_key<R: CryptoRngCore + Copy>(&self, rng: R) -> DerivedKey {
+        DerivedKey::new_from_ephemeral_key(rng, &self.public_key, Some(self.address_hash.as_slice()))
     }
 }
 
@@ -164,22 +164,20 @@ impl EncryptIdentity for Identity {
         out_buf: &'a mut [u8],
     ) -> Result<&'a [u8], RnsError> {
         let mut out_offset = 0;
-        let ephemeral_key = EphemeralSecret::random_from_rng(rng);
-        {
-            let ephemeral_public = PublicKey::from(&ephemeral_key);
-            let ephemeral_public_bytes = ephemeral_public.as_bytes();
+        let ephemeral_public_bytes = derived_key
+            .ephemeral_public()
+            .ok_or(RnsError::InvalidArgument)?;
 
-            if out_buf.len() >= ephemeral_public_bytes.len() {
-                out_buf[..ephemeral_public_bytes.len()].copy_from_slice(ephemeral_public_bytes);
-                out_offset += ephemeral_public_bytes.len();
-            } else {
-                return Err(RnsError::InvalidArgument);
-            }
+        if out_buf.len() >= ephemeral_public_bytes.len() {
+            out_buf[..ephemeral_public_bytes.len()].copy_from_slice(ephemeral_public_bytes);
+            out_offset += ephemeral_public_bytes.len();
+        } else {
+            return Err(RnsError::InvalidArgument);
         }
 
         let token = Fernet::new_from_slices(
-            &derived_key.as_bytes()[..16],
-            &derived_key.as_bytes()[16..],
+            &derived_key.as_bytes()[..DERIVED_KEY_LENGTH / 2],
+            &derived_key.as_bytes()[DERIVED_KEY_LENGTH / 2..],
             rng,
         )
         .encrypt(PlainText::from(text), &mut out_buf[out_offset..])?;
@@ -398,6 +396,7 @@ pub struct GroupIdentity {}
 
 pub struct DerivedKey {
     key: [u8; DERIVED_KEY_LENGTH],
+    ephemeral_public: Option<[u8; PUBLIC_KEY_LENGTH]>,
 }
 
 impl DerivedKey {
@@ -406,12 +405,16 @@ impl DerivedKey {
 
         let _ = Hkdf::<Sha256>::new(salt, shared_key.as_bytes()).expand(&[], &mut key[..]);
 
-        Self { key }
+        Self {
+            key,
+            ephemeral_public: None,
+        }
     }
 
     pub fn new_empty() -> Self {
         Self {
             key: [0u8; DERIVED_KEY_LENGTH],
+            ephemeral_public: None,
         }
     }
 
@@ -423,14 +426,17 @@ impl DerivedKey {
         Self::new(&priv_key.diffie_hellman(pub_key), salt)
     }
 
-    pub fn new_from_ephemeral_key<R: CryptoRngCore + Copy>(
+    fn new_from_ephemeral_key<R: CryptoRngCore + Copy>(
         rng: R,
         pub_key: &PublicKey,
         salt: Option<&[u8]>,
     ) -> Self {
         let secret = EphemeralSecret::random_from_rng(rng);
+        let ephemeral_public = PublicKey::from(&secret);
         let shared_key = secret.diffie_hellman(pub_key);
-        Self::new(&shared_key, salt)
+        let mut derived = Self::new(&shared_key, salt);
+        derived.ephemeral_public = Some(*ephemeral_public.as_bytes());
+        derived
     }
 
     pub fn as_bytes(&self) -> &[u8; DERIVED_KEY_LENGTH] {
@@ -440,13 +446,17 @@ impl DerivedKey {
     pub fn as_slice(&self) -> &[u8] {
         &self.key[..]
     }
+
+    pub fn ephemeral_public(&self) -> Option<&[u8; PUBLIC_KEY_LENGTH]> {
+        self.ephemeral_public.as_ref()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use rand_core::OsRng;
+    use rand_core::{CryptoRng, OsRng, RngCore};
 
-    use super::PrivateIdentity;
+    use super::{EncryptIdentity, PrivateIdentity, PUBLIC_KEY_LENGTH};
 
     #[test]
     fn private_identity_hex_string() {
@@ -466,4 +476,94 @@ mod tests {
             original_id.sign_key.as_bytes()
         );
     }
+
+    #[test]
+    fn identity_ephemeral_header_matches_derived_key() {
+        let recipient = PrivateIdentity::new_from_name("python-compat");
+        let identity = recipient.as_identity().clone();
+        let derived = identity.derive_key(TestRng::new(0x0102030405060708));
+
+        let mut out_buf = [0u8; 256];
+        let cipher = identity
+            .encrypt(TestRng::new(0x0f1e2d3c4b5a6978), b"header-test", &derived, &mut out_buf)
+            .expect("ciphertext");
+
+        let header = derived
+            .ephemeral_public()
+            .expect("ephemeral header present");
+
+        assert_eq!(header.as_slice(), &cipher[..PUBLIC_KEY_LENGTH]);
+    }
+
+    #[test]
+    fn identity_encryption_matches_reference_vector() {
+        let recipient = PrivateIdentity::new_from_name("python-compat");
+        let identity = recipient.as_identity().clone();
+        let derived = identity.derive_key(TestRng::new(0x1122334455667788));
+
+        let mut out_buf = [0u8; 256];
+        let cipher = identity
+            .encrypt(
+                TestRng::new(0x8877665544332211),
+                b"reticulum-python-compat",
+                &derived,
+                &mut out_buf,
+            )
+            .expect("ciphertext");
+
+        assert_eq!(cipher, EXPECTED_CIPHERTEXT);
+    }
+
+    const EXPECTED_CIPHERTEXT: &[u8] = &[
+        81, 172, 219, 20, 46, 94, 54, 160, 80, 146, 221, 64, 47, 55, 114, 184, 220, 241, 63, 41,
+        253, 82, 16, 225, 124, 198, 110, 7, 108, 183, 92, 0, 140, 141, 197, 163, 30, 187, 20, 47,
+        219, 97, 81, 254, 176, 6, 234, 188, 228, 209, 199, 36, 236, 175, 21, 97, 71, 5, 40, 156,
+        157, 222, 133, 237, 135, 180, 172, 1, 165, 52, 76, 136, 255, 64, 25, 78, 66, 223, 156, 9,
+        121, 200, 70, 141, 198, 128, 87, 75, 147, 161, 209, 205, 131, 181, 109, 41, 228, 161, 41,
+        86, 44, 75, 95, 158, 43, 180, 113, 78, 129, 131, 76, 103,
+    ];
+
+    #[derive(Clone, Copy)]
+    struct TestRng {
+        state: u128,
+    }
+
+    impl TestRng {
+        const fn new(seed: u128) -> Self {
+            Self { state: seed }
+        }
+
+        fn next_u64_inner(&mut self) -> u64 {
+            const MUL: u128 = 6364136223846793005;
+            const INC: u128 = 1442695040888963407;
+            self.state = self.state.wrapping_mul(MUL).wrapping_add(INC);
+            (self.state >> 64) as u64
+        }
+    }
+
+    impl RngCore for TestRng {
+        fn next_u32(&mut self) -> u32 {
+            self.next_u64_inner() as u32
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.next_u64_inner()
+        }
+
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            for chunk in dest.chunks_mut(8) {
+                let value = self.next_u64_inner();
+                let bytes = value.to_le_bytes();
+                let len = chunk.len();
+                chunk.copy_from_slice(&bytes[..len]);
+            }
+        }
+
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+            self.fill_bytes(dest);
+            Ok(())
+        }
+    }
+
+    impl CryptoRng for TestRng {}
 }
