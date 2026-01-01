@@ -25,11 +25,14 @@ use crate::destination::DestinationHandleStatus;
 use crate::destination::DestinationName;
 use crate::destination::SingleInputDestination;
 use crate::destination::SingleOutputDestination;
+use crate::destination::PlainOutputDestination;
 use crate::destination::ValidatedAnnounce;
 use crate::error::RnsError;
 
 use crate::hash::AddressHash;
+use crate::hash::Hash;
 use crate::identity::PrivateIdentity;
+use crate::identity::EmptyIdentity;
 
 use crate::iface::InterfaceManager;
 use crate::iface::InterfaceRxReceiver;
@@ -460,6 +463,59 @@ impl Transport {
     }
     pub async fn has_path(&self, address: &AddressHash) -> bool {
         self.handler.lock().await.path_table.has_path(address)
+    }
+    pub async fn request_path(&self, destination: &AddressHash, tag: Option<Hash>) {
+        // Generate or use provided request tag
+        let request_tag = tag.unwrap_or_else(|| Hash::new_from_rand(OsRng));
+
+        // Get transport identity hash
+        let handler = self.handler.lock().await;
+        let transport_id_hash = handler.config.identity.address_hash();
+
+        // Build packet data: destination_hash + transport_id_hash + request_tag
+        let mut packet_data = PacketDataBuffer::new();
+        packet_data.safe_write(destination.as_slice());
+        packet_data.safe_write(transport_id_hash.as_slice());
+        packet_data.safe_write(request_tag.as_slice());
+
+        // Create the path request destination (PLAIN type with no identity, like Python version)
+        let path_request_name = DestinationName::new("rnstransport", "path.request");
+        let path_request_dest: PlainOutputDestination =
+            PlainOutputDestination::new(EmptyIdentity::new(), path_request_name);
+        let path_request_hash = path_request_dest.desc.address_hash;
+
+        let mut packet = Packet::default();
+        packet.header.destination_type = DestinationType::Plain;
+        packet.destination = path_request_hash;
+        packet.data = packet_data;
+
+        // Create the path request packet
+        /* 
+        let packet = Packet {
+            header: Header {
+                ifac_flag: IfacFlag::Open,
+                header_type: HeaderType::Type1,
+                context_flag: ContextFlag::Unset,
+                propagation_type: PropagationType::Broadcast,
+                destination_type: DestinationType::Plain,
+                packet_type: PacketType::Data,
+                hops: 0,
+            },
+            ifac: None,
+            destination: path_request_hash,
+            transport: None,
+            context: PacketContext::None,
+            data: packet_data,
+        };
+        */
+        drop(handler); // Release the lock before sending
+
+        self.send_packet(packet).await;
+        log::debug!(
+            "tp({}): requested path for destination {}",
+            self.name,
+            destination
+        );
     }
 }
 

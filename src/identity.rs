@@ -233,6 +233,12 @@ impl EncryptIdentity for Identity {
 
 pub struct EmptyIdentity;
 
+impl EmptyIdentity {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
 impl HashIdentity for EmptyIdentity {
     fn as_address_hash_slice(&self) -> &[u8] {
         &[]
