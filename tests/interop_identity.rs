@@ -50,6 +50,7 @@ fn run_python(args: &[&str]) -> (i32, String, String) {
     )
 }
 
+#[cfg(feature = "python-interop")]
 #[test]
 fn rust_encrypt_python_decrypt() {
     if !python_available() {
@@ -70,6 +71,7 @@ fn rust_encrypt_python_decrypt() {
     assert_eq!(hex::decode(pt_hex).unwrap(), plaintext);
 }
 
+#[cfg(feature = "python-interop")]
 #[test]
 fn python_encrypt_rust_decrypt() {
     if !python_available() {

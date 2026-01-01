@@ -57,6 +57,7 @@ hex = "0.4"
 default = ["alloc"]
 alloc = []
 fernet-aes128 = []
+python-interop = ["default"]
 
 [build-dependencies]
 tonic-build = "0.13.0"
