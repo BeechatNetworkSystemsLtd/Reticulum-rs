@@ -2,7 +2,6 @@ use std::{env, path::PathBuf, process::Command};
 
 use rand_core::OsRng;
 use reticulum::identity::{DecryptIdentity, EncryptIdentity, Identity, PrivateIdentity, PUBLIC_KEY_LENGTH};
-use x25519_dalek::PublicKey;
 
 fn manifest_dir() -> &'static str {
     env!("CARGO_MANIFEST_DIR")
@@ -112,23 +111,15 @@ fn rust_encrypt_hex(pt: &[u8], recipient_pub_hex: &str) -> String {
 }
 
 fn rust_decrypt_hex(ct_hex: &str, recipient_priv_hex: &str) -> Vec<u8> {
-    let mut cipher = hex::decode(ct_hex).expect("ciphertext hex");
-    assert!(cipher.len() > PUBLIC_KEY_LENGTH, "ciphertext too short");
-
-    let token = cipher.split_off(PUBLIC_KEY_LENGTH);
-    let ephemeral_bytes: [u8; PUBLIC_KEY_LENGTH] = cipher[..PUBLIC_KEY_LENGTH]
-        .try_into()
-        .expect("header length");
-    let ephemeral_pub = PublicKey::from(ephemeral_bytes);
-
+    let cipher = hex::decode(ct_hex).expect("ciphertext hex");
     let recipient =
         PrivateIdentity::new_from_hex_string(recipient_priv_hex).expect("invalid recipient hex");
-    let salt = recipient.address_hash().as_slice();
-    let derived = recipient.derive_key(&ephemeral_pub, Some(salt));
+    let mut out_buf = vec![0u8; cipher.len()];
+    let mut ratchet_id = None;
+    let plaintext = recipient
+        .decrypt_token(OsRng, &cipher, None, &[], false, &mut ratchet_id, &mut out_buf)
+        .expect("decrypt");
 
-    let mut out_buf = vec![0u8; token.len()];
-    recipient
-        .decrypt(OsRng, &token, &derived, &mut out_buf)
-        .expect("decrypt")
-        .to_vec()
+    assert!(ratchet_id.is_none());
+    plaintext.to_vec()
 }

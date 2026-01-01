@@ -20,6 +20,48 @@ pub const DERIVED_KEY_LENGTH: usize = 256 / 8;
 #[cfg(not(feature = "fernet-aes128"))]
 pub const DERIVED_KEY_LENGTH: usize = 512 / 8;
 
+pub const RATCHET_ID_LENGTH: usize = 10;
+
+pub type RatchetId = [u8; RATCHET_ID_LENGTH];
+
+pub fn ratchet_pub_from_priv(priv_key_bytes: &[u8]) -> Result<[u8; PUBLIC_KEY_LENGTH], RnsError> {
+    if priv_key_bytes.len() != PUBLIC_KEY_LENGTH {
+        return Err(RnsError::InvalidArgument);
+    }
+
+    let mut secret_bytes = [0u8; PUBLIC_KEY_LENGTH];
+    secret_bytes.copy_from_slice(&priv_key_bytes[..PUBLIC_KEY_LENGTH]);
+    let secret = StaticSecret::from(secret_bytes);
+
+    Ok(ratchet_pub_from_secret(&secret))
+}
+
+pub fn ratchet_id_from_pub(pub_key_bytes: &[u8]) -> Result<RatchetId, RnsError> {
+    if pub_key_bytes.len() != PUBLIC_KEY_LENGTH {
+        return Err(RnsError::InvalidArgument);
+    }
+
+    let mut pub_bytes = [0u8; PUBLIC_KEY_LENGTH];
+    pub_bytes.copy_from_slice(&pub_key_bytes[..PUBLIC_KEY_LENGTH]);
+    Ok(ratchet_id_from_pub_bytes(&pub_bytes))
+}
+
+fn ratchet_pub_from_secret(secret: &StaticSecret) -> [u8; PUBLIC_KEY_LENGTH] {
+    PublicKey::from(secret).to_bytes()
+}
+
+fn ratchet_id_from_pub_bytes(pub_bytes: &[u8; PUBLIC_KEY_LENGTH]) -> RatchetId {
+    let digest = Sha256::new().chain_update(pub_bytes).finalize();
+    let mut id = [0u8; RATCHET_ID_LENGTH];
+    id.copy_from_slice(&digest[..RATCHET_ID_LENGTH]);
+    id
+}
+
+fn ratchet_id_from_secret(secret: &StaticSecret) -> RatchetId {
+    let pub_bytes = ratchet_pub_from_secret(secret);
+    ratchet_id_from_pub_bytes(&pub_bytes)
+}
+
 pub trait EncryptIdentity {
     fn encrypt<'a, R: CryptoRngCore + Copy>(
         &self,
@@ -333,6 +375,61 @@ impl PrivateIdentity {
     pub fn derive_key(&self, public_key: &PublicKey, salt: Option<&[u8]>) -> DerivedKey {
         DerivedKey::new_from_private_key(&self.private_key, public_key, salt)
     }
+
+    pub fn decrypt_token<'a, R: CryptoRngCore + Copy>(
+        &self,
+        rng: R,
+        ciphertext_token: &[u8],
+        salt: Option<&[u8]>,
+        ratchets: &[StaticSecret],
+        enforce_ratchets: bool,
+        ratchet_id: &mut Option<RatchetId>,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], RnsError> {
+        *ratchet_id = None;
+
+        if ciphertext_token.len() <= PUBLIC_KEY_LENGTH {
+            return Err(RnsError::InvalidArgument);
+        }
+
+        let (peer_pub_bytes, ciphertext) = ciphertext_token.split_at(PUBLIC_KEY_LENGTH);
+
+        let mut peer_pub_arr = [0u8; PUBLIC_KEY_LENGTH];
+        peer_pub_arr.copy_from_slice(peer_pub_bytes);
+        let peer_pub = PublicKey::from(peer_pub_arr);
+
+        let default_salt = self.address_hash().as_slice();
+        let salt_slice = salt.unwrap_or(default_salt);
+
+        for ratchet in ratchets {
+            let shared = ratchet.diffie_hellman(&peer_pub);
+            let derived = DerivedKey::new(&shared, Some(salt_slice));
+            match self.decrypt(rng, ciphertext, &derived, out_buf) {
+                Ok(plain_text) => {
+                    let len = plain_text.len();
+                    *ratchet_id = Some(ratchet_id_from_secret(ratchet));
+                    return Ok(&out_buf[..len]);
+                }
+                Err(RnsError::IncorrectSignature) | Err(RnsError::CryptoError) => {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        if enforce_ratchets {
+            return Err(RnsError::CryptoError);
+        }
+
+        let derived = self.derive_key(&peer_pub, Some(salt_slice));
+        match self.decrypt(rng, ciphertext, &derived, out_buf) {
+            Ok(plain_text) => {
+                let len = plain_text.len();
+                Ok(&out_buf[..len])
+            }
+            Err(err) => Err(err),
+        }
+    }
 }
 
 impl HashIdentity for PrivateIdentity {
@@ -455,8 +552,15 @@ impl DerivedKey {
 #[cfg(test)]
 mod tests {
     use rand_core::{CryptoRng, OsRng, RngCore};
+    use sha2::{Digest, Sha256};
+    use x25519_dalek::{PublicKey, StaticSecret};
 
-    use super::{EncryptIdentity, PrivateIdentity, PUBLIC_KEY_LENGTH};
+    use crate::error::RnsError;
+
+    use super::{
+        ratchet_id_from_pub, ratchet_pub_from_priv, DerivedKey, EncryptIdentity, PrivateIdentity,
+        PUBLIC_KEY_LENGTH, RATCHET_ID_LENGTH,
+    };
 
     #[test]
     fn private_identity_hex_string() {
@@ -522,6 +626,136 @@ mod tests {
         121, 200, 70, 141, 198, 128, 87, 75, 147, 161, 209, 205, 131, 181, 109, 41, 228, 161, 41,
         86, 44, 75, 95, 158, 43, 180, 113, 78, 129, 131, 76, 103,
     ];
+
+    #[test]
+    fn ratchet_helper_roundtrip() {
+        let secret = StaticSecret::random_from_rng(TestRng::new(0x0102030405060708));
+        let secret_bytes = secret.to_bytes();
+        let pub_from_helper =
+            ratchet_pub_from_priv(&secret_bytes[..]).expect("ratchet public from private");
+        let expected_pub = PublicKey::from(&secret).to_bytes();
+        assert_eq!(pub_from_helper, expected_pub);
+
+        let ratchet_id = ratchet_id_from_pub(&expected_pub[..]).expect("ratchet id");
+        let digest = Sha256::new().chain_update(expected_pub).finalize();
+        assert_eq!(&ratchet_id[..], &digest[..RATCHET_ID_LENGTH]);
+    }
+
+    #[test]
+    fn decrypt_token_prefers_ratchet_keys() {
+        let recipient = PrivateIdentity::new_from_name("ratchet-pref");
+        let ratchet_secret = StaticSecret::random_from_rng(TestRng::new(0x1122334455667788));
+        let ratchet_public = PublicKey::from(&ratchet_secret);
+        let ratchet_pub_bytes = ratchet_public.to_bytes();
+        let expected_id = ratchet_id_from_pub(&ratchet_pub_bytes[..]).expect("ratchet id");
+
+        let derived = DerivedKey::new_from_ephemeral_key(
+            TestRng::new(0x0f1e2d3c4b5a6978),
+            &ratchet_public,
+            Some(recipient.address_hash().as_slice()),
+        );
+
+        let mut cipher_buf = [0u8; 512];
+        let cipher = recipient
+            .as_identity()
+            .encrypt(
+                TestRng::new(0x8877665544332211),
+                b"ratchet-msg",
+                &derived,
+                &mut cipher_buf,
+            )
+            .expect("cipher");
+
+        let mut plain_buf = [0u8; 512];
+        let mut ratchet_id = None;
+        let ratchets = vec![ratchet_secret];
+        let plaintext = recipient
+            .decrypt_token(
+                TestRng::new(0x13579bdf2468ace0),
+                cipher,
+                None,
+                ratchets.as_slice(),
+                false,
+                &mut ratchet_id,
+                &mut plain_buf,
+            )
+            .expect("ratchet decrypt");
+
+        assert_eq!(plaintext, b"ratchet-msg");
+        assert_eq!(ratchet_id, Some(expected_id));
+    }
+
+    #[test]
+    fn decrypt_token_enforces_ratchets() {
+        let recipient = PrivateIdentity::new_from_name("ratchet-enforce");
+        let derived = recipient
+            .as_identity()
+            .derive_key(TestRng::new(0x1122aabbccddeeff));
+
+        let mut cipher_buf = [0u8; 256];
+        let cipher = recipient
+            .as_identity()
+            .encrypt(
+                TestRng::new(0xffeeddccbbaa2211),
+                b"enforce",
+                &derived,
+                &mut cipher_buf,
+            )
+            .expect("cipher");
+
+        let mut plain_buf = [0u8; 256];
+        let mut ratchet_id = None;
+        let result = recipient.decrypt_token(
+            TestRng::new(0x0101010101010101),
+            cipher,
+            None,
+            &[],
+            true,
+            &mut ratchet_id,
+            &mut plain_buf,
+        );
+
+        assert!(matches!(result, Err(RnsError::CryptoError)));
+        assert!(ratchet_id.is_none());
+    }
+
+    #[test]
+    fn decrypt_token_falls_back_without_enforcement() {
+        let recipient = PrivateIdentity::new_from_name("ratchet-fallback");
+        let derived = recipient
+            .as_identity()
+            .derive_key(TestRng::new(0x99aabbccddeeff00));
+
+        let mut cipher_buf = [0u8; 256];
+        let cipher = recipient
+            .as_identity()
+            .encrypt(
+                TestRng::new(0x0011223344556677),
+                b"fallback",
+                &derived,
+                &mut cipher_buf,
+            )
+            .expect("cipher");
+
+        let mut plain_buf = [0u8; 256];
+        let mut ratchet_id = Some([0u8; RATCHET_ID_LENGTH]);
+        let random_ratchet = StaticSecret::random_from_rng(TestRng::new(0xabcdef0123456789));
+        let ratchets = vec![random_ratchet];
+        let plaintext = recipient
+            .decrypt_token(
+                TestRng::new(0x89abcdef01234567),
+                cipher,
+                None,
+                ratchets.as_slice(),
+                false,
+                &mut ratchet_id,
+                &mut plain_buf,
+            )
+            .expect("fallback decrypt");
+
+        assert_eq!(plaintext, b"fallback");
+        assert!(ratchet_id.is_none());
+    }
 
     #[derive(Clone, Copy)]
     struct TestRng {
