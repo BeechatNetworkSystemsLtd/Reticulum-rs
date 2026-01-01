@@ -523,7 +523,7 @@ impl DerivedKey {
         Self::new(&priv_key.diffie_hellman(pub_key), salt)
     }
 
-    fn new_from_ephemeral_key<R: CryptoRngCore + Copy>(
+    pub fn new_from_ephemeral_key<R: CryptoRngCore + Copy>(
         rng: R,
         pub_key: &PublicKey,
         salt: Option<&[u8]>,

@@ -13,7 +13,8 @@ use crate::{
     error::RnsError,
     hash::{AddressHash, Hash},
     identity::{
-        EmptyIdentity, HashIdentity, Identity, PrivateIdentity, RatchetId, PUBLIC_KEY_LENGTH,
+        ratchet_id_from_pub, DerivedKey, EmptyIdentity, EncryptIdentity, HashIdentity, Identity,
+        PrivateIdentity, RatchetId, PUBLIC_KEY_LENGTH,
     },
     packet::{
         self, ContextFlag, DestinationType, Header, HeaderType, IfacFlag, Packet, PacketContext,
@@ -114,8 +115,14 @@ impl fmt::Display for DestinationDesc {
 
 pub type DestinationAnnounce = Packet;
 
+pub struct ValidatedAnnounce<'a> {
+    pub destination: SingleOutputDestination,
+    pub app_data: &'a [u8],
+    pub ratchet: Option<[u8; PUBLIC_KEY_LENGTH]>,
+}
+
 impl DestinationAnnounce {
-    pub fn validate(packet: &Packet) -> Result<(SingleOutputDestination, &[u8]), RnsError> {
+    pub fn validate<'a>(packet: &'a Packet) -> Result<ValidatedAnnounce<'a>, RnsError> {
         if packet.header.packet_type != PacketType::Announce {
             return Err(RnsError::PacketError);
         }
@@ -156,7 +163,7 @@ impl DestinationAnnounce {
         offset += NAME_HASH_LENGTH;
         let rand_hash = &announce_data[offset..(offset + RAND_HASH_LENGTH)];
         offset += RAND_HASH_LENGTH;
-        let ratchet = if has_ratchet {
+        let ratchet_slice = if has_ratchet {
             let slice = &announce_data[offset..(offset + RATCHET_PUBLIC_KEY_LENGTH)];
             offset += RATCHET_PUBLIC_KEY_LENGTH;
             Some(slice)
@@ -177,7 +184,7 @@ impl DestinationAnnounce {
             .chain_write(name_hash)?
             .chain_write(rand_hash)?;
 
-        if let Some(ratchet) = ratchet {
+        if let Some(ratchet) = ratchet_slice {
             signed_data.chain_write(ratchet)?;
         }
 
@@ -189,10 +196,18 @@ impl DestinationAnnounce {
 
         identity.verify(signed_data.as_slice(), &signature)?;
 
-        Ok((
-            SingleOutputDestination::new(identity, DestinationName::new_from_hash_slice(name_hash)),
+        Ok(ValidatedAnnounce {
+            destination: SingleOutputDestination::new(
+                identity,
+                DestinationName::new_from_hash_slice(name_hash),
+            ),
             app_data,
-        ))
+            ratchet: ratchet_slice.map(|bytes| {
+                let mut key = [0u8; PUBLIC_KEY_LENGTH];
+                key.copy_from_slice(bytes);
+                key
+            }),
+        })
     }
 }
 
@@ -463,6 +478,37 @@ impl Destination<Identity, Output, Single> {
             },
         )
     }
+
+    pub fn encrypt_payload<'a, R: CryptoRngCore + Copy>(
+        &mut self,
+        rng: R,
+        plaintext: &[u8],
+        ratchet_public: Option<&[u8; PUBLIC_KEY_LENGTH]>,
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], RnsError> {
+        let mut ratchet_key = None;
+        if let Some(key) = ratchet_public {
+            let mut bytes = [0u8; PUBLIC_KEY_LENGTH];
+            bytes.copy_from_slice(key);
+            ratchet_key = Some(PublicKey::from(bytes));
+        }
+
+        self.latest_ratchet_id = ratchet_public
+            .and_then(|key| ratchet_id_from_pub(&key[..]).ok());
+
+        let target_public = ratchet_key.as_ref().unwrap_or(&self.identity.public_key);
+        let derived = DerivedKey::new_from_ephemeral_key(
+            rng,
+            target_public,
+            Some(self.desc.address_hash.as_slice()),
+        );
+
+        self.identity.encrypt(rng, plaintext, &derived, out_buf)
+    }
+
+    pub fn latest_ratchet_id(&self) -> Option<RatchetId> {
+        self.latest_ratchet_id
+    }
 }
 
 impl<D: Direction> Destination<EmptyIdentity, D, Plain> {
@@ -502,12 +548,13 @@ mod tests {
     use crate::buffer::OutputBuffer;
     use crate::error::RnsError;
     use crate::hash::Hash;
-    use crate::identity::{EncryptIdentity, PrivateIdentity};
+    use crate::identity::{ratchet_id_from_pub, EncryptIdentity, PrivateIdentity, PUBLIC_KEY_LENGTH};
     use crate::serde::Serialize;
 
     use super::DestinationAnnounce;
     use super::DestinationName;
-    use super::SingleInputDestination;
+    use super::{SingleInputDestination, SingleOutputDestination};
+    use x25519_dalek::{PublicKey, StaticSecret};
 
     #[test]
     fn create_announce() {
@@ -649,5 +696,30 @@ mod tests {
             .decrypt_payload(OsRng, &ciphertext, &mut out_buf)
             .expect("decrypts without enforcement");
         assert_eq!(plaintext, b"ratchet-test");
+    }
+
+    #[test]
+    fn single_output_prefers_cached_ratchet() {
+        let identity = PrivateIdentity::new_from_rand(OsRng);
+        let public_identity = identity.as_identity().clone();
+        let mut destination =
+            SingleOutputDestination::new(public_identity, DestinationName::new("ratchet", "out"));
+
+        let ratchet_secret = StaticSecret::random_from_rng(OsRng);
+        let ratchet_public = PublicKey::from(&ratchet_secret).to_bytes();
+
+        let mut out_buf = [0u8; 512];
+        let ciphertext = destination
+            .encrypt_payload(OsRng, b"hello", Some(&ratchet_public), &mut out_buf)
+            .expect("ciphertext");
+
+        assert!(ciphertext.len() > PUBLIC_KEY_LENGTH);
+        let expected_id = ratchet_id_from_pub(&ratchet_public[..]).expect("ratchet id");
+        assert_eq!(destination.latest_ratchet_id, Some(expected_id));
+
+        destination
+            .encrypt_payload(OsRng, b"hello", None, &mut out_buf)
+            .expect("ciphertext");
+        assert!(destination.latest_ratchet_id.is_none());
     }
 }

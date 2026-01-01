@@ -25,6 +25,8 @@ use crate::destination::DestinationHandleStatus;
 use crate::destination::DestinationName;
 use crate::destination::SingleInputDestination;
 use crate::destination::SingleOutputDestination;
+use crate::destination::ValidatedAnnounce;
+use crate::error::RnsError;
 
 use crate::hash::AddressHash;
 use crate::identity::PrivateIdentity;
@@ -35,18 +37,24 @@ use crate::iface::RxMessage;
 use crate::iface::TxMessage;
 use crate::iface::TxMessageType;
 
+use crate::packet::ContextFlag;
 use crate::packet::DestinationType;
 use crate::packet::Header;
 use crate::packet::Packet;
 use crate::packet::PacketContext;
 use crate::packet::PacketDataBuffer;
 use crate::packet::PacketType;
+use crate::packet::PropagationType;
 
 mod announce_limits;
 mod announce_table;
 mod link_table;
 mod packet_cache;
 mod path_table;
+mod ratchet_cache;
+
+pub use ratchet_cache::CachedRatchet;
+use ratchet_cache::RatchetCache;
 
 // TODO: Configure via features
 const PACKET_TRACE: bool = false;
@@ -61,6 +69,7 @@ const INTERVAL_IFACE_CLEANUP: Duration = Duration::from_secs(10);
 const INTERVAL_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(1);
 const INTERVAL_KEEP_PACKET_CACHED: Duration = Duration::from_secs(180);
 const INTERVAL_PACKET_CACHE_CLEANUP: Duration = Duration::from_secs(90);
+const RATCHET_CACHE_RETENTION: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 
 // Other constants
 const KEEP_ALIVE_REQUEST: u8 = 0xFF;
@@ -102,6 +111,7 @@ struct TransportHandler {
     in_links: HashMap<AddressHash, Arc<Mutex<Link>>>,
 
     packet_cache: Mutex<PacketCache>,
+    ratchet_cache: RatchetCache,
 
     link_in_event_tx: broadcast::Sender<LinkEventData>,
     received_data_tx: broadcast::Sender<ReceivedData>,
@@ -177,6 +187,7 @@ impl Transport {
             out_links: HashMap::new(),
             in_links: HashMap::new(),
             packet_cache: Mutex::new(PacketCache::new()),
+            ratchet_cache: RatchetCache::new(),
             announce_tx,
             link_in_event_tx: link_in_event_tx.clone(),
             received_data_tx: received_data_tx.clone(),
@@ -234,6 +245,23 @@ impl Transport {
 
     pub async fn send_packet(&self, packet: Packet) {
         self.handler.lock().await.send_packet(packet).await;
+    }
+
+    pub async fn send_to_destination(
+        &self,
+        destination: &AddressHash,
+        payload: &[u8],
+        context: PacketContext,
+    ) -> Result<(), RnsError> {
+        let packet = {
+            let mut handler = self.handler.lock().await;
+            handler
+                .create_single_packet(destination, payload, context)
+                .await?
+        };
+
+        self.send_packet(packet).await;
+        Ok(())
     }
 
     pub async fn send_announce(
@@ -480,6 +508,54 @@ impl TransportHandler {
 
         is_new || allow_duplicate
     }
+
+    async fn create_single_packet(
+        &mut self,
+        destination_hash: &AddressHash,
+        payload: &[u8],
+        context: PacketContext,
+    ) -> Result<Packet, RnsError> {
+        let destination_entry = self
+            .single_out_destinations
+            .get(destination_hash)
+            .cloned()
+            .ok_or(RnsError::InvalidArgument)?;
+
+        let cached_ratchet = self.ratchet_cache.get(destination_hash).cloned();
+        let mut destination = destination_entry.lock().await;
+
+        let mut packet_data = PacketDataBuffer::new();
+        let ciphertext_len = {
+            let buffer = packet_data.accuire_buf_max();
+            let ciphertext = destination.encrypt_payload(
+                OsRng,
+                payload,
+                cached_ratchet.as_ref().map(|entry| &entry.public_key),
+                buffer,
+            )?;
+            ciphertext.len()
+        };
+        packet_data.resize(ciphertext_len);
+
+        Ok(Packet {
+            header: Header {
+                context_flag: if context == PacketContext::None {
+                    ContextFlag::Unset
+                } else {
+                    ContextFlag::Set
+                },
+                propagation_type: PropagationType::Transport,
+                destination_type: DestinationType::Single,
+                packet_type: PacketType::Data,
+                ..Default::default()
+            },
+            ifac: None,
+            destination: *destination_hash,
+            transport: None,
+            context,
+            data: packet_data,
+        })
+    }
 }
 
 async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, TransportHandler>) {
@@ -639,10 +715,18 @@ async fn handle_announce<'a>(
 
     let destination_known = handler.has_destination(&packet.destination);
 
-    if let Ok(result) = DestinationAnnounce::validate(packet) {
-        let destination = result.0;
-        let app_data = result.1;
-        let dest_hash = destination.identity.address_hash;
+    if let Ok(ValidatedAnnounce {
+        destination,
+        app_data,
+        ratchet,
+    }) = DestinationAnnounce::validate(packet)
+    {
+        let dest_hash = destination.desc.address_hash;
+
+        if let Some(ratchet_key) = ratchet {
+            handler.ratchet_cache.update(dest_hash, ratchet_key);
+        }
+
         let destination = Arc::new(Mutex::new(destination));
 
         if !destination_known {
@@ -690,7 +774,7 @@ async fn handle_announce<'a>(
 
         let _ = handler.announce_tx.send(AnnounceEvent {
             destination,
-            app_data: PacketDataBuffer::new_from_slice(&app_data),
+            app_data: PacketDataBuffer::new_from_slice(app_data),
         });
     }
 }
@@ -1059,6 +1143,9 @@ async fn manage_transport(
                             .release(INTERVAL_KEEP_PACKET_CACHED);
 
                         handler.link_table.remove_stale();
+                        handler
+                            .ratchet_cache
+                            .prune_older_than(RATCHET_CACHE_RETENTION);
                     },
                 }
             }
@@ -1093,6 +1180,58 @@ mod tests {
     use super::*;
 
     use crate::packet::HeaderType;
+    use rand_core::OsRng;
+    use crate::{destination::{DestinationName, SingleInputDestination}, hash::AddressHash};
+
+    #[tokio::test]
+    async fn single_packet_uses_cached_ratchet() {
+        let mut transport = Transport::new(TransportConfig::default());
+
+        let mut remote_destination = SingleInputDestination::new(
+            PrivateIdentity::new_from_rand(OsRng),
+            DestinationName::new("ratchet", "remote"),
+        );
+        remote_destination.enable_ratchets(OsRng);
+        let announce = remote_destination.announce(OsRng, None).unwrap();
+
+        let iface = AddressHash::new_from_rand(OsRng);
+        {
+            let handler = transport.handler.clone();
+            let guard = handler.lock().await;
+            handle_announce(&announce, guard, iface).await;
+        }
+
+        let dest_hash = announce.destination;
+        let cached = {
+            let handler = transport.handler.lock().await;
+            handler.ratchet_cache.get(&dest_hash).cloned()
+        }
+        .expect("ratchet cached");
+
+        let packet = {
+            let mut handler = transport.handler.lock().await;
+            handler
+                .create_single_packet(&dest_hash, b"payload", PacketContext::None)
+                .await
+                .expect("packet")
+        };
+
+        assert_eq!(packet.destination, dest_hash);
+        assert!(packet.data.len() > 0);
+
+        let latest = {
+            let handler = transport.handler.lock().await;
+            let destination = handler
+                .single_out_destinations
+                .get(&dest_hash)
+                .unwrap()
+                .lock()
+                .await;
+            destination.latest_ratchet_id()
+        };
+
+        assert_eq!(latest, cached.ratchet_id);
+    }
 
     #[tokio::test]
     async fn drop_duplicates() {
@@ -1102,8 +1241,6 @@ mod tests {
         let transport = Transport::new(config);
         let handler = transport.get_handler();
 
-        let source1 = AddressHash::new_from_slice(&[1u8; 32]);
-        let source2 = AddressHash::new_from_slice(&[2u8; 32]);
         let next_hop_iface = AddressHash::new_from_slice(&[3u8; 32]);
         let destination = AddressHash::new_from_slice(&[4u8; 32]);
 
@@ -1120,7 +1257,7 @@ mod tests {
         let mut data_packet: Packet = Default::default();
         data_packet.data = PacketDataBuffer::new_from_slice(b"foo");
         data_packet.destination = destination;
-        let mut duplicate: Packet = data_packet.clone();
+        let duplicate: Packet = data_packet.clone();
 
         let mut different_packet = data_packet.clone();
         different_packet.data = PacketDataBuffer::new_from_slice(b"bar");
