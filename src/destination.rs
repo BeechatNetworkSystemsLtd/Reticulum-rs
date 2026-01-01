@@ -12,7 +12,7 @@ use crate::{
     hash::{AddressHash, Hash},
     identity::{EmptyIdentity, HashIdentity, Identity, PrivateIdentity, PUBLIC_KEY_LENGTH},
     packet::{
-        self, DestinationType, Header, HeaderType, IfacFlag, Packet, PacketContext,
+        self, ContextFlag, DestinationType, Header, HeaderType, IfacFlag, Packet, PacketContext,
         PacketDataBuffer, PacketType, PropagationType,
     },
 };
@@ -60,6 +60,7 @@ pub const NAME_HASH_LENGTH: usize = 10;
 pub const RAND_HASH_LENGTH: usize = 10;
 pub const MIN_ANNOUNCE_DATA_LENGTH: usize =
     PUBLIC_KEY_LENGTH * 2 + NAME_HASH_LENGTH + RAND_HASH_LENGTH + SIGNATURE_LENGTH;
+pub const RATCHET_PUBLIC_KEY_LENGTH: usize = 32;
 
 #[derive(Copy, Clone)]
 pub struct DestinationName {
@@ -118,8 +119,15 @@ impl DestinationAnnounce {
         }
 
         let announce_data = packet.data.as_slice();
+        let has_ratchet = packet.header.context_flag.is_set();
+        let min_length = MIN_ANNOUNCE_DATA_LENGTH
+            + if has_ratchet {
+                RATCHET_PUBLIC_KEY_LENGTH
+            } else {
+                0
+            };
 
-        if announce_data.len() < MIN_ANNOUNCE_DATA_LENGTH {
+        if announce_data.len() < min_length {
             return Err(RnsError::OutOfMemory);
         }
 
@@ -146,6 +154,13 @@ impl DestinationAnnounce {
         offset += NAME_HASH_LENGTH;
         let rand_hash = &announce_data[offset..(offset + RAND_HASH_LENGTH)];
         offset += RAND_HASH_LENGTH;
+        let ratchet = if has_ratchet {
+            let slice = &announce_data[offset..(offset + RATCHET_PUBLIC_KEY_LENGTH)];
+            offset += RATCHET_PUBLIC_KEY_LENGTH;
+            Some(slice)
+        } else {
+            None
+        };
         let signature = &announce_data[offset..(offset + SIGNATURE_LENGTH)];
         offset += SIGNATURE_LENGTH;
         let app_data = &announce_data[offset..];
@@ -154,14 +169,21 @@ impl DestinationAnnounce {
 
         // Keeping signed data on stack is only option for now.
         // Verification function doesn't support prehashed message.
-        let signed_data = PacketDataBuffer::new()
+        let mut signed_data = PacketDataBuffer::new();
+        signed_data
             .chain_write(destination.as_slice())?
             .chain_write(public_key.as_bytes())?
             .chain_write(verifying_key.as_bytes())?
             .chain_write(name_hash)?
-            .chain_write(rand_hash)?
-            .chain_write(app_data)?
-            .finalize();
+            .chain_write(rand_hash)?;
+
+        if let Some(ratchet) = ratchet {
+            signed_data.chain_write(ratchet)?;
+        }
+
+        signed_data.chain_write(app_data)?;
+
+        let signed_data = signed_data.finalize();
 
         let signature = Signature::from_slice(signature).map_err(|_| RnsError::CryptoError)?;
 
@@ -279,6 +301,7 @@ impl Destination<PrivateIdentity, Input, Single> {
             header: Header {
                 ifac_flag: IfacFlag::Open,
                 header_type: HeaderType::Type1,
+                context_flag: ContextFlag::Unset,
                 propagation_type: PropagationType::Broadcast,
                 destination_type: DestinationType::Single,
                 packet_type: PacketType::Announce,

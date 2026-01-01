@@ -884,6 +884,7 @@ fn create_retransmit_packet(packet: &Packet) -> Packet {
         header: Header {
             ifac_flag: packet.header.ifac_flag,
             header_type: packet.header.header_type,
+            context_flag: packet.header.context_flag,
             propagation_type: packet.header.propagation_type,
             destination_type: packet.header.destination_type,
             packet_type: packet.header.packet_type,
