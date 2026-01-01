@@ -57,7 +57,7 @@ fn ratchet_id_from_pub_bytes(pub_bytes: &[u8; PUBLIC_KEY_LENGTH]) -> RatchetId {
     id
 }
 
-fn ratchet_id_from_secret(secret: &StaticSecret) -> RatchetId {
+pub fn ratchet_id_from_secret(secret: &StaticSecret) -> RatchetId {
     let pub_bytes = ratchet_pub_from_secret(secret);
     ratchet_id_from_pub_bytes(&pub_bytes)
 }
@@ -399,11 +399,11 @@ impl PrivateIdentity {
         let peer_pub = PublicKey::from(peer_pub_arr);
 
         let default_salt = self.address_hash().as_slice();
-        let salt_slice = salt.unwrap_or(default_salt);
+        let ratchet_salt = salt.unwrap_or(default_salt);
 
         for ratchet in ratchets {
             let shared = ratchet.diffie_hellman(&peer_pub);
-            let derived = DerivedKey::new(&shared, Some(salt_slice));
+            let derived = DerivedKey::new(&shared, Some(ratchet_salt));
             match self.decrypt(rng, ciphertext, &derived, out_buf) {
                 Ok(plain_text) => {
                     let len = plain_text.len();
@@ -421,7 +421,7 @@ impl PrivateIdentity {
             return Err(RnsError::CryptoError);
         }
 
-        let derived = self.derive_key(&peer_pub, Some(salt_slice));
+        let derived = self.derive_key(&peer_pub, Some(default_salt));
         match self.decrypt(rng, ciphertext, &derived, out_buf) {
             Ok(plain_text) => {
                 let len = plain_text.len();

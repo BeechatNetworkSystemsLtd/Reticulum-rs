@@ -1,24 +1,25 @@
 pub mod link;
 pub mod link_map;
 
+use alloc::vec::Vec;
+use core::{fmt, marker::PhantomData};
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey, SIGNATURE_LENGTH};
 use rand_core::CryptoRngCore;
-use x25519_dalek::PublicKey;
-
-use core::{fmt, marker::PhantomData};
+use sha2::Digest;
+use std::time::{Duration, Instant};
+use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::{
     error::RnsError,
     hash::{AddressHash, Hash},
-    identity::{EmptyIdentity, HashIdentity, Identity, PrivateIdentity, PUBLIC_KEY_LENGTH},
+    identity::{
+        EmptyIdentity, HashIdentity, Identity, PrivateIdentity, RatchetId, PUBLIC_KEY_LENGTH,
+    },
     packet::{
         self, ContextFlag, DestinationType, Header, HeaderType, IfacFlag, Packet, PacketContext,
         PacketDataBuffer, PacketType, PropagationType,
     },
 };
-use sha2::Digest;
-
-//***************************************************************************//
 
 pub trait Direction {}
 
@@ -27,8 +28,6 @@ pub struct Output;
 
 impl Direction for Input {}
 impl Direction for Output {}
-
-//***************************************************************************//
 
 pub trait Type {
     fn destination_type() -> DestinationType;
@@ -58,9 +57,12 @@ impl Type for Group {
 
 pub const NAME_HASH_LENGTH: usize = 10;
 pub const RAND_HASH_LENGTH: usize = 10;
+pub const RATCHET_PUBLIC_KEY_LENGTH: usize = 32;
 pub const MIN_ANNOUNCE_DATA_LENGTH: usize =
     PUBLIC_KEY_LENGTH * 2 + NAME_HASH_LENGTH + RAND_HASH_LENGTH + SIGNATURE_LENGTH;
-pub const RATCHET_PUBLIC_KEY_LENGTH: usize = 32;
+
+const DEFAULT_RATCHET_INTERVAL_SECS: u64 = 30 * 60;
+const DEFAULT_RATCHET_RETENTION: usize = 512;
 
 #[derive(Copy, Clone)]
 pub struct DestinationName {
@@ -167,8 +169,6 @@ impl DestinationAnnounce {
 
         let destination = &packet.destination;
 
-        // Keeping signed data on stack is only option for now.
-        // Verification function doesn't support prehashed message.
         let mut signed_data = PacketDataBuffer::new();
         signed_data
             .chain_write(destination.as_slice())?
@@ -201,40 +201,36 @@ pub struct Destination<I: HashIdentity, D: Direction, T: Type> {
     pub r#type: PhantomData<T>,
     pub identity: I,
     pub desc: DestinationDesc,
+    ratchets_enabled: bool,
+    ratchet_keys: Vec<StaticSecret>,
+    ratchet_rotation_interval: Duration,
+    ratchet_retention_limit: usize,
+    ratchet_last_rotation: Option<Instant>,
+    ratchet_enforce_only: bool,
+    latest_ratchet_id: Option<RatchetId>,
 }
 
 impl<I: HashIdentity, D: Direction, T: Type> Destination<I, D, T> {
     pub fn destination_type(&self) -> packet::DestinationType {
         <T as Type>::destination_type()
     }
+
+    fn new_with_desc(identity: I, desc: DestinationDesc) -> Self {
+        Self {
+            direction: PhantomData,
+            r#type: PhantomData,
+            identity,
+            desc,
+            ratchets_enabled: false,
+            ratchet_keys: Vec::new(),
+            ratchet_rotation_interval: Duration::from_secs(DEFAULT_RATCHET_INTERVAL_SECS),
+            ratchet_retention_limit: DEFAULT_RATCHET_RETENTION,
+            ratchet_last_rotation: None,
+            ratchet_enforce_only: false,
+            latest_ratchet_id: None,
+        }
+    }
 }
-
-// impl<I: DecryptIdentity + HashIdentity, T: Type> Destination<I, Input, T> {
-//     pub fn decrypt<'b, R: CryptoRngCore + Copy>(
-//         &self,
-//         rng: R,
-//         data: &[u8],
-//         out_buf: &'b mut [u8],
-//     ) -> Result<&'b [u8], RnsError> {
-//         self.identity.decrypt(rng, data, out_buf)
-//     }
-// }
-
-// impl<I: EncryptIdentity + HashIdentity, D: Direction, T: Type> Destination<I, D, T> {
-//     pub fn encrypt<'b, R: CryptoRngCore + Copy>(
-//         &self,
-//         rng: R,
-//         text: &[u8],
-//         out_buf: &'b mut [u8],
-//     ) -> Result<&'b [u8], RnsError> {
-//         // self.identity.encrypt(
-//         //     rng,
-//         //     text,
-//         //     Some(self.identity.as_address_hash_slice()),
-//         //     out_buf,
-//         // )
-//     }
-// }
 
 pub enum DestinationHandleStatus {
     None,
@@ -246,20 +242,18 @@ impl Destination<PrivateIdentity, Input, Single> {
         let address_hash = create_address_hash(&identity, &name);
         let pub_identity = identity.as_identity().clone();
 
-        Self {
-            direction: PhantomData,
-            r#type: PhantomData,
+        Self::new_with_desc(
             identity,
-            desc: DestinationDesc {
+            DestinationDesc {
                 identity: pub_identity,
                 name,
                 address_hash,
             },
-        }
+        )
     }
 
     pub fn announce<R: CryptoRngCore + Copy>(
-        &self,
+        &mut self,
         rng: R,
         app_data: Option<&[u8]>,
     ) -> Result<Packet, RnsError> {
@@ -267,6 +261,7 @@ impl Destination<PrivateIdentity, Input, Single> {
 
         let rand_hash = Hash::new_from_rand(rng);
         let rand_hash = &rand_hash.as_slice()[..RAND_HASH_LENGTH];
+        let ratchet_bytes = self.active_ratchet_public(rng);
 
         let pub_key = self.identity.as_identity().public_key_bytes();
         let verifying_key = self.identity.as_identity().verifying_key_bytes();
@@ -277,6 +272,10 @@ impl Destination<PrivateIdentity, Input, Single> {
             .chain_safe_write(verifying_key)
             .chain_safe_write(self.desc.name.as_name_hash_slice())
             .chain_safe_write(rand_hash);
+
+        if let Some(ratchet) = ratchet_bytes.as_ref() {
+            packet_data.chain_safe_write(ratchet);
+        }
 
         if let Some(data) = app_data {
             packet_data.write(data)?;
@@ -290,18 +289,29 @@ impl Destination<PrivateIdentity, Input, Single> {
             .chain_safe_write(pub_key)
             .chain_safe_write(verifying_key)
             .chain_safe_write(self.desc.name.as_name_hash_slice())
-            .chain_safe_write(rand_hash)
-            .chain_safe_write(&signature.to_bytes());
+            .chain_safe_write(rand_hash);
+
+        if let Some(ratchet) = ratchet_bytes.as_ref() {
+            packet_data.chain_safe_write(ratchet);
+        }
+
+        packet_data.chain_safe_write(&signature.to_bytes());
 
         if let Some(data) = app_data {
             packet_data.write(data)?;
         }
 
+        let context_flag = if ratchet_bytes.is_some() {
+            ContextFlag::Set
+        } else {
+            ContextFlag::Unset
+        };
+
         Ok(Packet {
             header: Header {
                 ifac_flag: IfacFlag::Open,
                 header_type: HeaderType::Type1,
-                context_flag: ContextFlag::Unset,
+                context_flag,
                 propagation_type: PropagationType::Broadcast,
                 destination_type: DestinationType::Single,
                 packet_type: PacketType::Announce,
@@ -322,7 +332,6 @@ impl Destination<PrivateIdentity, Input, Single> {
 
         match packet.header.packet_type {
             PacketType::LinkRequest => {
-                // TODO: check prove strategy
                 return DestinationHandleStatus::LinkProof;
             }
             _ => {}
@@ -334,37 +343,139 @@ impl Destination<PrivateIdentity, Input, Single> {
     pub fn sign_key(&self) -> &SigningKey {
         self.identity.sign_key()
     }
+
+    pub fn enable_ratchets<R: CryptoRngCore + Copy>(&mut self, rng: R) {
+        self.ratchets_enabled = true;
+        self.ratchet_keys.clear();
+        self.ratchet_last_rotation = None;
+        self.rotate_ratchets_if_needed(rng);
+    }
+
+    pub fn rotate_ratchets_if_needed<R: CryptoRngCore + Copy>(&mut self, rng: R) -> bool {
+        if !self.ratchets_enabled {
+            return false;
+        }
+
+        let needs_rotation = self
+            .ratchet_last_rotation
+            .map(|last| last.elapsed() >= self.ratchet_rotation_interval)
+            .unwrap_or(true)
+            || self.ratchet_keys.is_empty();
+
+        if needs_rotation {
+            self.insert_ratchet(rng);
+            return true;
+        }
+
+        false
+    }
+
+    pub fn set_ratchet_interval(&mut self, interval: Duration) {
+        if !interval.is_zero() {
+            self.ratchet_rotation_interval = interval;
+        }
+    }
+
+    pub fn set_ratchet_retention_limit(&mut self, limit: usize) {
+        self.ratchet_retention_limit = limit.max(1);
+        if self.ratchet_keys.len() > self.ratchet_retention_limit {
+            self.ratchet_keys.truncate(self.ratchet_retention_limit);
+        }
+    }
+
+    pub fn set_ratchet_enforcement(&mut self, enforce: bool) {
+        self.ratchet_enforce_only = enforce;
+    }
+
+    pub fn ratchet_enforcement(&self) -> bool {
+        self.ratchet_enforce_only
+    }
+
+    pub fn ratchets_enabled(&self) -> bool {
+        self.ratchets_enabled
+    }
+
+    pub fn retained_ratchet_count(&self) -> usize {
+        self.ratchet_keys.len()
+    }
+
+    pub fn latest_ratchet_id(&self) -> Option<RatchetId> {
+        self.latest_ratchet_id
+    }
+
+    pub fn decrypt_payload<'a, R: CryptoRngCore + Copy>(
+        &mut self,
+        rng: R,
+        ciphertext: &[u8],
+        out_buf: &'a mut [u8],
+    ) -> Result<&'a [u8], RnsError> {
+        let ratchets = if self.ratchets_enabled {
+            self.ratchet_keys.as_slice()
+        } else {
+            &[]
+        };
+
+        self.identity.decrypt_token(
+            rng,
+            ciphertext,
+            Some(self.desc.address_hash.as_slice()),
+            ratchets,
+            self.ratchet_enforce_only,
+            &mut self.latest_ratchet_id,
+            out_buf,
+        )
+    }
+
+    fn active_ratchet_public<R: CryptoRngCore + Copy>(
+        &mut self,
+        rng: R,
+    ) -> Option<[u8; PUBLIC_KEY_LENGTH]> {
+        if !self.ratchets_enabled {
+            return None;
+        }
+
+        self.rotate_ratchets_if_needed(rng);
+        self.ratchet_keys
+            .first()
+            .map(|secret| PublicKey::from(secret).to_bytes())
+    }
+
+    fn insert_ratchet<R: CryptoRngCore + Copy>(&mut self, rng: R) {
+        self.ratchet_keys
+            .insert(0, StaticSecret::random_from_rng(rng));
+        self.ratchet_last_rotation = Some(Instant::now());
+
+        if self.ratchet_keys.len() > self.ratchet_retention_limit {
+            self.ratchet_keys.truncate(self.ratchet_retention_limit);
+        }
+    }
 }
 
 impl Destination<Identity, Output, Single> {
     pub fn new(identity: Identity, name: DestinationName) -> Self {
         let address_hash = create_address_hash(&identity, &name);
-        Self {
-            direction: PhantomData,
-            r#type: PhantomData,
+        Self::new_with_desc(
             identity,
-            desc: DestinationDesc {
+            DestinationDesc {
                 identity,
                 name,
                 address_hash,
             },
-        }
+        )
     }
 }
 
 impl<D: Direction> Destination<EmptyIdentity, D, Plain> {
     pub fn new(identity: EmptyIdentity, name: DestinationName) -> Self {
         let address_hash = create_address_hash(&identity, &name);
-        Self {
-            direction: PhantomData,
-            r#type: PhantomData,
+        Self::new_with_desc(
             identity,
-            desc: DestinationDesc {
+            DestinationDesc {
                 identity: Default::default(),
                 name,
                 address_hash,
             },
-        }
+        )
     }
 }
 
@@ -386,10 +497,12 @@ pub type PlainOutputDestination = Destination<EmptyIdentity, Output, Plain>;
 #[cfg(test)]
 mod tests {
     use rand_core::OsRng;
+    use std::time::{Duration, Instant};
 
     use crate::buffer::OutputBuffer;
+    use crate::error::RnsError;
     use crate::hash::Hash;
-    use crate::identity::PrivateIdentity;
+    use crate::identity::{EncryptIdentity, PrivateIdentity};
     use crate::serde::Serialize;
 
     use super::DestinationAnnounce;
@@ -400,7 +513,7 @@ mod tests {
     fn create_announce() {
         let identity = PrivateIdentity::new_from_rand(OsRng);
 
-        let single_in_destination =
+        let mut single_in_destination =
             SingleInputDestination::new(identity, DestinationName::new("test", "in"));
 
         let announce_packet = single_in_destination
@@ -439,7 +552,7 @@ mod tests {
 
         println!("identity hash {}", priv_identity.as_identity().address_hash);
 
-        let destination = SingleInputDestination::new(
+        let mut destination = SingleInputDestination::new(
             priv_identity,
             DestinationName::new("example_utilities", "announcesample.fruits"),
         );
@@ -463,7 +576,7 @@ mod tests {
     fn check_announce() {
         let priv_identity = PrivateIdentity::new_from_rand(OsRng);
 
-        let destination = SingleInputDestination::new(
+        let mut destination = SingleInputDestination::new(
             priv_identity,
             DestinationName::new("example_utilities", "announcesample.fruits"),
         );
@@ -473,5 +586,68 @@ mod tests {
             .expect("valid announce packet");
 
         DestinationAnnounce::validate(&announce).expect("valid announce");
+    }
+
+    #[test]
+    fn announce_includes_ratchet_when_enabled() {
+        let identity = PrivateIdentity::new_from_rand(OsRng);
+        let mut destination =
+            SingleInputDestination::new(identity, DestinationName::new("ratchet", "demo"));
+
+        destination.enable_ratchets(OsRng);
+
+        let packet = destination
+            .announce(OsRng, None)
+            .expect("announce should succeed");
+
+        assert!(packet.header.context_flag.is_set());
+        assert_eq!(destination.retained_ratchet_count(), 1);
+    }
+
+    #[test]
+    fn ratchet_rotation_respects_retention_limit() {
+        let identity = PrivateIdentity::new_from_rand(OsRng);
+        let mut destination =
+            SingleInputDestination::new(identity, DestinationName::new("ratchet", "limit"));
+
+        destination.enable_ratchets(OsRng);
+        destination.set_ratchet_retention_limit(2);
+
+        for _ in 0..4 {
+            destination.ratchet_last_rotation = Some(
+                Instant::now()
+                    - destination.ratchet_rotation_interval
+                    - Duration::from_secs(1),
+            );
+            destination.rotate_ratchets_if_needed(OsRng);
+        }
+
+        assert_eq!(destination.retained_ratchet_count(), 2);
+    }
+
+    #[test]
+    fn ratchet_enforcement_blocks_identity_ciphertexts() {
+        let identity = PrivateIdentity::new_from_rand(OsRng);
+        let mut destination =
+            SingleInputDestination::new(identity, DestinationName::new("ratchet", "enforce"));
+
+        let mut cipher_buf = [0u8; 256];
+        let public_identity = destination.identity.as_identity().clone();
+        let derived = public_identity.derive_key(OsRng);
+        let ciphertext = public_identity
+            .encrypt(OsRng, b"ratchet-test", &derived, &mut cipher_buf)
+            .expect("ciphertext")
+            .to_vec();
+
+        let mut out_buf = [0u8; 256];
+        destination.set_ratchet_enforcement(true);
+        let enforced = destination.decrypt_payload(OsRng, &ciphertext, &mut out_buf);
+        assert!(matches!(enforced, Err(RnsError::CryptoError)));
+
+        destination.set_ratchet_enforcement(false);
+        let plaintext = destination
+            .decrypt_payload(OsRng, &ciphertext, &mut out_buf)
+            .expect("decrypts without enforcement");
+        assert_eq!(plaintext, b"ratchet-test");
     }
 }
