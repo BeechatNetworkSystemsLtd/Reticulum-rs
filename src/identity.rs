@@ -4,12 +4,13 @@ use rand_core::CryptoRngCore;
 
 use ed25519_dalek::{ed25519::signature::Signer, Signature, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
-use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
+use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 
 use crate::{
     crypt::fernet::{Fernet, PlainText, Token},
     error::RnsError,
     hash::{AddressHash, Hash},
+    utils::deterministic,
 };
 
 pub const PUBLIC_KEY_LENGTH: usize = ed25519_dalek::PUBLIC_KEY_LENGTH;
@@ -528,7 +529,9 @@ impl DerivedKey {
         pub_key: &PublicKey,
         salt: Option<&[u8]>,
     ) -> Self {
-        let secret = EphemeralSecret::random_from_rng(rng);
+        let secret = deterministic::take_next_ephemeral_secret()
+            .map(StaticSecret::from)
+            .unwrap_or_else(|| StaticSecret::random_from_rng(rng));
         let ephemeral_public = PublicKey::from(&secret);
         let shared_key = secret.diffie_hellman(pub_key);
         let mut derived = Self::new(&shared_key, salt);

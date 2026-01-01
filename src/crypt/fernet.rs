@@ -5,6 +5,7 @@ use aes::cipher::block_padding::Pkcs7;
 use aes::cipher::BlockDecryptMut;
 use aes::cipher::Key;
 use aes::cipher::Unsigned;
+use cbc::cipher::generic_array::GenericArray;
 use cbc::cipher::BlockEncryptMut;
 use cbc::cipher::KeyIvInit;
 use crypto_common::{IvSizeUser, KeySizeUser, OutputSizeUser};
@@ -30,6 +31,7 @@ const AES_KEY_SIZE: usize = <<AesAlgo as KeySizeUser>::KeySize as Unsigned>::USI
 const IV_KEY_SIZE: usize = <<AesCbcEnc as IvSizeUser>::IvSize as Unsigned>::USIZE;
 // Token layout: IV (IV_KEY_SIZE bytes) || ciphertext || HMAC (HMAC_OUT_SIZE bytes)
 const FERNET_OVERHEAD_SIZE: usize = IV_KEY_SIZE + HMAC_OUT_SIZE;
+pub const FERNET_IV_LENGTH: usize = IV_KEY_SIZE;
 
 pub struct PlainText<'a>(&'a [u8]);
 pub struct VerifiedToken<'a>(&'a [u8]);
@@ -127,8 +129,12 @@ impl<R: CryptoRngCore + Copy> Fernet<R> {
 
         let mut out_len = 0;
 
-        // Generate random IV
-        let iv = AesCbcEnc::generate_iv(self.rng);
+        // Generate IV (deterministic hooks override randomness when set)
+        let iv = if let Some(bytes) = crate::utils::deterministic::take_next_fernet_iv() {
+            GenericArray::from(bytes)
+        } else {
+            AesCbcEnc::generate_iv(self.rng)
+        };
         out_buf[..iv.len()].copy_from_slice(iv.as_slice());
 
         out_len += iv.len();
