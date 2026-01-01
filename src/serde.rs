@@ -2,7 +2,7 @@ use crate::{
     buffer::{InputBuffer, OutputBuffer, StaticBuffer},
     error::RnsError,
     hash::AddressHash,
-    packet::{ContextFlag, Header, HeaderType, Packet, PacketContext},
+    packet::{Header, HeaderType, Packet, PacketContext},
 };
 
 pub trait Serialize {
