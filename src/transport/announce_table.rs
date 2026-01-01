@@ -104,6 +104,13 @@ impl AnnounceTable {
         // temporary hack
         self.map.get_mut(dest_hash).map_or(None, |e| e.retransmit(transport_id))
     }
+    pub fn get(&self, destination: &AddressHash) -> Option<&Packet> {
+        self.map.get(destination).map(|entry| &entry.packet)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Packet> {
+        self.map.values().map(|entry| &entry.packet)
+    }
 
 
     pub fn to_retransmit(
