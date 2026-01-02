@@ -435,7 +435,7 @@ impl Destination<PrivateIdentity, Input, Single> {
         self.identity.decrypt_token(
             rng,
             ciphertext,
-            Some(self.desc.address_hash.as_slice()),
+            Some(self.identity.address_hash().as_slice()),
             ratchets,
             self.ratchet_enforce_only,
             &mut self.latest_ratchet_id,
@@ -509,7 +509,7 @@ impl Destination<Identity, Output, Single> {
         let derived = DerivedKey::new_from_ephemeral_key(
             rng,
             target_public,
-            Some(self.desc.address_hash.as_slice()),
+            Some(self.identity.address_hash.as_slice()),
         );
 
         self.identity.encrypt(rng, plaintext, &derived, out_buf)
