@@ -10,10 +10,9 @@ use reticulum::identity::{Identity, PrivateIdentity};
 use reticulum::iface::tcp_client::TcpClient;
 use reticulum::transport::{Transport, TransportConfig};
 use reticulum::identity::HashIdentity;
-use tokio::select;
+use reticulum::destination::link::LinkEvent;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 const APP_NAME: &str = "example_utilities";
 
@@ -96,16 +95,6 @@ async fn main() {
                     return;
                 }
             };
-  
-            // Create the destination matching Python: APP_NAME, "echo", "request"
-            // The aspects MUST match what the Python server registered: ("echo", "request")
-            let destination_name_echo: DestinationName = DestinationName::new(APP_NAME, "ratchet.echo.request");
-            let request_destination: destination::Destination<Identity, destination::Output, destination::Single> =
-                SingleOutputDestination::new(server_identity, destination_name_echo);
-            let request_destination_hash = request_destination.desc.address_hash;
-            
-            // Verify we calculated the same destination hash
-            assert_eq!(request_destination_hash, destination_hash);
             
             // This handles encryption automatically, just like Python does
             let payload: &str = "Hello, Reticulum!";
