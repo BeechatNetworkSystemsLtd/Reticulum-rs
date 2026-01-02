@@ -503,7 +503,9 @@ impl Destination<Identity, Output, Single> {
             .cached_ratchet_public
             .and_then(|bytes| ratchet_id_from_pub(&bytes[..]).ok());
 
-        let target_public = ratchet_public.as_ref().unwrap_or(&self.identity.public_key);
+        let target_public = ratchet_public
+            .as_ref()
+            .unwrap_or(&self.identity.public_key);
         let derived = DerivedKey::new_from_ephemeral_key(
             rng,
             target_public,
@@ -582,9 +584,7 @@ mod tests {
     use crate::buffer::OutputBuffer;
     use crate::error::RnsError;
     use crate::hash::Hash;
-    use crate::identity::{
-        ratchet_id_from_pub, EncryptIdentity, PrivateIdentity, PUBLIC_KEY_LENGTH,
-    };
+    use crate::identity::{ratchet_id_from_pub, EncryptIdentity, PrivateIdentity, PUBLIC_KEY_LENGTH};
     use crate::serde::Serialize;
 
     use super::DestinationAnnounce;
@@ -698,7 +698,9 @@ mod tests {
 
         for _ in 0..4 {
             destination.ratchet_last_rotation = Some(
-                Instant::now() - destination.ratchet_rotation_interval - Duration::from_secs(1),
+                Instant::now()
+                    - destination.ratchet_rotation_interval
+                    - Duration::from_secs(1),
             );
             destination.rotate_ratchets_if_needed(OsRng);
         }
