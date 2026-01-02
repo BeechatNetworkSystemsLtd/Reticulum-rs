@@ -91,13 +91,9 @@ fn deterministic_ratchet_vector_matches_reference() {
     let expected_ratchet = ratchet_id_from_pub(&ratchet_public[..]).expect("ratchet id");
 
     let mut out_buf = vec![0u8; 512];
+    destination.remember_ratchet(ratchet_public);
     let cipher = destination
-        .encrypt_payload(
-            OsRng,
-            RATCHET_PLAINTEXT,
-            Some(&ratchet_public),
-            &mut out_buf,
-        )
+        .encrypt_payload(OsRng, RATCHET_PLAINTEXT, &mut out_buf)
         .expect("ciphertext");
 
     assert_eq!(destination.latest_ratchet_id(), Some(expected_ratchet));

@@ -632,13 +632,17 @@ impl TransportHandler {
         let cached_ratchet = self.ratchet_cache.get(destination_hash).cloned();
         let mut destination = destination_entry.lock().await;
 
+        match cached_ratchet.as_ref() {
+            Some(entry) => destination.remember_ratchet(entry.public_key),
+            None => destination.clear_cached_ratchet(),
+        }
+
         let mut packet_data = PacketDataBuffer::new();
         let ciphertext_len = {
             let buffer = packet_data.accuire_buf_max();
             let ciphertext = destination.encrypt_payload(
                 OsRng,
                 payload,
-                cached_ratchet.as_ref().map(|entry| &entry.public_key),
                 buffer,
             )?;
             ciphertext.len()
@@ -824,15 +828,31 @@ async fn handle_announce<'a>(
     let destination_known = handler.has_destination(&packet.destination);
 
     if let Ok(ValidatedAnnounce {
-        destination,
+        mut destination,
         app_data,
         ratchet,
     }) = DestinationAnnounce::validate(packet)
     {
         let dest_hash = destination.desc.address_hash;
+        let existing_destination = handler
+            .single_out_destinations
+            .get(&packet.destination)
+            .cloned();
 
-        if let Some(ratchet_key) = ratchet {
-            handler.ratchet_cache.update(dest_hash, ratchet_key);
+        match ratchet {
+            Some(ratchet_key) => {
+                handler.ratchet_cache.update(dest_hash, ratchet_key);
+                destination.remember_ratchet(ratchet_key);
+                if let Some(existing) = existing_destination.as_ref() {
+                    existing.lock().await.remember_ratchet(ratchet_key);
+                }
+            }
+            None => {
+                destination.clear_cached_ratchet();
+                if let Some(existing) = existing_destination.as_ref() {
+                    existing.lock().await.clear_cached_ratchet();
+                }
+            }
         }
 
         let destination = Arc::new(Mutex::new(destination));

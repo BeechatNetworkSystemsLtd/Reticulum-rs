@@ -223,6 +223,7 @@ pub struct Destination<I: HashIdentity, D: Direction, T: Type> {
     ratchet_last_rotation: Option<Instant>,
     ratchet_enforce_only: bool,
     latest_ratchet_id: Option<RatchetId>,
+    cached_ratchet_public: Option<[u8; PUBLIC_KEY_LENGTH]>,
 }
 
 impl<I: HashIdentity, D: Direction, T: Type> Destination<I, D, T> {
@@ -243,6 +244,7 @@ impl<I: HashIdentity, D: Direction, T: Type> Destination<I, D, T> {
             ratchet_last_rotation: None,
             ratchet_enforce_only: false,
             latest_ratchet_id: None,
+            cached_ratchet_public: None,
         }
     }
 }
@@ -479,24 +481,31 @@ impl Destination<Identity, Output, Single> {
         )
     }
 
+    pub fn remember_ratchet(&mut self, ratchet_public: [u8; PUBLIC_KEY_LENGTH]) {
+        self.cached_ratchet_public = Some(ratchet_public);
+    }
+
+    pub fn clear_cached_ratchet(&mut self) {
+        self.cached_ratchet_public = None;
+    }
+
     pub fn encrypt_payload<'a, R: CryptoRngCore + Copy>(
         &mut self,
         rng: R,
         plaintext: &[u8],
-        ratchet_public: Option<&[u8; PUBLIC_KEY_LENGTH]>,
         out_buf: &'a mut [u8],
     ) -> Result<&'a [u8], RnsError> {
-        let mut ratchet_key = None;
-        if let Some(key) = ratchet_public {
-            let mut bytes = [0u8; PUBLIC_KEY_LENGTH];
-            bytes.copy_from_slice(key);
-            ratchet_key = Some(PublicKey::from(bytes));
-        }
+        let ratchet_public = self
+            .cached_ratchet_public
+            .map(|bytes| PublicKey::from(bytes));
 
-        self.latest_ratchet_id = ratchet_public
-            .and_then(|key| ratchet_id_from_pub(&key[..]).ok());
+        self.latest_ratchet_id = self
+            .cached_ratchet_public
+            .and_then(|bytes| ratchet_id_from_pub(&bytes[..]).ok());
 
-        let target_public = ratchet_key.as_ref().unwrap_or(&self.identity.public_key);
+        let target_public = ratchet_public
+            .as_ref()
+            .unwrap_or(&self.identity.public_key);
         let derived = DerivedKey::new_from_ephemeral_key(
             rng,
             target_public,
@@ -508,6 +517,33 @@ impl Destination<Identity, Output, Single> {
 
     pub fn latest_ratchet_id(&self) -> Option<RatchetId> {
         self.latest_ratchet_id
+    }
+    pub fn create_packet<'a, R: CryptoRngCore + Copy>(
+        &mut self,
+        rng: R,
+        payload: &[u8],
+    ) -> Result<Packet, RnsError> {
+        let mut out_buf = vec![0u8; payload.len() + 256];
+        let cipher = self.encrypt_payload(rng, payload, &mut out_buf)?;
+
+        let data = PacketDataBuffer::new_from_slice(cipher);
+
+        Ok(Packet {
+            header: Header {
+                ifac_flag: IfacFlag::Open,
+                header_type: HeaderType::Type1,
+                context_flag: ContextFlag::Unset,
+                propagation_type: PropagationType::Broadcast,
+                destination_type: DestinationType::Single,
+                packet_type: PacketType::Data,
+                hops: 0,
+            },
+            ifac: None,
+            destination: self.desc.address_hash,
+            transport: None,
+            context: PacketContext::None,
+            data,
+        })
     }
 }
 
@@ -709,16 +745,18 @@ mod tests {
         let ratchet_public = PublicKey::from(&ratchet_secret).to_bytes();
 
         let mut out_buf = [0u8; 512];
+        destination.remember_ratchet(ratchet_public);
         let ciphertext = destination
-            .encrypt_payload(OsRng, b"hello", Some(&ratchet_public), &mut out_buf)
+            .encrypt_payload(OsRng, b"hello", &mut out_buf)
             .expect("ciphertext");
 
         assert!(ciphertext.len() > PUBLIC_KEY_LENGTH);
         let expected_id = ratchet_id_from_pub(&ratchet_public[..]).expect("ratchet id");
         assert_eq!(destination.latest_ratchet_id, Some(expected_id));
 
+        destination.clear_cached_ratchet();
         destination
-            .encrypt_payload(OsRng, b"hello", None, &mut out_buf)
+            .encrypt_payload(OsRng, b"hello", &mut out_buf)
             .expect("ciphertext");
         assert!(destination.latest_ratchet_id.is_none());
     }
