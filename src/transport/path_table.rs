@@ -39,6 +39,10 @@ impl PathTable {
         self.map.contains_key(destination)
     }
 
+    pub fn hops_to(&self, destination: &AddressHash) -> Option<u8> {
+        self.map.get(destination).map(|entry| entry.hops)
+    }
+
     pub fn handle_announce(
         &mut self,
         announce: &Packet,

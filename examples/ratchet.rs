@@ -5,7 +5,7 @@ use rand_core::OsRng;
 use reticulum::hash::AddressHash;
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::tcp_client::TcpClient;
-use reticulum::transport::{Transport, TransportConfig};
+use reticulum::transport::{PacketReceiptStatus, Transport, TransportConfig};
 
 
 
@@ -84,11 +84,36 @@ async fn main() {
             // Send the packet to the destination with the given hash
             // The transport will handle routing and encryption automatically
             // and get the ratchet pub key of the destination in the cache
-            transport
-            .send_to_destination(&destination_hash, payload.as_bytes(), reticulum::packet::PacketContext::None)
-            .await
-            .expect("packet send");
-            log::info!("Sent echo request to {}", destination_hash);
+            let receipt = transport
+                .send_to_destination(&destination_hash, payload.as_bytes(), reticulum::packet::PacketContext::None)
+                .await
+                .expect("packet send");
+
+            receipt.set_timeout(Duration::from_secs(30));
+            receipt.set_delivery_callback(|receipt| {
+                log::info!(
+                    "Packet to {} delivered in {:?}",
+                    receipt.destination(),
+                    receipt.round_trip_time()
+                );
+            });
+            receipt.set_timeout_callback(|receipt| {
+                log::warn!(
+                    "Packet to {} timed out",
+                    receipt.destination()
+                );
+            });
+
+            let status = receipt.wait().await;
+            match status {
+                PacketReceiptStatus::Delivered => {
+                    log::info!("Sent echo request to {}", destination_hash);
+                }
+                PacketReceiptStatus::Failed | PacketReceiptStatus::Culled => {
+                    log::warn!("Delivery to {} not confirmed", destination_hash);
+                }
+                PacketReceiptStatus::Sent => {}
+            }
             
             tokio::time::sleep(Duration::from_secs(1)).await;
             break;

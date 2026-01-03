@@ -59,7 +59,7 @@ async fn main() {
             log::info!("link {}: {:?}", link.id(), link.status());
             if link.status() == LinkStatus::Active {
                 let packet = link.data_packet (b"foo").unwrap();
-                transport.send_packet(packet).await;
+                let _ = transport.send_packet(packet).await;
             }
         }
         while let Ok(link_event) = out_link_events.try_recv() {

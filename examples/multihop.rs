@@ -172,7 +172,7 @@ async fn main() {
                             log::info!("Sending message over link: {}", &message);
 
                             let packet = link.data_packet(message.as_bytes()).unwrap();
-                            transport.send_packet(packet).await;
+                            let _ = transport.send_packet(packet).await;
                             continue;
                         }
                     }
