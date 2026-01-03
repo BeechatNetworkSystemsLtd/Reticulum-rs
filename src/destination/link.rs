@@ -324,7 +324,7 @@ impl Link {
     }
 
     pub fn data_packet(&self, data: &[u8]) -> Result<Packet, RnsError> {
-        if self.status != LinkStatus::Active {
+        if self.status != LinkStatus::Active && self.status != LinkStatus::Stale {
             log::warn!("link: can't create data packet for closed link");
         }
 
@@ -443,6 +443,12 @@ impl Link {
         self.post_event(LinkEvent::Closed);
 
         log::warn!("link: close {}", self.id);
+    }
+
+    pub fn stale(&mut self) {
+        self.status = LinkStatus::Stale;
+
+        log::warn!("link: stale {}", self.id);
     }
 
     pub fn restart(&mut self) {

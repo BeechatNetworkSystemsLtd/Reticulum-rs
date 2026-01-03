@@ -53,8 +53,10 @@ const PACKET_TRACE: bool = false;
 pub const PATHFINDER_M: usize = 128; // Max hops
 
 const INTERVAL_LINKS_CHECK: Duration = Duration::from_secs(1);
-const INTERVAL_INPUT_LINK_CLEANUP: Duration = Duration::from_secs(20);
-const INTERVAL_OUTPUT_LINK_RESTART: Duration = Duration::from_secs(60);
+const INTERVAL_INPUT_LINK_STALE: Duration = Duration::from_secs(10);
+const INTERVAL_INPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
+const INTERVAL_OUTPUT_LINK_STALE: Duration = Duration::from_secs(10);
+const INTERVAL_OUTPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
 const INTERVAL_OUTPUT_LINK_REPEAT: Duration = Duration::from_secs(6);
 const INTERVAL_OUTPUT_LINK_KEEP: Duration = Duration::from_secs(5);
 const INTERVAL_IFACE_CLEANUP: Duration = Duration::from_secs(10);
@@ -803,9 +805,15 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     // Clean up input links
     for link_entry in &handler.in_links {
         let mut link = link_entry.1.lock().await;
-        if link.elapsed() > INTERVAL_INPUT_LINK_CLEANUP {
-            link.close();
-            links_to_remove.push(*link_entry.0);
+        match link.status() {
+            LinkStatus::Active => if link.elapsed() > INTERVAL_INPUT_LINK_STALE {
+                link.stale();
+            }
+            LinkStatus::Stale => if link.elapsed() > INTERVAL_INPUT_LINK_STALE + INTERVAL_INPUT_LINK_CLOSE {
+                link.close();
+                links_to_remove.push(*link_entry.0);
+            }
+            _ => {}
         }
     }
 
@@ -817,25 +825,16 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
 
     for link_entry in &handler.out_links {
         let mut link = link_entry.1.lock().await;
-        if link.status() == LinkStatus::Closed {
-            link.close();
-            links_to_remove.push(*link_entry.0);
-        }
-    }
 
-    for addr in &links_to_remove {
-        handler.out_links.remove(&addr);
-    }
-
-    for link_entry in &handler.out_links {
-        let mut link = link_entry.1.lock().await;
-
-        if link.status() == LinkStatus::Active && link.elapsed() > INTERVAL_OUTPUT_LINK_RESTART {
-            link.restart();
-        }
-
-        if link.status() == LinkStatus::Pending {
-            if link.elapsed() > INTERVAL_OUTPUT_LINK_REPEAT {
+        match link.status() {
+            LinkStatus::Active => if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE {
+                link.stale();
+            }
+            LinkStatus::Stale => if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE + INTERVAL_OUTPUT_LINK_CLOSE {
+                link.close();
+                links_to_remove.push(*link_entry.0);
+            }
+            LinkStatus::Pending => if link.elapsed() > INTERVAL_OUTPUT_LINK_REPEAT {
                 log::warn!(
                     "tp({}): repeat link request {}",
                     handler.config.name,
@@ -843,7 +842,16 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                 );
                 handler.send_packet(link.request()).await;
             }
+            LinkStatus::Closed => {
+                link.close();
+                links_to_remove.push(*link_entry.0);
+            }
+            _ => {}
         }
+    }
+
+    for addr in &links_to_remove {
+        handler.out_links.remove(&addr);
     }
 }
 
