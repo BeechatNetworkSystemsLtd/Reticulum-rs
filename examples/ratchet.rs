@@ -31,7 +31,7 @@ fn load_identity_from_file(path: &str) -> Option<PrivateIdentity> {
 
 #[tokio::main]
 async fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
 
     let args: Vec<String> = env::args().collect();
     
@@ -90,7 +90,7 @@ async fn main() {
             .expect("packet send");
             log::info!("Sent echo request to {}", destination_hash);
             
-            let _ = tokio::signal::ctrl_c().await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
             break;
         } else {
             transport.request_path(&destination_hash, None).await;

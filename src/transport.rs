@@ -31,8 +31,9 @@ use crate::error::RnsError;
 
 use crate::hash::AddressHash;
 use crate::hash::Hash;
-use crate::identity::PrivateIdentity;
 use crate::identity::EmptyIdentity;
+use crate::identity::PrivateIdentity;
+use crate::identity::{global_ratchet_store, CachedRatchet};
 
 use crate::iface::InterfaceManager;
 use crate::iface::InterfaceRxReceiver;
@@ -54,10 +55,6 @@ mod announce_table;
 mod link_table;
 mod packet_cache;
 mod path_table;
-mod ratchet_cache;
-
-pub use ratchet_cache::CachedRatchet;
-use ratchet_cache::RatchetCache;
 
 // TODO: Configure via features
 const PACKET_TRACE: bool = false;
@@ -114,7 +111,6 @@ struct TransportHandler {
     in_links: HashMap<AddressHash, Arc<Mutex<Link>>>,
 
     packet_cache: Mutex<PacketCache>,
-    ratchet_cache: RatchetCache,
 
     link_in_event_tx: broadcast::Sender<LinkEventData>,
     received_data_tx: broadcast::Sender<ReceivedData>,
@@ -190,7 +186,6 @@ impl Transport {
             out_links: HashMap::new(),
             in_links: HashMap::new(),
             packet_cache: Mutex::new(PacketCache::new()),
-            ratchet_cache: RatchetCache::new(),
             announce_tx,
             link_in_event_tx: link_in_event_tx.clone(),
             received_data_tx: received_data_tx.clone(),
@@ -629,7 +624,7 @@ impl TransportHandler {
             .cloned()
             .ok_or(RnsError::InvalidArgument)?;
 
-        let cached_ratchet = self.ratchet_cache.get(destination_hash).cloned();
+        let cached_ratchet = global_ratchet_store().get(destination_hash);
         let mut destination = destination_entry.lock().await;
 
         match cached_ratchet.as_ref() {
@@ -841,7 +836,7 @@ async fn handle_announce<'a>(
 
         match ratchet {
             Some(ratchet_key) => {
-                handler.ratchet_cache.update(dest_hash, ratchet_key);
+                global_ratchet_store().remember(dest_hash, ratchet_key);
                 destination.remember_ratchet(ratchet_key);
                 if let Some(existing) = existing_destination.as_ref() {
                     existing.lock().await.remember_ratchet(ratchet_key);
@@ -1271,8 +1266,7 @@ async fn manage_transport(
                             .release(INTERVAL_KEEP_PACKET_CACHED);
 
                         handler.link_table.remove_stale();
-                        handler
-                            .ratchet_cache
+                        global_ratchet_store()
                             .prune_older_than(RATCHET_CACHE_RETENTION);
                     },
                 }
@@ -1313,6 +1307,7 @@ mod tests {
 
     #[tokio::test]
     async fn single_packet_uses_cached_ratchet() {
+        global_ratchet_store().clear();
         let mut transport = Transport::new(TransportConfig::default());
 
         let mut remote_destination = SingleInputDestination::new(
@@ -1330,11 +1325,9 @@ mod tests {
         }
 
         let dest_hash = announce.destination;
-        let cached = {
-            let handler = transport.handler.lock().await;
-            handler.ratchet_cache.get(&dest_hash).cloned()
-        }
-        .expect("ratchet cached");
+        let cached = global_ratchet_store()
+            .get(&dest_hash)
+            .expect("ratchet cached");
 
         let packet = {
             let mut handler = transport.handler.lock().await;

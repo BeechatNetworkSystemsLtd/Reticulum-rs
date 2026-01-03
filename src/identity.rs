@@ -2,6 +2,9 @@ use alloc::fmt::Write;
 use hkdf::Hkdf;
 use rand_core::CryptoRngCore;
 
+mod ratchet_store;
+pub use ratchet_store::{global_ratchet_store, CachedRatchet, RatchetStore};
+
 use ed25519_dalek::{ed25519::signature::Signer, Signature, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
