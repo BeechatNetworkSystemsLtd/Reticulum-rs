@@ -939,7 +939,14 @@ async fn manage_transport(
                         }
 
                         if !handler.filter_duplicate_packets(&packet).await {
-                            break;
+                            log::debug!(
+                                "tp({}): dropping duplicate packet: dst={}, ctx={:?}, type={:?}",
+                                handler.config.name,
+                                packet.destination,
+                                packet.context,
+                                packet.header.packet_type
+                            );
+                            continue;
                         }
 
                         if handler.config.broadcast && packet.header.packet_type != PacketType::Announce {
