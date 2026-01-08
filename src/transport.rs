@@ -1055,7 +1055,7 @@ async fn manage_transport(
                             &mut handler,
                             message.address
                         ).await {
-                            break;
+                            continue;
                         }
 
                         if !handler.filter_duplicate_packets(&packet).await {
