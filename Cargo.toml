@@ -39,7 +39,7 @@ sha2 = "0.10.8"
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 
 # Async IO
-tokio = { version = "1.44.2", features = ["full"] }
+tokio = { version = "1.44.2", features = ["rt", "net", "io-util", "sync", "time", "macros"] }
 tokio-stream = "0.1.17"
 tokio-util = "0.7.15"
 
@@ -51,9 +51,11 @@ log = "0.4.27"
 env_logger = "0.10"
 
 [features]
-default = ["alloc"]
+default = ["alloc", "tokio-full"]
 alloc = []
 fernet-aes128 = []
+# Full tokio features for desktop platforms. Disable for ESP32/embedded.
+tokio-full = ["tokio/rt-multi-thread", "tokio/signal"]
 
 [build-dependencies]
 tonic-build = "0.13.0"
@@ -61,35 +63,44 @@ tonic-build = "0.13.0"
 [[example]]
 name = "tcp_server"
 path = "examples/tcp_server.rs"
+required-features = ["tokio-full"]
 
 [[example]]
 name = "tcp_client"
 path = "examples/tcp_client.rs"
+required-features = ["tokio-full"]
 
 [[example]]
 name = "udp_link"
 path = "examples/udp_link.rs"
+required-features = ["tokio-full"]
 
 [[example]]
 name = "link_client"
 path = "examples/link_client.rs"
+required-features = ["tokio-full"]
 
 [[example]]
 name = "kaonic_client"
 path = "examples/kaonic_client.rs"
+required-features = ["tokio-full"]
 
 [[example]]
 name = "testnet_client"
 path = "examples/testnet_client.rs"
+required-features = ["tokio-full"]
 
 [[example]]
 name = "kaonic_tcp_mesh"
 path = "examples/kaonic_tcp_mesh.rs"
+required-features = ["tokio-full"]
 
 [[example]]
 name = "kaonic_mesh"
 path = "examples/kaonic_mesh.rs"
+required-features = ["tokio-full"]
 
 [[example]]
 name = "multihop"
 path = "examples/multihop.rs"
+required-features = ["tokio-full"]
