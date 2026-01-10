@@ -19,9 +19,9 @@ constrained deployments with maximum performance and minimal dependencies.
 
 [dependencies]
 
-# Protobuf and gRPC
-tonic = "0.13.0"
-prost = "0.13.5"
+# Protobuf and gRPC (optional, for Kaonic interface)
+tonic = { version = "0.13.0", optional = true }
+prost = { version = "0.13.5", optional = true }
 
 # Crypto
 crypto-common = { version = "0.1.6", features = ["rand_core"] }
@@ -51,12 +51,13 @@ log = "0.4.27"
 env_logger = "0.10"
 
 [features]
-default = ["alloc"]
+default = ["alloc", "grpc"]
 alloc = []
 fernet-aes128 = []
+grpc = ["dep:tonic", "dep:prost", "dep:tonic-build"]
 
 [build-dependencies]
-tonic-build = "0.13.0"
+tonic-build = { version = "0.13.0", optional = true }
 
 [[example]]
 name = "tcp_server"
@@ -77,6 +78,7 @@ path = "examples/link_client.rs"
 [[example]]
 name = "kaonic_client"
 path = "examples/kaonic_client.rs"
+required-features = ["grpc"]
 
 [[example]]
 name = "testnet_client"
@@ -85,10 +87,12 @@ path = "examples/testnet_client.rs"
 [[example]]
 name = "kaonic_tcp_mesh"
 path = "examples/kaonic_tcp_mesh.rs"
+required-features = ["grpc"]
 
 [[example]]
 name = "kaonic_mesh"
 path = "examples/kaonic_mesh.rs"
+required-features = ["grpc"]
 
 [[example]]
 name = "multihop"
