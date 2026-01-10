@@ -10,6 +10,7 @@ pub mod identity;
 pub mod iface;
 pub mod packet;
 pub mod transport;
+pub mod testing;
 
 mod utils;
 mod serde;

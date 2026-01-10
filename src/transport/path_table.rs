@@ -35,6 +35,9 @@ impl PathTable {
     pub fn next_hop(&self, destination: &AddressHash) -> Option<AddressHash> {
         self.map.get(destination).map(|entry| entry.received_from)
     }
+    pub fn has_path(&self, destination: &AddressHash) -> bool {
+        self.map.contains_key(destination)
+    }
 
     pub fn handle_announce(
         &mut self,
@@ -86,6 +89,7 @@ impl PathTable {
                 header: Header {
                     ifac_flag: IfacFlag::Authenticated,
                     header_type: HeaderType::Type2,
+                    context_flag: original_packet.header.context_flag,
                     propagation_type: original_packet.header.propagation_type,
                     destination_type: original_packet.header.destination_type,
                     packet_type: original_packet.header.packet_type,
@@ -132,6 +136,7 @@ impl PathTable {
                 header: Header {
                     ifac_flag: IfacFlag::Authenticated,
                     header_type: HeaderType::Type2,
+                    context_flag: original_packet.header.context_flag,
                     propagation_type: original_packet.header.propagation_type,
                     destination_type: original_packet.header.destination_type,
                     packet_type: original_packet.header.packet_type,

@@ -32,6 +32,7 @@ impl AnnounceEntry {
             header: Header {
                 ifac_flag: IfacFlag::Open,
                 header_type: HeaderType::Type2,
+                context_flag: self.packet.header.context_flag,
                 propagation_type: PropagationType::Broadcast,
                 destination_type: DestinationType::Single,
                 packet_type: PacketType::Announce,
@@ -102,6 +103,13 @@ impl AnnounceTable {
     ) -> Option<(AddressHash, Packet)> {
         // temporary hack
         self.map.get_mut(dest_hash).map_or(None, |e| e.retransmit(transport_id))
+    }
+    pub fn get(&self, destination: &AddressHash) -> Option<&Packet> {
+        self.map.get(destination).map(|entry| &entry.packet)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Packet> {
+        self.map.values().map(|entry| &entry.packet)
     }
 
 

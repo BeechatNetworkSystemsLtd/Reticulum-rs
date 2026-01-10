@@ -8,3 +8,9 @@ pub enum RnsError {
     PacketError,
     ConnectionError,
 }
+
+impl std::fmt::Display for RnsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}

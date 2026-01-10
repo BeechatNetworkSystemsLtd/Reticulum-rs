@@ -5,6 +5,7 @@ use aes::cipher::block_padding::Pkcs7;
 use aes::cipher::BlockDecryptMut;
 use aes::cipher::Key;
 use aes::cipher::Unsigned;
+use cbc::cipher::generic_array::GenericArray;
 use cbc::cipher::BlockEncryptMut;
 use cbc::cipher::KeyIvInit;
 use crypto_common::{IvSizeUser, KeySizeUser, OutputSizeUser};
@@ -28,7 +29,9 @@ type HmacSha256 = Hmac<Sha256>;
 const HMAC_OUT_SIZE: usize = <<HmacSha256 as OutputSizeUser>::OutputSize as Unsigned>::USIZE;
 const AES_KEY_SIZE: usize = <<AesAlgo as KeySizeUser>::KeySize as Unsigned>::USIZE;
 const IV_KEY_SIZE: usize = <<AesCbcEnc as IvSizeUser>::IvSize as Unsigned>::USIZE;
+// Token layout: IV (IV_KEY_SIZE bytes) || ciphertext || HMAC (HMAC_OUT_SIZE bytes)
 const FERNET_OVERHEAD_SIZE: usize = IV_KEY_SIZE + HMAC_OUT_SIZE;
+pub const FERNET_IV_LENGTH: usize = IV_KEY_SIZE;
 
 pub struct PlainText<'a>(&'a [u8]);
 pub struct VerifiedToken<'a>(&'a [u8]);
@@ -126,8 +129,12 @@ impl<R: CryptoRngCore + Copy> Fernet<R> {
 
         let mut out_len = 0;
 
-        // Generate random IV
-        let iv = AesCbcEnc::generate_iv(self.rng);
+        // Generate IV (deterministic hooks override randomness when set)
+        let iv = if let Some(bytes) = crate::utils::deterministic::take_next_fernet_iv() {
+            GenericArray::from(bytes)
+        } else {
+            AesCbcEnc::generate_iv(self.rng)
+        };
         out_buf[..iv.len()].copy_from_slice(iv.as_slice());
 
         out_len += iv.len();
@@ -161,28 +168,17 @@ impl<R: CryptoRngCore + Copy> Fernet<R> {
             return Err(RnsError::InvalidArgument);
         }
 
-        let expected_tag = &token_data[token_data.len() - HMAC_OUT_SIZE..];
+        let (data, expected_tag) = token_data.split_at(token_data.len() - HMAC_OUT_SIZE);
 
         let mut hmac = <HmacSha256 as Mac>::new_from_slice(&self.sign_key)
             .map_err(|_| RnsError::InvalidArgument)?;
 
-        hmac.update(&token_data[..token_data.len() - HMAC_OUT_SIZE]);
+        hmac.update(data);
 
-        let actual_tag = hmac.finalize().into_bytes();
+        hmac.verify_slice(expected_tag)
+            .map_err(|_| RnsError::IncorrectSignature)?;
 
-        let valid = expected_tag
-            .iter()
-            .zip(actual_tag.as_slice())
-            .map(|(x, y)| x.cmp(y))
-            .find(|&ord| ord != cmp::Ordering::Equal)
-            .unwrap_or(actual_tag.len().cmp(&expected_tag.len()))
-            == cmp::Ordering::Equal;
-
-        if valid {
-            Ok(VerifiedToken { 0: token_data })
-        } else {
-            Err(RnsError::IncorrectSignature)
-        }
+        Ok(VerifiedToken { 0: token_data })
     }
 
     pub fn decrypt<'a, 'b>(
@@ -212,7 +208,8 @@ impl<R: CryptoRngCore + Copy> Fernet<R> {
 
 #[cfg(test)]
 mod tests {
-    use crate::crypt::fernet::Fernet;
+    use super::{Fernet, Token, IV_KEY_SIZE};
+    use crate::error::RnsError;
     use core::str;
     use rand_core::OsRng;
 
@@ -247,5 +244,27 @@ mod tests {
 
         let mut out_buf = [0u8; 12];
         assert!(fernet.encrypt(test_msg.into(), &mut out_buf[..]).is_err());
+    }
+
+    #[test]
+    fn tamper_detection_fails_verification() {
+        const BUF_SIZE: usize = 4096;
+        let fernet = Fernet::new_rand(OsRng);
+        let out_msg: &str = "#FERNET_TEST_MESSAGE#";
+
+        let mut out_buf = [0u8; BUF_SIZE];
+        let token = fernet
+            .encrypt(out_msg.into(), &mut out_buf[..])
+            .expect("cipher token");
+
+        let tamper_indices = [0usize, IV_KEY_SIZE, token.len() - 1];
+
+        for idx in tamper_indices {
+            let mut tampered = token.as_bytes().to_vec();
+            tampered[idx] ^= 0xFF;
+
+            let verification = fernet.verify(Token::from(tampered.as_slice()));
+            assert!(matches!(verification, Err(RnsError::IncorrectSignature)));
+        }
     }
 }
