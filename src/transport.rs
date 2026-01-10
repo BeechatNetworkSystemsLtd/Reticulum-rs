@@ -464,6 +464,12 @@ impl TransportHandler {
             PacketType::Announce => {
                 return true;
             },
+            PacketType::LinkRequest => {
+                allow_duplicate = true;
+            },
+            PacketType::Data => {
+                allow_duplicate = packet.context == PacketContext::KeepAlive;
+            },
             PacketType::Proof => {
                 if packet.context == PacketContext::LinkRequestProof {
                     if let Some(link) = self.in_links.get(&packet.destination) {
@@ -935,7 +941,7 @@ async fn manage_transport(
                         let handler = handler.lock().await;
 
                         if PACKET_TRACE {
-                            log::trace!("tp: << rx({}) = {} {}", message.address, packet, packet.hash());
+                            log::debug!("tp: << rx({}) = {} {}", message.address, packet, packet.hash());
                         }
 
                         if !handler.filter_duplicate_packets(&packet).await {
