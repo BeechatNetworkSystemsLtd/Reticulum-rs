@@ -259,10 +259,15 @@ impl Link {
         }
 
         match packet.context {
-            PacketContext::None => {
+            PacketContext::None | PacketContext::Response => {
                 let mut buffer = [0u8; PACKET_MDU];
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
-                    log::trace!("link({}): data {}B", self.id, plain_text.len());
+                    log::trace!(
+                        "link({}): data {}B, context({:?})",
+                        self.id,
+                        plain_text.len(),
+                        packet.context
+                    );
                     self.request_time = Instant::now();
                     self.post_event(LinkEvent::Data(LinkPayload::new_from_slice(plain_text)));
                 } else {
@@ -281,7 +286,13 @@ impl Link {
                     return LinkHandleResult::None;
                 }
             }
-            _ => {}
+            _ => {
+                log::trace!(
+                    "link({}): ignoring packet with context {:?}",
+                    self.id,
+                    packet.context
+                )
+            }
         }
 
         LinkHandleResult::None
