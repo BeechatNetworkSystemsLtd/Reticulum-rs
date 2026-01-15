@@ -8,6 +8,21 @@ use reticulum::iface::tcp_server::TcpServer;
 use reticulum::iface::udp::UdpInterface;
 use reticulum::transport::{Transport, TransportConfig};
 use tokio::signal;
+use std::env;
+use std::path::PathBuf;
+
+
+fn parse_config_path() -> Option<PathBuf> {
+    env::args()
+        .fold((None, false), |(result, take_next), arg| match (&result, take_next, arg.as_str()) {
+            (Some(_), _, _) => (result, false),
+            (None, true, _) => (Some(PathBuf::from(arg)), false),
+            (None, false, "-c" | "--config") => (None, true),
+            (None, false, s) if s.starts_with("--config=") => (Some(PathBuf::from(&s[9..])), false),
+            _ => (None, false),
+        })
+        .0
+}
 
 struct Daemon {
     transport: Transport,
@@ -15,9 +30,7 @@ struct Daemon {
 }
 
 impl Daemon {
-    async fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let (config, config_path) = Config::load()?;
-
+    async fn new(config:Config, config_path: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         env_logger::Builder::from_env(
             env_logger::Env::default().default_filter_or(config.log_filter())
         ).init();
@@ -126,6 +139,9 @@ impl Daemon {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let daemon = Daemon::new().await?;
+    let config_path = parse_config_path();
+    let (config, config_path) = Config::load(config_path.as_deref())?;
+
+    let daemon = Daemon::new(config, config_path).await?;
     daemon.run().await
 }

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path;
 use std::path::PathBuf;
 use std::path::Path;
 
@@ -215,7 +216,12 @@ impl Config {
         Ok(config)
     }
 
-    pub fn load() -> Result<(Self, PathBuf), Box<dyn std::error::Error>> {
+    pub fn load(custom_config_path: Option<&Path>) -> Result<(Self, PathBuf), Box<dyn std::error::Error>> {
+        if let Some(path) = custom_config_path {
+            let config = Self::from_file(path)?;
+            return Ok((config, path.to_path_buf()));
+        }
+        
         if let Some(existing) = Self::find_existing() {
             let config = Self::from_file(&existing)?;
             Ok((config, existing))

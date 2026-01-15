@@ -52,6 +52,7 @@ env_logger = "0.10"
 console-subscriber = "0.5.0"
 dirs = "6.0.0"
 toml = "0.9.11"
+regex = "1.12.2"
 
 [features]
 default = ["alloc"]

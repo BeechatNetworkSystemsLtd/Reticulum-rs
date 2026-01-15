@@ -3,6 +3,8 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
+use regex::Regex;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     
@@ -43,6 +45,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn convert_config(content: &str) -> String {
     let mut output = String::new();
+
+
+     let re_false = Regex::new(r" = \b(No|no|False)\b").unwrap();
+     let re_true = Regex::new(r" = \b(Yes|yes|True)\b").unwrap();
+     let re_nil = Regex::new(r"^(\w+)\s*=\s*\b(None|none|nil|Nil|null|Null)\b").unwrap();
     
     for line in content.lines() {
         let trimmed = line.trim();
@@ -76,12 +83,16 @@ fn convert_config(content: &str) -> String {
         let mut converted = trimmed.to_string();
         
         // Convert booleans
-        converted = converted.replace(" = True", " = true");
-        converted = converted.replace(" = False", " = false");
-        converted = converted.replace(" = Yes", " = true");
-        converted = converted.replace(" = yes", " = true");
-        converted = converted.replace(" = No", " = false");
-        converted = converted.replace(" = no", " = false");
+        converted = re_false.replace_all(&converted, " = false").to_string();
+        converted = re_true.replace_all(&converted, " = true").to_string();
+
+        // Comment out nil values, as toml does not support them (https://github.com/toml-lang/toml/issues/30)
+        if re_nil.is_match(&converted) {
+            converted = format!("# {}", converted);
+            output.push_str(&converted);
+            output.push('\n');
+            continue;
+        }
         
         // Quote unquoted string values (only for non-comments)
         if !converted.starts_with('#') {
