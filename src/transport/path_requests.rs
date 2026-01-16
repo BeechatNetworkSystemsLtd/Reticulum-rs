@@ -49,7 +49,9 @@ impl PathRequest {
             return None;
         }
 
-        let destination = AddressHash::new_from_slice(&data[..ADDRESS_HASH_SIZE]);
+        let mut destination = [0u8; ADDRESS_HASH_SIZE];
+        destination.copy_from_slice(&data[..ADDRESS_HASH_SIZE]);
+        let destination = AddressHash::new(destination);
 
         let mut requesting_transport = None;
         let mut tag_start = ADDRESS_HASH_SIZE;
