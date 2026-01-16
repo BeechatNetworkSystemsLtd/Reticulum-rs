@@ -454,6 +454,10 @@ impl Transport {
         self.handler.lock().await.has_destination(address)
     }
 
+    pub async fn knows_destination(&self, address: &AddressHash) -> bool {
+        self.handler.lock().await.knows_destination(address)
+    }
+
     pub fn get_handler(&self) -> Arc<Mutex<TransportHandler>> {
         // direct access to handler for testing purposes
         self.handler.clone()
@@ -483,6 +487,10 @@ impl TransportHandler {
 
     fn has_destination(&self, address: &AddressHash) -> bool {
         self.single_in_destinations.contains_key(address)
+    }
+
+    fn knows_destination(&self, address: &AddressHash) -> bool {
+        self.single_out_destinations.contains_key(address)
     }
 
     async fn filter_duplicate_packets(&self, packet: &Packet) -> bool {
