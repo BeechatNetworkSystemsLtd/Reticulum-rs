@@ -63,7 +63,7 @@ async fn packet_overload() {
                             payload_size = 0;
                         }
 
-                        transport_a.send_packet(packet).await;
+                        let _ = transport_a.send_packet(packet).await;
                         tx_counter += 1;
                     },
                 };

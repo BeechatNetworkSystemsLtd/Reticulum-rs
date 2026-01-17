@@ -54,11 +54,14 @@ async fn main() {
             loop {
                 log::trace!("announce");
 
-                let _ = transport
+                if let Some(receipt) = transport
                     .lock()
                     .await
                     .send_packet(in_destination.lock().await.announce(OsRng, None).unwrap())
-                    .await;
+                    .await
+                {
+                    drop(receipt);
+                }
 
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }

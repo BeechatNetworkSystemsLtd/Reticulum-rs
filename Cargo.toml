@@ -50,10 +50,14 @@ serde = { version = "1.0.219", features = ["derive"] }
 log = "0.4.27"
 env_logger = "0.10"
 
+[dev-dependencies]
+hex = "0.4"
+
 [features]
 default = ["alloc"]
 alloc = []
 fernet-aes128 = []
+python-interop = ["default"]
 
 [build-dependencies]
 tonic-build = "0.13.0"
@@ -93,3 +97,7 @@ path = "examples/kaonic_mesh.rs"
 [[example]]
 name = "multihop"
 path = "examples/multihop.rs"
+
+[[example]]
+name = "ratchet"
+path = "examples/ratchet.rs"
