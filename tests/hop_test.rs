@@ -1,3 +1,4 @@
+use std::sync::Once;
 use std::time::Duration;
 
 use rand_core::OsRng;
@@ -8,6 +9,16 @@ use reticulum::{
     transport::{Transport, TransportConfig},
 };
 use tokio::time;
+
+static INIT: Once = Once::new();
+
+fn setup() {
+    INIT.call_once(|| {
+        env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("trace")
+        ).init()
+    });
+}
 
 async fn build_transport_full(
     name: &str,
@@ -51,7 +62,7 @@ async fn build_transport(name: &str, server_addr: &str, client_addr: &[&str]) ->
 
 #[tokio::test]
 async fn calculate_hop_distance() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
+    setup();
 
     let mut transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
     let mut transport_b = build_transport("b", "127.0.0.1:8082", &["127.0.0.1:8081"]).await;
@@ -87,7 +98,7 @@ async fn calculate_hop_distance() {
 
 #[tokio::test]
 async fn direct_path_request_and_response() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
+    setup();
 
     let mut transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
     let mut transport_b = build_transport("b", "127.0.0.1:8082", &["127.0.0.1:8081"]).await;
@@ -111,7 +122,7 @@ async fn direct_path_request_and_response() {
 
 #[tokio::test]
 async fn remote_path_request_and_response() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
+    setup();
 
     let mut transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
     let mut transport_b = build_transport_full(
