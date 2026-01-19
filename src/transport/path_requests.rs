@@ -142,7 +142,7 @@ impl PathRequests {
             },
             ifac: None,
             destination,
-            transport: self.transport_id.clone(), // TODO
+            transport: self.transport_id.clone(),
             context: PacketContext::None,
             data
         }

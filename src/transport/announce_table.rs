@@ -47,7 +47,7 @@ impl AnnounceEntry {
                 hops: self.hops,
             },
             ifac: None,
-            destination: self.packet.destination, // TODO
+            destination: self.packet.destination,
             transport: Some(transport_id.clone()),
             context,
             data: self.packet.data,
@@ -136,9 +136,9 @@ impl AnnounceTable {
         let entry = AnnounceEntry {
             packet: announce.clone(),
             timestamp: now,
-            timeout: now + Duration::from_secs(60), // TODO
+            timeout: now + Duration::from_secs(60),
             received_from,
-            retries: 20, // TODO
+            retries: 5, // TODO: make this configurable too?
             hops,
             response_to_iface: None,
         };
@@ -157,7 +157,6 @@ impl AnnounceTable {
         response.hops = hops;
         response.timeout = Instant::now() + Duration::from_secs(60);
         response.response_to_iface = Some(to_iface);
-        // TODO set proper timeout
 
         self.responses.insert(destination, response);
     }
