@@ -3,15 +3,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ed25519_dalek::{Signature, SigningKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
+use ed25519_dalek::{Signature, SigningKey, Verifier, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
 use rand_core::OsRng;
 use sha2::Digest;
 use x25519_dalek::StaticSecret;
 
 use crate::{
     buffer::OutputBuffer,
+    destination::Destination,
     error::RnsError,
-    hash::{AddressHash, Hash, ADDRESS_HASH_SIZE},
+    hash::{AddressHash, Hash, ADDRESS_HASH_SIZE, HASH_SIZE},
     identity::{DecryptIdentity, DerivedKey, EncryptIdentity, Identity, PrivateIdentity},
     packet::{
         DestinationType, Header, Packet, PacketContext, PacketDataBuffer, PacketType, PACKET_MDU,
@@ -112,12 +113,14 @@ pub enum LinkHandleResult {
     None,
     Activated,
     KeepAlive,
+    MessageReceived(Option<Packet>),
 }
 
 #[derive(Clone)]
 pub enum LinkEvent {
     Activated,
     Data(LinkPayload),
+    Proof(Hash),
     Closed,
 }
 
@@ -138,6 +141,7 @@ pub struct Link {
     request_time: Instant,
     rtt: Duration,
     event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
+    proves_messages: bool,
 }
 
 impl Link {
@@ -155,7 +159,12 @@ impl Link {
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
             event_tx,
+            proves_messages: false,
         }
+    }
+
+    pub fn prove_messages(&mut self, setting: bool) {
+        self.proves_messages = setting;
     }
 
     pub fn new_from_request(
@@ -186,6 +195,7 @@ impl Link {
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
             event_tx,
+            proves_messages: false,
         };
 
         link.handshake(peer_identity);
@@ -265,6 +275,14 @@ impl Link {
                     log::trace!("link({}): data {}B", self.id, plain_text.len());
                     self.request_time = Instant::now();
                     self.post_event(LinkEvent::Data(LinkPayload::new_from_slice(plain_text)));
+
+                    let proof = if self.proves_messages {
+                        Some(self.message_proof(packet.hash()))
+                    } else {
+                        None
+                    };
+
+                    return LinkHandleResult::MessageReceived(proof);
                 } else {
                     log::error!("link({}): can't decrypt packet", self.id);
                 }
@@ -306,30 +324,41 @@ impl Link {
 
         match packet.header.packet_type {
             PacketType::Data => return self.handle_data_packet(packet, out_link),
-            PacketType::Proof => {
-                if self.status == LinkStatus::Pending
-                    && packet.context == PacketContext::LinkRequestProof
-                {
-                    if let Ok(identity) = validate_proof_packet(&self.destination, &self.id, packet)
-                    {
-                        log::debug!("link({}): has been proved", self.id);
+            PacketType::Proof => return self.handle_proof_packet(packet),
+            _ => return LinkHandleResult::None,
+        }
+    }
 
-                        self.handshake(identity);
+    fn handle_proof_packet(&mut self, packet: &Packet) -> LinkHandleResult {
+        if self.status == LinkStatus::Pending
+            && packet.context == PacketContext::LinkRequestProof
+        {
+            if let Ok(identity) = validate_proof_packet(&self.destination, &self.id, packet)
+            {
+                log::debug!("link({}): has been proved", self.id);
 
-                        self.status = LinkStatus::Active;
-                        self.rtt = self.request_time.elapsed();
+                self.handshake(identity);
 
-                        log::debug!("link({}): activated", self.id);
+                self.status = LinkStatus::Active;
+                self.rtt = self.request_time.elapsed();
 
-                        self.post_event(LinkEvent::Activated);
+                log::debug!("link({}): activated", self.id);
 
-                        return LinkHandleResult::Activated;
-                    } else {
-                        log::warn!("link({}): proof is not valid", self.id);
-                    }
-                }
+                self.post_event(LinkEvent::Activated);
+
+                return LinkHandleResult::Activated;
+            } else {
+                log::warn!("link({}): proof is not valid", self.id);
             }
-            _ => {}
+        }
+
+        if self.status == LinkStatus::Active && packet.context == PacketContext::None {
+            if let Ok(hash) = validate_message_proof(
+                &self.destination,
+                packet.data.as_slice()
+            ) {
+                self.post_event(LinkEvent::Proof(hash));
+            }
         }
 
         return LinkHandleResult::None;
@@ -379,6 +408,29 @@ impl Link {
             destination: self.id,
             transport: None,
             context: PacketContext::KeepAlive,
+            data: packet_data,
+        }
+    }
+
+    pub fn message_proof(&self, hash: Hash) -> Packet {
+        log::trace!("link({}): creating proof for message hash {}", self.id, hash);
+
+        let signature = self.priv_identity.sign(hash.as_slice());
+
+        let mut packet_data = PacketDataBuffer::new();
+        packet_data.safe_write(hash.as_slice());
+        packet_data.safe_write(&signature.to_bytes()[..]);
+
+        Packet {
+            header: Header {
+                destination_type: DestinationType::Link,
+                packet_type: PacketType::Proof,
+                ..Default::default()
+            },
+            ifac: None,
+            destination: self.id,
+            transport: None,
+            context: PacketContext::None,
             data: packet_data,
         }
     }
@@ -530,4 +582,27 @@ fn validate_proof_packet(
         .map_err(|_| RnsError::IncorrectSignature)?;
 
     Ok(identity)
+}
+
+fn validate_message_proof(
+    destination: &DestinationDesc,
+    data: &[u8],
+) -> Result<Hash, RnsError> {
+    if data.len() <= HASH_SIZE {
+        return Err(RnsError::PacketError);
+    }
+
+    let maybe_signature = Signature::from_slice(&data[HASH_SIZE..]);
+    let signature = match maybe_signature {
+        Ok(s) => s,
+        Err(_) => return Err(RnsError::PacketError),
+    };
+
+    let hash_slice = &data[..HASH_SIZE];
+
+    if destination.identity.verifying_key.verify(hash_slice, &signature).is_ok() {
+        Ok(Hash::new(hash_slice.try_into().unwrap()))
+    } else {
+        Err(RnsError::IncorrectSignature)
+    }
 }
