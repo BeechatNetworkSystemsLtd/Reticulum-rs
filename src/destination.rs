@@ -292,6 +292,17 @@ impl Destination<PrivateIdentity, Input, Single> {
         })
     }
 
+    pub fn path_response<R: CryptoRngCore + Copy>(
+        &self,
+        rng: R,
+        app_data: Option<&[u8]>,
+    ) -> Result<Packet, RnsError> {
+        let mut announce = self.announce(rng, app_data)?;
+        announce.context = PacketContext::PathResponse;
+
+        Ok(announce)
+    }
+
     pub fn handle_packet(&mut self, packet: &Packet) -> DestinationHandleStatus {
         if self.desc.address_hash != packet.destination {
             return DestinationHandleStatus::None;
