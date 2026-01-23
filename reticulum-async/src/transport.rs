@@ -3,6 +3,9 @@ use announce_limits::AnnounceLimits;
 use announce_table::AnnounceTable;
 use link_table::LinkTable;
 use packet_cache::PacketCache;
+use path_requests::create_path_request_destination;
+use path_requests::PathRequests;
+use path_requests::TagBytes;
 use path_table::PathTable;
 use rand_core::OsRng;
 use reticulum_core::destination::link::LinkEventSink;
@@ -45,6 +48,7 @@ mod announce_limits;
 mod announce_table;
 mod link_table;
 mod packet_cache;
+mod path_requests;
 mod path_table;
 
 // TODO: Configure via features
@@ -112,8 +116,12 @@ struct TransportHandler {
 
     packet_cache: Mutex<PacketCache>,
 
+    path_requests: PathRequests,
+
     link_in_event_tx: broadcast::Sender<LinkEventData>,
     received_data_tx: broadcast::Sender<ReceivedData>,
+
+    fixed_dest_path_requests: AddressHash,
 
     cancel: CancellationToken,
 }
@@ -172,6 +180,15 @@ impl Transport {
 
         let iface_manager = Arc::new(Mutex::new(iface_manager));
 
+        let transport_id = if config.retransmit {
+            Some(config.identity.address_hash().clone())
+        } else {
+            None
+        };
+        let path_requests = PathRequests::new(config.name.as_str(), transport_id);
+
+        let path_request_dest = create_path_request_destination().desc.address_hash;
+
         let cancel = CancellationToken::new();
         let name = config.name.clone();
         let handler = Arc::new(Mutex::new(TransportHandler {
@@ -186,9 +203,11 @@ impl Transport {
             out_links: HashMap::new(),
             in_links: HashMap::new(),
             packet_cache: Mutex::new(PacketCache::new()),
+            path_requests,
             announce_tx,
             link_in_event_tx: link_in_event_tx.clone(),
             received_data_tx: received_data_tx.clone(),
+            fixed_dest_path_requests: path_request_dest,
             cancel: cancel.clone(),
         }));
 
@@ -396,6 +415,19 @@ impl Transport {
         link
     }
 
+    pub async fn request_path(
+        &self,
+        destination: &AddressHash,
+        on_iface: Option<AddressHash>,
+        tag: Option<TagBytes>,
+    ) {
+        self.handler
+            .lock()
+            .await
+            .request_path(destination, on_iface, tag)
+            .await
+    }
+
     pub fn out_link_events(&self) -> broadcast::Receiver<LinkEventData> {
         self.link_out_event_tx.subscribe()
     }
@@ -433,6 +465,10 @@ impl Transport {
         self.handler.lock().await.has_destination(address)
     }
 
+    pub async fn knows_destination(&self, address: &AddressHash) -> bool {
+        self.handler.lock().await.knows_destination(address)
+    }
+
     pub fn get_handler(&self) -> Arc<Mutex<TransportHandler>> {
         // direct access to handler for testing purposes
         self.handler.clone()
@@ -464,12 +500,22 @@ impl TransportHandler {
         self.single_in_destinations.contains_key(address)
     }
 
+    fn knows_destination(&self, address: &AddressHash) -> bool {
+        self.single_out_destinations.contains_key(address)
+    }
+
     async fn filter_duplicate_packets(&self, packet: &Packet) -> bool {
         let mut allow_duplicate = false;
 
         match packet.header.packet_type {
             PacketType::Announce => {
                 return true;
+            }
+            PacketType::LinkRequest => {
+                allow_duplicate = true;
+            }
+            PacketType::Data => {
+                allow_duplicate = packet.context == PacketContext::KeepAlive;
             }
             PacketType::Proof => {
                 if packet.context == PacketContext::LinkRequestProof {
@@ -486,6 +532,21 @@ impl TransportHandler {
         let is_new = self.packet_cache.lock().await.update(packet);
 
         is_new || allow_duplicate
+    }
+
+    async fn request_path(
+        &mut self,
+        address: &AddressHash,
+        on_iface: Option<AddressHash>,
+        tag: Option<TagBytes>,
+    ) {
+        let packet = self.path_requests.generate(address, tag);
+
+        self.send(TxMessage {
+            tx_type: TxMessageType::Broadcast(on_iface),
+            packet,
+        })
+        .await;
     }
 }
 
@@ -685,15 +746,8 @@ async fn handle_announce<'a>(
         let retransmit = handler.config.retransmit;
         if retransmit {
             let transport_id = handler.config.identity.address_hash().clone();
-            if let Some((recv_from, packet)) =
-                handler.announce_table.new_packet(&dest_hash, &transport_id)
-            {
-                handler
-                    .send(TxMessage {
-                        tx_type: TxMessageType::Broadcast(Some(recv_from)),
-                        packet,
-                    })
-                    .await;
+            if let Some(message) = handler.announce_table.new_packet(&dest_hash, &transport_id) {
+                handler.send(message).await;
             }
         }
 
@@ -701,6 +755,94 @@ async fn handle_announce<'a>(
             destination,
             app_data: PacketDataBuffer::new_from_slice(&app_data),
         });
+    }
+}
+
+async fn handle_path_request<'a>(
+    packet: &Packet,
+    handler: &mut MutexGuard<'a, TransportHandler>,
+    iface: AddressHash,
+) {
+    if let Some(request) = handler.path_requests.decode(packet.data.as_slice()) {
+        if let Some(dest) = handler.single_in_destinations.get(&request.destination) {
+            let response = dest
+                .lock()
+                .await
+                .path_response(OsRng, None)
+                .expect("valid path response");
+
+            handler
+                .send(TxMessage {
+                    tx_type: TxMessageType::Direct(iface),
+                    packet: response,
+                })
+                .await;
+
+            log::trace!(
+                "tp({}): send direct path response over {}",
+                handler.config.name,
+                iface
+            );
+
+            return;
+        }
+
+        if handler.config.retransmit {
+            if let Some(entry) = handler.path_table.get(&request.destination) {
+                if let Some(requestor_id) = request.requesting_transport {
+                    if requestor_id == entry.received_from {
+                        log::trace!(
+                            "tp({}): dropping circular path request from {}",
+                            handler.config.name,
+                            request.destination
+                        );
+                        return;
+                    }
+                }
+
+                let hops = entry.hops;
+
+                handler
+                    .announce_table
+                    .add_response(request.destination, iface, hops);
+
+                log::trace!(
+                    "tp({}): scheduled remote path response to {} ({} hops) over {}",
+                    handler.config.name,
+                    request.destination,
+                    hops,
+                    iface
+                );
+
+                return;
+            }
+        }
+
+        if let Some(packet) =
+            handler
+                .path_requests
+                .generate_recursive(&request.destination, Some(iface), None)
+        {
+            handler
+                .send(TxMessage {
+                    tx_type: TxMessageType::Broadcast(Some(iface)),
+                    packet,
+                })
+                .await;
+        }
+    }
+}
+
+async fn handle_fixed_destinations<'a>(
+    packet: &Packet,
+    handler: &mut MutexGuard<'a, TransportHandler>,
+    iface: AddressHash,
+) -> bool {
+    if packet.destination == handler.fixed_dest_path_requests {
+        handle_path_request(packet, handler, iface).await;
+        true
+    } else {
+        false
     }
 }
 
@@ -868,18 +1010,9 @@ async fn handle_cleanup<'a>(handler: MutexGuard<'a, TransportHandler>) {
 
 async fn retransmit_announces<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     let transport_id = handler.config.identity.address_hash().clone();
-    let announces = handler.announce_table.to_retransmit(&transport_id);
+    let messages = handler.announce_table.to_retransmit(&transport_id);
 
-    if announces.is_empty() {
-        return;
-    }
-
-    for (received_from, announce) in announces {
-        let message = TxMessage {
-            tx_type: TxMessageType::Broadcast(Some(received_from)),
-            packet: announce,
-        };
-
+    for message in messages {
         handler.send(message).await;
     }
 }
@@ -936,14 +1069,29 @@ async fn manage_transport(
 
                         let packet = message.packet;
 
-                        let handler = handler.lock().await;
+                        let mut handler = handler.lock().await;
 
                         if PACKET_TRACE {
-                            log::trace!("tp: << rx({}) = {} {}", message.address, packet, packet.hash());
+                            log::debug!("tp: << rx({}) = {} {}", message.address, packet, packet.hash());
+                        }
+
+                        if handle_fixed_destinations(
+                            &packet,
+                            &mut handler,
+                            message.address
+                        ).await {
+                            continue;
                         }
 
                         if !handler.filter_duplicate_packets(&packet).await {
-                            break;
+                            log::debug!(
+                                "tp({}): dropping duplicate packet: dst={}, ctx={:?}, type={:?}",
+                                handler.config.name,
+                                packet.destination,
+                                packet.context,
+                                packet.header.packet_type
+                            );
+                            continue;
                         }
 
                         if handler.config.broadcast && packet.header.packet_type != PacketType::Announce {
