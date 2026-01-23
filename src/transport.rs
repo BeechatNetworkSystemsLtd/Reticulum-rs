@@ -83,6 +83,20 @@ pub struct TransportConfig {
     retransmit: bool,
 }
 
+pub struct DeliveryReceipt {
+    pub message_id: [u8; 32],
+}
+
+impl DeliveryReceipt {
+    pub fn new(message_id: [u8; 32]) -> Self {
+        Self { message_id }
+    }
+}
+
+pub trait ReceiptHandler: Send + Sync {
+    fn on_receipt(&self, receipt: &DeliveryReceipt);
+}
+
 #[derive(Clone)]
 pub struct AnnounceEvent {
     pub destination: Arc<Mutex<SingleOutputDestination>>,
@@ -126,6 +140,7 @@ pub struct Transport {
     handler: Arc<Mutex<TransportHandler>>,
     iface_manager: Arc<Mutex<InterfaceManager>>,
     cancel: CancellationToken,
+    receipt_handler: Option<Box<dyn ReceiptHandler>>,
 }
 
 impl TransportConfig {
@@ -220,6 +235,7 @@ impl Transport {
             iface_messages_tx,
             handler,
             cancel,
+            receipt_handler: None,
         }
     }
 
@@ -271,6 +287,16 @@ impl Transport {
                     .expect("valid announce packet"),
             )
             .await;
+    }
+
+    pub fn set_receipt_handler(&mut self, handler: Box<dyn ReceiptHandler>) {
+        self.receipt_handler = Some(handler);
+    }
+
+    pub fn emit_receipt_for_test(&self, receipt: DeliveryReceipt) {
+        if let Some(handler) = &self.receipt_handler {
+            handler.on_receipt(&receipt);
+        }
     }
 
     pub async fn send_broadcast(&self, packet: Packet, from_iface: Option<AddressHash>) {
