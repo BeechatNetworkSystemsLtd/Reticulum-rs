@@ -3,11 +3,13 @@ use core::fmt;
 use sha2::Digest;
 
 use crate::buffer::StaticBuffer;
+use crate::crypt::fernet::FERNET_OVERHEAD_SIZE;
 use crate::error::RnsError;
 use crate::hash::AddressHash;
 use crate::hash::Hash;
 
 pub const PACKET_MDU: usize = 2048usize;
+pub const LXMF_MAX_PAYLOAD: usize = PACKET_MDU - FERNET_OVERHEAD_SIZE;
 pub const PACKET_IFAC_MAX_LENGTH: usize = 64usize;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -249,7 +251,7 @@ pub struct Packet {
 }
 
 impl Packet {
-    pub const LXMF_MAX_PAYLOAD: usize = 1024;
+    pub const LXMF_MAX_PAYLOAD: usize = LXMF_MAX_PAYLOAD;
 
     pub fn hash(&self) -> Hash {
         Hash::new(

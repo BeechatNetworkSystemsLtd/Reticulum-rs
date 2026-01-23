@@ -17,7 +17,7 @@ async fn transport_emits_delivery_receipt_callback() {
     let called = Arc::new(AtomicBool::new(false));
     let handler = Tracker { called: Arc::clone(&called) };
     let mut transport = Transport::new(TransportConfig::default());
-    transport.set_receipt_handler(Box::new(handler));
+    transport.set_receipt_handler(Box::new(handler)).await;
 
     transport.emit_receipt_for_test(DeliveryReceipt::new([0u8; 32]));
 

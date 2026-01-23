@@ -1,4 +1,5 @@
-use reticulum::packet::Packet;
+use reticulum::crypt::fernet::FERNET_OVERHEAD_SIZE;
+use reticulum::packet::{Packet, PACKET_MDU};
 
 #[test]
 fn packet_fragmentation_respects_limit() {
@@ -7,4 +8,5 @@ fn packet_fragmentation_respects_limit() {
     assert!(packets
         .iter()
         .all(|p| p.data.len() <= Packet::LXMF_MAX_PAYLOAD));
+    assert_eq!(Packet::LXMF_MAX_PAYLOAD, PACKET_MDU - FERNET_OVERHEAD_SIZE);
 }

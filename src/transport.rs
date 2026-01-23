@@ -129,6 +129,7 @@ struct TransportHandler {
     fixed_dest_path_requests: AddressHash,
 
     cancel: CancellationToken,
+    receipt_handler: Option<Box<dyn ReceiptHandler>>,
 }
 
 pub struct Transport {
@@ -140,7 +141,6 @@ pub struct Transport {
     handler: Arc<Mutex<TransportHandler>>,
     iface_manager: Arc<Mutex<InterfaceManager>>,
     cancel: CancellationToken,
-    receipt_handler: Option<Box<dyn ReceiptHandler>>,
 }
 
 impl TransportConfig {
@@ -215,6 +215,7 @@ impl Transport {
             received_data_tx: received_data_tx.clone(),
             fixed_dest_path_requests: path_request_dest,
             cancel: cancel.clone(),
+            receipt_handler: None,
         }));
 
         {
@@ -235,7 +236,6 @@ impl Transport {
             iface_messages_tx,
             handler,
             cancel,
-            receipt_handler: None,
         }
     }
 
@@ -289,14 +289,21 @@ impl Transport {
             .await;
     }
 
-    pub fn set_receipt_handler(&mut self, handler: Box<dyn ReceiptHandler>) {
-        self.receipt_handler = Some(handler);
+    pub async fn set_receipt_handler(&mut self, handler: Box<dyn ReceiptHandler>) {
+        self.handler.lock().await.receipt_handler = Some(handler);
     }
 
     pub fn emit_receipt_for_test(&self, receipt: DeliveryReceipt) {
-        if let Some(handler) = &self.receipt_handler {
-            handler.on_receipt(&receipt);
+        if let Ok(handler) = self.handler.try_lock() {
+            if let Some(handler) = &handler.receipt_handler {
+                handler.on_receipt(&receipt);
+            }
         }
+    }
+
+    pub async fn handle_inbound_for_test(&self, packet: Packet) {
+        let mut handler = self.handler.lock().await;
+        handle_inbound_packet_for_test(&packet, &mut handler);
     }
 
     pub async fn send_broadcast(&self, packet: Packet, from_iface: Option<AddressHash>) {
@@ -571,6 +578,11 @@ async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transport
         packet.destination
     );
 
+    if let Some(receipt_handler) = &handler.receipt_handler {
+        let receipt = DeliveryReceipt::new(packet.hash().to_bytes());
+        receipt_handler.on_receipt(&receipt);
+    }
+
     for link in handler.out_links.values() {
         let mut link = link.lock().await;
         match link.handle_packet(packet) {
@@ -590,6 +602,18 @@ async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transport
             packet
         })
         .await;
+    }
+}
+
+fn handle_inbound_packet_for_test(packet: &Packet, handler: &mut MutexGuard<'_, TransportHandler>) {
+    match packet.header.packet_type {
+        PacketType::Proof => {
+            let receipt = DeliveryReceipt::new(packet.hash().to_bytes());
+            if let Some(handler) = &handler.receipt_handler {
+                handler.on_receipt(&receipt);
+            }
+        }
+        _ => {}
     }
 }
 
