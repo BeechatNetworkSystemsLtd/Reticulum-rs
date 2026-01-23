@@ -2,12 +2,13 @@ pub mod link;
 pub mod link_map;
 
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey, SIGNATURE_LENGTH};
-use rand_core::CryptoRngCore;
+use rand_core::{CryptoRngCore, OsRng};
 use x25519_dalek::PublicKey;
 
 use core::{fmt, marker::PhantomData};
 
 use crate::{
+    crypt::fernet::{Fernet, PlainText, Token},
     error::RnsError,
     hash::{AddressHash, Hash},
     identity::{EmptyIdentity, HashIdentity, Identity, PrivateIdentity, PUBLIC_KEY_LENGTH},
@@ -54,6 +55,22 @@ impl Type for Group {
     fn destination_type() -> DestinationType {
         DestinationType::Group
     }
+}
+
+pub fn group_encrypt(key: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, RnsError> {
+    let fernet = Fernet::new_from_slices(key, key, OsRng);
+    let mut out_buf = vec![0u8; data.len() + 64];
+    let token = fernet.encrypt(PlainText::from(data), &mut out_buf)?;
+    Ok(token.as_bytes().to_vec())
+}
+
+pub fn group_decrypt(key: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, RnsError> {
+    let fernet = Fernet::new_from_slices(key, key, OsRng);
+    let token = Token::from(data);
+    let verified = fernet.verify(token)?;
+    let mut out_buf = vec![0u8; data.len()];
+    let plaintext = fernet.decrypt(verified, &mut out_buf)?;
+    Ok(plaintext.as_bytes().to_vec())
 }
 
 pub const NAME_HASH_LENGTH: usize = 10;

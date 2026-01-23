@@ -65,6 +65,12 @@ impl<'a> From<&'a [u8]> for PlainText<'a> {
     }
 }
 
+impl<'a> PlainText<'a> {
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.0
+    }
+}
+
 impl<'a> Token<'a> {
     pub fn as_bytes(&self) -> &'a [u8] {
         self.0
