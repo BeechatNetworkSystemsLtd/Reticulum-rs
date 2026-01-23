@@ -18,6 +18,10 @@ pub fn create_hash(data: &[u8], out: &mut [u8]) {
     );
 }
 
+pub fn lxmf_address_hash(hash: &Hash) -> AddressHash {
+    AddressHash::new_from_hash(hash)
+}
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub struct Hash([u8; HASH_SIZE]);
 
