@@ -3,6 +3,7 @@ use core::fmt;
 use sha2::Digest;
 
 use crate::buffer::StaticBuffer;
+use crate::error::RnsError;
 use crate::hash::AddressHash;
 use crate::hash::Hash;
 
@@ -248,6 +249,8 @@ pub struct Packet {
 }
 
 impl Packet {
+    pub const LXMF_MAX_PAYLOAD: usize = 1024;
+
     pub fn hash(&self) -> Hash {
         Hash::new(
             Hash::generator()
@@ -258,6 +261,16 @@ impl Packet {
                 .finalize()
                 .into(),
         )
+    }
+
+    pub fn fragment_for_lxmf(data: &[u8]) -> Result<Vec<Packet>, RnsError> {
+        let mut out = Vec::new();
+        for chunk in data.chunks(Self::LXMF_MAX_PAYLOAD) {
+            let mut packet = Packet::default();
+            packet.data = StaticBuffer::new_from_slice(chunk);
+            out.push(packet);
+        }
+        Ok(out)
     }
 }
 
