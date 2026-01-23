@@ -394,6 +394,21 @@ impl DecryptIdentity for PrivateIdentity {
     }
 }
 
+pub fn lxmf_sign(
+    identity: &PrivateIdentity,
+    data: &[u8],
+) -> [u8; ed25519_dalek::SIGNATURE_LENGTH] {
+    identity.sign(data).to_bytes()
+}
+
+pub fn lxmf_verify(identity: &Identity, data: &[u8], signature: &[u8]) -> bool {
+    let signature = match Signature::from_slice(signature) {
+        Ok(sig) => sig,
+        Err(_) => return false,
+    };
+    identity.verify(data, &signature).is_ok()
+}
+
 pub struct GroupIdentity {}
 
 pub struct DerivedKey {
