@@ -4,6 +4,8 @@ use std::time::Duration;
 use rand_core::OsRng;
 use reticulum::{
     destination::DestinationName,
+    destination::link::LinkEvent,
+    hash::Hash,
     identity::PrivateIdentity,
     iface::{tcp_client::TcpClient, tcp_server::TcpServer},
     transport::{Transport, TransportConfig},
@@ -163,4 +165,54 @@ async fn remote_path_request_and_response() {
     transport_a.request_path(&dest_c_hash, None, None).await;
 
     assert!(transport_a.knows_destination(&dest_c_hash).await);
+}
+
+#[tokio::test]
+async fn message_proof_over_remote_link() {
+    setup();
+
+    let mut transport_a = build_transport("a", "127.0.0.1:8381", &[]).await;
+    let mut transport_b =
+        build_transport_full("b", "127.0.0.1:8382", &["127.0.0.1:8381"], true)
+        .await;
+    let mut transport_c =
+        build_transport("c", "127.0.0.1:8383", &["127.0.0.1:8382"])
+        .await;
+
+    let id_c = PrivateIdentity::new_from_name("c");
+    let dest_c = transport_c
+        .add_destination(id_c, DestinationName::new("test", "link_to"))
+        .await;
+    let dest_c_hash = dest_c.lock().await.desc.address_hash;
+
+    transport_c.send_announce(&dest_c, None).await;
+
+    let announce = transport_a.recv_announces().await.recv().await.unwrap();
+    let link = transport_a.link(dest_c.lock().await.desc).await;
+    let link_id = link.lock().await.id().clone();
+
+    time::sleep(Duration::from_secs(5)).await;
+
+    let in_link = transport_c.find_in_link(&link_id).await.unwrap();
+
+    let mut out_link_events = transport_a.out_link_events();
+
+    in_link.lock().await.prove_messages(true);
+
+    let message = "foo";
+
+    let sent = transport_a.send_to_out_links(&dest_c_hash, message.as_bytes()).await;
+    let expected_hash = sent[0];
+
+    tokio::select! {
+        event = out_link_events.recv() => {
+            match event.unwrap().event {
+                LinkEvent::Proof(hash) => assert_eq!(hash, expected_hash),
+                _ => unreachable!("unexpected event instead of LinkEvent::Proof"),
+            };
+        },
+        _ = time::sleep(Duration::from_secs(10)) => {
+            unreachable!("Timeout. Expected LinkEvent::Proof was not emitted");
+        },
+    }
 }
