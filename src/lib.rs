@@ -147,6 +147,7 @@ pub mod hash;
 pub mod identity;
 pub mod iface;
 pub mod packet;
+pub mod pqc;
 pub mod transport;
 pub mod serde;
 

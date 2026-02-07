@@ -824,6 +824,8 @@ async fn handle_announce<'a>(
             destination,
             app_data: PacketDataBuffer::new_from_slice(&app_data),
         });
+    } else {
+      log::debug!("invalid announce");
     }
 }
 

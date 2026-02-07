@@ -9,12 +9,13 @@ use core::{fmt, marker::PhantomData};
 
 use crate::{
     error::RnsError,
-    hash::{AddressHash, Hash},
+    hash::{AddressHash, Hash, HASH_SIZE},
     identity::{EmptyIdentity, HashIdentity, Identity, PrivateIdentity, PUBLIC_KEY_LENGTH},
     packet::{
         self, DestinationType, Header, HeaderType, IfacFlag, Packet, PacketContext,
         PacketDataBuffer, PacketType, PropagationType,
     },
+    pqc::PostQuantumCapability
 };
 use sha2::Digest;
 
@@ -148,6 +149,23 @@ impl DestinationAnnounce {
         offset += RAND_HASH_LENGTH;
         let signature = &announce_data[offset..(offset + SIGNATURE_LENGTH)];
         offset += SIGNATURE_LENGTH;
+        // TODO: PQC data is only valid for announces that originate from a PQC-capable node
+        let (pqc_capabilities, pqc_verifykey_hash): (&[u8], &[u8]) = if announce_data.len() > offset {
+            let pqc_capabilities = &announce_data[offset..offset + 1];
+            offset += 1;
+            let pqc_verifykey_hash = if pqc_capabilities[0] &
+                PostQuantumCapability::SignatureSupported as u8 != 0
+            {
+                let pqc_verifykey_hash = &announce_data[offset..(offset + HASH_SIZE)];
+                offset += HASH_SIZE;
+                pqc_verifykey_hash
+            } else {
+                &[]
+            };
+            (pqc_capabilities, pqc_verifykey_hash)
+        } else {
+            (&[], &[])
+        };
         let app_data = &announce_data[offset..];
 
         let destination = &packet.destination;
@@ -160,6 +178,8 @@ impl DestinationAnnounce {
             .chain_write(verifying_key.as_bytes())?
             .chain_write(name_hash)?
             .chain_write(rand_hash)?
+            .chain_write(pqc_capabilities)?
+            .chain_write(pqc_verifykey_hash)?
             .chain_write(app_data)?
             .finalize();
 
@@ -249,12 +269,22 @@ impl Destination<PrivateIdentity, Input, Single> {
         let pub_key = self.identity.as_identity().public_key_bytes();
         let verifying_key = self.identity.as_identity().verifying_key_bytes();
 
+        // signed data
         packet_data
             .chain_safe_write(self.desc.address_hash.as_slice())
             .chain_safe_write(pub_key)
             .chain_safe_write(verifying_key)
             .chain_safe_write(self.desc.name.as_name_hash_slice())
             .chain_safe_write(rand_hash);
+
+        if let Some(pq_keys) = self.identity.pq_keys() {
+            let capabilities = pq_keys.capabilities_flags();
+            packet_data.write(&[capabilities])?;
+            packet_data.write(pq_keys.verifykey_hash().as_slice())?;
+        } else {
+            // no PQC captabilities
+            packet_data.write(&[0x0])?;
+        }
 
         if let Some(data) = app_data {
             packet_data.write(data)?;
@@ -264,12 +294,22 @@ impl Destination<PrivateIdentity, Input, Single> {
 
         packet_data.reset();
 
+        // packet data
         packet_data
             .chain_safe_write(pub_key)
             .chain_safe_write(verifying_key)
             .chain_safe_write(self.desc.name.as_name_hash_slice())
             .chain_safe_write(rand_hash)
             .chain_safe_write(&signature.to_bytes());
+
+        if let Some(pq_keys) = self.identity.pq_keys() {
+            let capabilities = pq_keys.capabilities_flags();
+            packet_data.write(&[capabilities])?;
+            packet_data.write(pq_keys.verifykey_hash().as_slice())?;
+        } else {
+            // no PQC captabilities
+            packet_data.write(&[0x0])?;
+        }
 
         if let Some(data) = app_data {
             packet_data.write(data)?;

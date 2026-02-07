@@ -10,6 +10,7 @@ use crate::{
     crypt::fernet::{Fernet, PlainText, Token},
     error::RnsError,
     hash::{AddressHash, Hash},
+    pqc::PostQuantumKeys
 };
 
 pub const PUBLIC_KEY_LENGTH: usize = ed25519_dalek::PUBLIC_KEY_LENGTH;
@@ -239,14 +240,16 @@ pub struct PrivateIdentity {
     identity: Identity,
     private_key: StaticSecret,
     sign_key: SigningKey,
+    pq_keys: Option<PostQuantumKeys>
 }
 
 impl PrivateIdentity {
-    pub fn new(private_key: StaticSecret, sign_key: SigningKey) -> Self {
+    pub fn new(private_key: StaticSecret, sign_key: SigningKey, pq_keys: Option<PostQuantumKeys>) -> Self {
         Self {
             identity: Identity::new((&private_key).into(), sign_key.verifying_key()),
             private_key,
             sign_key,
+            pq_keys
         }
     }
 
@@ -254,7 +257,8 @@ impl PrivateIdentity {
         let sign_key = SigningKey::generate(&mut rng);
         let private_key = StaticSecret::random_from_rng(rng);
 
-        Self::new(private_key, sign_key)
+        // TODO: PQC
+        Self::new(private_key, sign_key, None)
     }
 
     pub fn new_from_name(name: &str) -> Self {
@@ -264,7 +268,8 @@ impl PrivateIdentity {
         let hash = Hash::new_from_slice(hash.as_bytes());
         let sign_key = SigningKey::from_bytes(hash.as_bytes());
 
-        Self::new(private_key, sign_key)
+        // TODO: PQC
+        Self::new(private_key, sign_key, None)
     }
 
     pub fn new_from_hex_string(hex_string: &str) -> Result<Self, RnsError> {
@@ -284,9 +289,11 @@ impl PrivateIdentity {
             .unwrap();
         }
 
+        // TODO: PQC
         Ok(Self::new(
             StaticSecret::from(private_key_bytes),
             SigningKey::from_bytes(&sign_key_bytes),
+            None
         ))
     }
 
@@ -300,6 +307,10 @@ impl PrivateIdentity {
 
     pub fn as_identity(&self) -> &Identity {
         &self.identity
+    }
+
+    pub fn pq_keys(&self) -> Option<&PostQuantumKeys> {
+        self.pq_keys.as_ref()
     }
 
     pub fn address_hash(&self) -> &AddressHash {

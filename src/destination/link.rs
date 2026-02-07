@@ -188,7 +188,8 @@ impl Link {
         let mut link = Self {
             id: link_id,
             destination,
-            priv_identity: PrivateIdentity::new(StaticSecret::random_from_rng(OsRng), signing_key),
+            // TODO: PQC
+            priv_identity: PrivateIdentity::new(StaticSecret::random_from_rng(OsRng), signing_key, None),
             peer_identity,
             derived_key: DerivedKey::new_empty(),
             status: LinkStatus::Pending,
