@@ -22,7 +22,7 @@ async fn main() {
 
     let id = PrivateIdentity::new_from_rand(OsRng);
 
-    let destination = SingleInputDestination::new(id, DestinationName::new("example", "app"));
+    let mut destination = SingleInputDestination::new(id, DestinationName::new("example", "app"));
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
