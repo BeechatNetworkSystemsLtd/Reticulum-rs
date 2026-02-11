@@ -130,7 +130,8 @@ async fn main() {
                             },
                             LinkEvent::Closed => {
                                 log::info!("Link closed");
-                            }
+                            },
+                            _ => {},
                         },
                         Err(error) => {
                             log::info!("Link error: {}", error);

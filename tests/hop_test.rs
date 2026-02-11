@@ -4,6 +4,7 @@ use std::time::Duration;
 use rand_core::OsRng;
 use reticulum::{
     destination::DestinationName,
+    destination::link::LinkEvent,
     identity::PrivateIdentity,
     iface::{tcp_client::TcpClient, tcp_server::TcpServer},
     transport::{Transport, TransportConfig},
@@ -65,24 +66,14 @@ async fn calculate_hop_distance() {
     setup();
 
     let mut transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
-    let mut transport_b = build_transport("b", "127.0.0.1:8082", &["127.0.0.1:8081"]).await;
-    let mut transport_c =
+    let transport_b = build_transport("b", "127.0.0.1:8082", &["127.0.0.1:8081"]).await;
+    let transport_c =
         build_transport("c", "127.0.0.1:8083", &["127.0.0.1:8081", "127.0.0.1:8082"]).await;
 
     let id_a = PrivateIdentity::new_from_name("a");
-    let id_b = PrivateIdentity::new_from_name("b");
-    let id_c = PrivateIdentity::new_from_name("c");
 
     let dest_a = transport_a
         .add_destination(id_a, DestinationName::new("test", "hop"))
-        .await;
-
-    let dest_b = transport_b
-        .add_destination(id_b, DestinationName::new("test", "hop"))
-        .await;
-
-    let dest_c = transport_c
-        .add_destination(id_c, DestinationName::new("test", "hop"))
         .await;
 
     time::sleep(Duration::from_secs(2)).await;
@@ -100,10 +91,9 @@ async fn calculate_hop_distance() {
 async fn direct_path_request_and_response() {
     setup();
 
-    let mut transport_a = build_transport("a", "127.0.0.1:8181", &[]).await;
+    let transport_a = build_transport("a", "127.0.0.1:8181", &[]).await;
     let mut transport_b = build_transport("b", "127.0.0.1:8182", &["127.0.0.1:8181"]).await;
 
-    let id_a = PrivateIdentity::new_from_name("a");
     let id_b = PrivateIdentity::new_from_name("b");
 
     let dest_b = transport_b
@@ -124,7 +114,7 @@ async fn direct_path_request_and_response() {
 async fn remote_path_request_and_response() {
     setup();
 
-    let mut transport_a = build_transport("a", "127.0.0.1:8281", &[]).await;
+    let transport_a = build_transport("a", "127.0.0.1:8281", &[]).await;
     let mut transport_b = build_transport_full(
         "b",
         "127.0.0.1:8282",
@@ -143,7 +133,6 @@ async fn remote_path_request_and_response() {
     let dest_b = transport_b
         .add_destination(id_b, DestinationName::new("test", "hop"))
         .await;
-    let dest_b_hash = dest_b.lock().await.desc.address_hash;
 
     time::sleep(Duration::from_secs(2)).await;
 
@@ -163,4 +152,54 @@ async fn remote_path_request_and_response() {
     transport_a.request_path(&dest_c_hash, None, None).await;
 
     assert!(transport_a.knows_destination(&dest_c_hash).await);
+}
+
+#[tokio::test]
+async fn message_proof_over_remote_link() {
+    setup();
+
+    let transport_a = build_transport("a", "127.0.0.1:8381", &[]).await;
+    let _transport_b =
+        build_transport_full("b", "127.0.0.1:8382", &["127.0.0.1:8381"], true)
+        .await;
+    let mut transport_c =
+        build_transport("c", "127.0.0.1:8383", &["127.0.0.1:8382"])
+        .await;
+
+    let id_c = PrivateIdentity::new_from_name("c");
+    let dest_c = transport_c
+        .add_destination(id_c, DestinationName::new("test", "link_to"))
+        .await;
+    let dest_c_hash = dest_c.lock().await.desc.address_hash;
+
+    transport_c.send_announce(&dest_c, None).await;
+
+    transport_a.recv_announces().await.recv().await.unwrap();
+    let link = transport_a.link(dest_c.lock().await.desc).await;
+    let link_id = link.lock().await.id().clone();
+
+    time::sleep(Duration::from_secs(5)).await;
+
+    let in_link = transport_c.find_in_link(&link_id).await.unwrap();
+
+    let mut out_link_events = transport_a.out_link_events();
+
+    in_link.lock().await.prove_messages(true);
+
+    let message = "foo";
+
+    let sent = transport_a.send_to_out_links(&dest_c_hash, message.as_bytes()).await;
+    let expected_hash = sent[0];
+
+    tokio::select! {
+        event = out_link_events.recv() => {
+            match event.unwrap().event {
+                LinkEvent::Proof(hash) => assert_eq!(hash, expected_hash),
+                _ => unreachable!("unexpected event instead of LinkEvent::Proof"),
+            };
+        },
+        _ = time::sleep(Duration::from_secs(10)) => {
+            unreachable!("Timeout. Expected LinkEvent::Proof was not emitted");
+        },
+    }
 }

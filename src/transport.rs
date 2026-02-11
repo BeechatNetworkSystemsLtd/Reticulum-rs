@@ -30,6 +30,7 @@ use crate::destination::SingleInputDestination;
 use crate::destination::SingleOutputDestination;
 
 use crate::hash::AddressHash;
+use crate::hash::Hash;
 use crate::identity::PrivateIdentity;
 
 use crate::iface::InterfaceManager;
@@ -308,8 +309,12 @@ impl Transport {
         }
     }
 
-    pub async fn send_to_out_links(&self, destination: &AddressHash, payload: &[u8]) {
-        let mut count = 0usize;
+    pub async fn send_to_out_links(
+        &self,
+        destination: &AddressHash,
+        payload: &[u8]
+    ) -> Vec<Hash> {
+        let mut sent_packets = vec![];
         let handler = self.handler.lock().await;
         for link in handler.out_links.values() {
             let link = link.lock().await;
@@ -319,18 +324,20 @@ impl Transport {
                 let packet = link.data_packet(payload);
                 if let Ok(packet) = packet {
                     handler.send_packet(packet).await;
-                    count += 1;
+                    sent_packets.push(packet.hash());
                 }
             }
         }
 
-        if count == 0 {
+        if sent_packets.len() == 0 {
             log::trace!(
                 "tp({}): no output links for {} destination",
                 self.name,
                 destination
             );
         }
+
+        sent_packets
     }
 
     pub async fn send_to_in_links(&self, destination: &AddressHash, payload: &[u8]) {
@@ -551,7 +558,7 @@ async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transport
             LinkHandleResult::Activated => {
                 let rtt_packet = link.create_rtt();
                 handler.send_packet(rtt_packet).await;
-            }
+            },
             _ => {}
         }
     }
@@ -622,7 +629,10 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
                 LinkHandleResult::KeepAlive => {
                     let packet = link.keep_alive_packet(KEEP_ALIVE_RESPONSE);
                     handler.send_packet(packet).await;
-                }
+                },
+                LinkHandleResult::MessageReceived(Some(proof)) => {
+                    handler.send_packet(proof).await;
+                },
                 _ => {}
             }
         }
