@@ -22,6 +22,7 @@ fn send_backwards(packet: &Packet, entry: &LinkEntry) -> (Packet, AddressHash) {
         header: Header {
             ifac_flag: IfacFlag::Authenticated,
             header_type: HeaderType::Type2,
+            context_flag: packet.header.context_flag,
             propagation_type: packet.header.propagation_type,
             destination_type: packet.header.destination_type,
             packet_type: packet.header.packet_type,
