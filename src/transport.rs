@@ -457,6 +457,18 @@ impl Transport {
         destination
     }
 
+    pub async fn get_in_destination(&self, address: &AddressHash)
+        -> Option<Arc<Mutex<SingleInputDestination>>>
+    {
+        self.handler.lock().await.single_in_destinations.get(address).cloned()
+    }
+
+    pub async fn get_out_destination(&self, address: &AddressHash)
+        -> Option<Arc<Mutex<SingleOutputDestination>>>
+    {
+        self.handler.lock().await.single_out_destinations.get(address).cloned()
+    }
+
     pub async fn has_destination(&self, address: &AddressHash) -> bool {
         self.handler.lock().await.has_destination(address)
     }
