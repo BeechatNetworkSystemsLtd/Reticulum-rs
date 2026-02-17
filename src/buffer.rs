@@ -153,6 +153,10 @@ impl<'a> OutputBuffer<'a> {
         self.offset = 0;
     }
 
+    pub fn rewind(&mut self, n: usize) {
+        self.offset = self.offset.saturating_sub(n);
+    }
+
     pub fn is_full(&self) -> bool {
         self.offset == self.buffer.len()
     }

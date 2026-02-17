@@ -2,6 +2,7 @@ use alloc::sync::Arc;
 use announce_limits::AnnounceLimits;
 use announce_table::AnnounceTable;
 use link_table::LinkTable;
+use oqs;
 use packet_cache::PacketCache;
 use path_requests::create_path_request_destination;
 use path_requests::PathRequests;
@@ -414,6 +415,18 @@ impl Transport {
     }
 
     pub async fn link(&self, destination: DestinationDesc) -> Arc<Mutex<Link>> {
+        // TODO: this could fail if requesting a link for a destination that alredy has a pqc-enaled
+        // link
+        self.get_or_create_link(destination, false).await.unwrap()
+    }
+
+    pub async fn pqc_link(&self, destination: DestinationDesc) -> oqs::Result<Arc<Mutex<Link>>> {
+        self.get_or_create_link(destination, true).await
+    }
+
+    async fn get_or_create_link(&self, destination: DestinationDesc, request_pqc: bool)
+        -> oqs::Result<Arc<Mutex<Link>>>
+    {
         let link = self
             .handler
             .lock()
@@ -422,15 +435,25 @@ impl Transport {
             .get(&destination.address_hash)
             .cloned();
 
-        if let Some(link) = link {
-            if link.lock().await.status() != LinkStatus::Closed {
-                return link;
+        if let Some(link_lock) = link {
+            let link = link_lock.lock().await;
+            if link.is_pqc() != request_pqc {
+                log::warn!("tp({}): existing link {} pqc status ({}) does not match requested: {}",
+                    self.name, link.id(), link.is_pqc(), request_pqc);
+                return Err(oqs::Error::Error)
+            } else if link.status() != LinkStatus::Closed {
+                drop(link);
+                return Ok(link_lock)
             } else {
                 log::warn!("tp({}): link was closed", self.name);
             }
         }
 
-        let mut link = Link::new(destination, self.link_out_event_tx.clone());
+        let mut link = if request_pqc {
+            Link::new_pqc(destination.clone(), self.link_out_event_tx.clone())?
+        } else {
+            Link::new(destination.clone(), self.link_out_event_tx.clone())
+        };
 
         let packet = link.request();
 
@@ -451,7 +474,7 @@ impl Transport {
             .out_links
             .insert(destination.address_hash, link.clone());
 
-        link
+        Ok(link)
     }
 
     pub async fn link_close(&self, link_id: LinkId) -> Result<(), RnsError> {
@@ -930,23 +953,34 @@ async fn handle_link_request_as_destination<'a>(
                 let link = Link::new_from_request(
                     packet,
                     destination.sign_key().clone(),
-                    destination.desc,
+                    destination.identity.pqc_keys()
+                        .map(|keys| (keys.verifykey().clone(), keys.signkey().clone())),
+                    destination.desc.clone(),
                     handler.link_in_event_tx.clone(),
                 );
 
                 if let Ok(mut link) = link {
-                    handler.send_packet(link.prove()).await;
+                    match link.prove() {
+                        Ok(proof) => {
+                            handler.send_packet(proof).await;
 
-                    log::debug!(
-                        "tp({}): save input link {} for destination {}",
-                        handler.config.name,
-                        link.id(),
-                        link.destination().address_hash
-                    );
+                            log::debug!(
+                                "tp({}): save input link {} for destination {}",
+                                handler.config.name,
+                                link.id(),
+                                link.destination().address_hash
+                            );
 
-                    handler
-                        .in_links
-                        .insert(*link.id(), Arc::new(Mutex::new(link)));
+                            handler
+                                .in_links
+                                .insert(*link.id(), Arc::new(Mutex::new(link)));
+                        }
+                        Err(err) => {
+                            log::error!("error generating link proof packet for link {}: {err:?}",
+                                link.id());
+                            let _ = link.teardown();
+                        }
+                    }
                 }
             }
         }
@@ -1204,7 +1238,7 @@ async fn manage_transport(
                             continue;
                         }
 
-                        if handler.config.broadcast && packet.header.packet_type != PacketType::Announce {
+                        if handler.config.broadcast && packet.header.packet_type != PacketType::Announce && packet.header.destination_type == DestinationType::Plain {
                             // TODO: remove seperate handling for announces in handle_announce.
                             // Send broadcast message expect current iface address
                             handler.send(TxMessage { tx_type: TxMessageType::Broadcast(Some(message.address)), packet }).await;

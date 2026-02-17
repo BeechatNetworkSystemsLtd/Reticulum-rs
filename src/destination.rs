@@ -95,7 +95,7 @@ impl DestinationName {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct DestinationDesc {
     pub identity: Identity,
     pub address_hash: AddressHash,
@@ -141,7 +141,7 @@ impl DestinationAnnounce {
             VerifyingKey::from_bytes(&key_data).map_err(|_| RnsError::CryptoError)?
         };
 
-        let identity = Identity::new(public_key, verifying_key);
+        let mut identity = Identity::new(public_key, verifying_key);
 
         let name_hash = &announce_data[offset..(offset + NAME_HASH_LENGTH)];
         offset += NAME_HASH_LENGTH;
@@ -158,6 +158,8 @@ impl DestinationAnnounce {
             {
                 let pqc_verifykey_hash = &announce_data[offset..(offset + HASH_SIZE)];
                 offset += HASH_SIZE;
+                identity.pqc_verifykey_hash = Some(Hash::new(pqc_verifykey_hash.try_into()
+                    .map_err(|_| RnsError::CryptoError)?));
                 pqc_verifykey_hash
             } else {
                 &[]
@@ -277,10 +279,10 @@ impl Destination<PrivateIdentity, Input, Single> {
             .chain_safe_write(self.desc.name.as_name_hash_slice())
             .chain_safe_write(rand_hash);
 
-        if let Some(pq_keys) = self.identity.pq_keys() {
-            let capabilities = pq_keys.capabilities_flags();
+        if let Some(pqc_keys) = self.identity.pqc_keys() {
+            let capabilities = pqc_keys.capabilities_flags(self.identity.pqc_only());
             packet_data.write(&[capabilities])?;
-            packet_data.write(pq_keys.verifykey_hash().as_slice())?;
+            packet_data.write(pqc_keys.verifykey_hash().as_slice())?;
         } else {
             // no PQC captabilities
             packet_data.write(&[0x0])?;
@@ -302,10 +304,10 @@ impl Destination<PrivateIdentity, Input, Single> {
             .chain_safe_write(rand_hash)
             .chain_safe_write(&signature.to_bytes());
 
-        if let Some(pq_keys) = self.identity.pq_keys() {
-            let capabilities = pq_keys.capabilities_flags();
+        if let Some(pqc_keys) = self.identity.pqc_keys() {
+            let capabilities = self.identity.pq_capabilities_flags();
             packet_data.write(&[capabilities])?;
-            packet_data.write(pq_keys.verifykey_hash().as_slice())?;
+            packet_data.write(pqc_keys.verifykey_hash().as_slice())?;
         } else {
             // no PQC captabilities
             packet_data.write(&[0x0])?;
@@ -370,7 +372,7 @@ impl Destination<Identity, Output, Single> {
         Self {
             direction: PhantomData,
             r#type: PhantomData,
-            identity,
+            identity: identity.clone(),
             desc: DestinationDesc {
                 identity,
                 name,
@@ -463,7 +465,7 @@ mod tests {
             0x2e, 0x0f, 0x6d, 0x6c,
         ];
 
-        let priv_identity = PrivateIdentity::new(priv_key.into(), sign_priv_key.into());
+        let priv_identity = PrivateIdentity::new(priv_key.into(), sign_priv_key.into(), None, false);
 
         println!("identity hash {}", priv_identity.as_identity().address_hash);
 

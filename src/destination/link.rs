@@ -4,19 +4,20 @@ use std::{
 };
 
 use ed25519_dalek::{Signature, SigningKey, Verifier, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
+use oqs;
 use rand_core::OsRng;
 use sha2::Digest;
 use x25519_dalek::StaticSecret;
 
 use crate::{
     buffer::OutputBuffer,
-    destination::Destination,
     error::RnsError,
     hash::{AddressHash, Hash, ADDRESS_HASH_SIZE, HASH_SIZE},
     identity::{DecryptIdentity, DerivedKey, EncryptIdentity, Identity, PrivateIdentity},
     packet::{
         DestinationType, Header, Packet, PacketContext, PacketDataBuffer, PacketType, PACKET_MDU,
     },
+    pqc
 };
 
 use super::DestinationDesc;
@@ -137,6 +138,7 @@ pub struct Link {
     priv_identity: PrivateIdentity,
     peer_identity: Identity,
     derived_key: DerivedKey,
+    pqc_derived_key: Option<DerivedKey>,
     status: LinkStatus,
     request_time: Instant,
     rtt: Duration,
@@ -145,7 +147,7 @@ pub struct Link {
 }
 
 impl Link {
-    pub fn new(
+    pub(crate) fn new(
         destination: DestinationDesc,
         event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
     ) -> Self {
@@ -155,12 +157,33 @@ impl Link {
             priv_identity: PrivateIdentity::new_from_rand(OsRng),
             peer_identity: Identity::default(),
             derived_key: DerivedKey::new_empty(),
+            pqc_derived_key: None,
             status: LinkStatus::Pending,
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
             event_tx,
             proves_messages: false,
         }
+    }
+
+    /// New link using post-quantum cryptographic primitives
+    pub(crate) fn new_pqc(
+        destination: DestinationDesc,
+        event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
+    ) -> oqs::Result<Self> {
+        Ok(Self {
+            id: AddressHash::new_empty(),
+            destination,
+            priv_identity: PrivateIdentity::new_from_rand_with_pqc(OsRng)?,
+            peer_identity: Identity::default(),
+            derived_key: DerivedKey::new_empty(),
+            pqc_derived_key: None,
+            status: LinkStatus::Pending,
+            request_time: Instant::now(),
+            rtt: Duration::from_secs(0),
+            event_tx,
+            proves_messages: false,
+        })
     }
 
     pub fn prove_messages(&mut self, setting: bool) {
@@ -170,6 +193,7 @@ impl Link {
     pub fn new_from_request(
         packet: &Packet,
         signing_key: SigningKey,
+        pqc_signkey: Option<(oqs::sig::PublicKey, oqs::sig::SecretKey)>,
         destination: DestinationDesc,
         event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
     ) -> Result<Self, RnsError> {
@@ -177,7 +201,7 @@ impl Link {
             return Err(RnsError::InvalidArgument);
         }
 
-        let peer_identity = Identity::new_from_slices(
+        let mut peer_identity = Identity::new_from_slices(
             &packet.data.as_slice()[..PUBLIC_KEY_LENGTH],
             &packet.data.as_slice()[PUBLIC_KEY_LENGTH..PUBLIC_KEY_LENGTH * 2],
         );
@@ -185,13 +209,38 @@ impl Link {
         let link_id = LinkId::from(packet);
         log::debug!("link: create from request {}", link_id);
 
+        let (pqc_keys, pqc_only) = if packet.data.len() > PUBLIC_KEY_LENGTH * 2 + 3 {
+            let pqc_pubkey_len = pqc::ALGORITHM_MLKEM768.length_public_key();
+            // extract initiator pubkey
+            let peer_pubkey_bytes = &packet.data.as_slice()[
+                PUBLIC_KEY_LENGTH * 2..PUBLIC_KEY_LENGTH * 2 + pqc_pubkey_len];
+            let pubkey = pqc::ALGORITHM_MLKEM768.public_key_from_bytes(&peer_pubkey_bytes)
+                .map(|k| k.to_owned())
+                .ok_or_else(||{
+                    log::error!("error loading initiator PQC pubkey from link request packet");
+                    RnsError::PacketError
+                })?;
+            peer_identity.pqc_pubkey = Some(pubkey);
+            // generate ephemeral pubkey
+            let (pubkey, privkey) = pqc::ALGORITHM_MLKEM768.keypair().map_err(RnsError::OqsError)?;
+            let (verifykey, signkey) = pqc_signkey.ok_or_else(||{
+                log::error!("could not create link: input destination {} does not have pqc keys",
+                    destination.address_hash);
+                RnsError::InvalidArgument
+            })?;
+            let pqc_keys = pqc::PostQuantumKeys::new(pubkey, privkey, verifykey, signkey);
+            (Some(pqc_keys), true)
+        } else {
+            (None, false)
+        };
+
         let mut link = Self {
             id: link_id,
             destination,
-            // TODO: PQC
-            priv_identity: PrivateIdentity::new(StaticSecret::random_from_rng(OsRng), signing_key, None),
-            peer_identity,
+            priv_identity: PrivateIdentity::new(StaticSecret::random_from_rng(OsRng), signing_key, pqc_keys, pqc_only),
+            peer_identity: peer_identity.clone(),
             derived_key: DerivedKey::new_empty(),
+            pqc_derived_key: None,
             status: LinkStatus::Pending,
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
@@ -204,11 +253,15 @@ impl Link {
         Ok(link)
     }
 
-    pub fn request(&mut self) -> Packet {
+    pub(crate) fn request(&mut self) -> Packet {
         let mut packet_data = PacketDataBuffer::new();
 
         packet_data.safe_write(self.priv_identity.as_identity().public_key.as_bytes());
         packet_data.safe_write(self.priv_identity.as_identity().verifying_key.as_bytes());
+
+        if let Some(pqc_keys) = self.priv_identity.pqc_keys() {
+            packet_data.safe_write(pqc_keys.pubkey().as_ref());
+        }
 
         let packet = Packet {
             header: Header {
@@ -229,7 +282,7 @@ impl Link {
         packet
     }
 
-    pub fn prove(&mut self) -> Packet {
+    pub fn prove(&mut self) -> Result<Packet, RnsError> {
         log::debug!("link({}): prove", self.id);
 
         if self.status != LinkStatus::Active {
@@ -245,9 +298,51 @@ impl Link {
 
         let signature = self.priv_identity.sign(packet_data.as_slice());
 
+        // PQC signature additionally over PQC keys and shared secret
+        let (pqc_signature, ciphertexts) = if let Some(pqc_keys) = self.priv_identity.pqc_keys() {
+            // shared secret
+            let peer_pubkey = self.peer_identity.pqc_pubkey.as_ref().ok_or_else(||{
+                log::error!("peer PQC pubkey required to encpasulate shared secret");
+                RnsError::InvalidArgument
+            })?;
+            let (sign_ciphertext, sign_secret) = pqc::ALGORITHM_MLKEM768.encapsulate(peer_pubkey)
+                .map_err(|err| {
+                    log::error!("error encapsulating signature shared secret: {err:?}");
+                    RnsError::CryptoError
+                })?;
+            let (enc_ciphertext, enc_secret) = pqc::ALGORITHM_MLKEM768.encapsulate(peer_pubkey)
+                .map_err(|err| {
+                    log::error!("error encapsulating encryption shared secret: {err:?}");
+                    RnsError::CryptoError
+                })?;
+            let derived_key = DerivedKey::from_slices(sign_secret.as_ref(), enc_secret.as_ref())
+                .ok_or_else(||{
+                    log::error!("error loading secret key bytes");
+                    RnsError::CryptoError
+                })?;
+            self.pqc_derived_key = Some(derived_key);
+            packet_data.safe_write(pqc_keys.pubkey().as_ref());
+            packet_data.safe_write(pqc_keys.verifykey().as_ref());
+            (Some(pqc_keys.sign(packet_data.as_slice())), Some((sign_ciphertext, enc_ciphertext)))
+        } else {
+            (None, None)
+        };
+
         packet_data.reset();
+
         packet_data.safe_write(&signature.to_bytes()[..]);
+        if let Some(pq_sig) = pqc_signature {
+            packet_data.safe_write(pq_sig.as_ref());
+        }
         packet_data.safe_write(self.priv_identity.as_identity().public_key.as_bytes());
+        if let Some(pqc_keys) = self.priv_identity.pqc_keys() {
+            packet_data.safe_write(pqc_keys.pubkey().as_ref());
+            packet_data.safe_write(pqc_keys.verifykey().as_ref());
+            if let Some((sign_ciphertext, enc_ciphertext)) = ciphertexts {
+                packet_data.safe_write(sign_ciphertext.as_ref());
+                packet_data.safe_write(enc_ciphertext.as_ref());
+            }
+        }
 
         let packet = Packet {
             header: Header {
@@ -262,7 +357,7 @@ impl Link {
             data: packet_data,
         };
 
-        packet
+        Ok(packet)
     }
 
     fn handle_data_packet(&mut self, packet: &Packet, out_link: bool) -> LinkHandleResult {
@@ -354,8 +449,7 @@ impl Link {
         if self.status == LinkStatus::Pending
             && packet.context == PacketContext::LinkRequestProof
         {
-            if let Ok(identity) = validate_proof_packet(&self.destination, &self.id, packet)
-            {
+            if let Ok(identity) = validate_proof_packet(self, packet) {
                 log::debug!("link({}): has been proved", self.id);
 
                 self.handshake(identity);
@@ -458,13 +552,23 @@ impl Link {
     }
 
     pub fn encrypt<'a>(&self, text: &[u8], out_buf: &'a mut [u8]) -> Result<&'a [u8], RnsError> {
-        self.priv_identity
-            .encrypt(OsRng, text, &self.derived_key, out_buf)
+        if let Some(derived_key) = self.pqc_derived_key.as_ref() {
+            self.priv_identity
+                .encrypt(OsRng, text, derived_key, out_buf)
+        } else {
+            self.priv_identity
+                .encrypt(OsRng, text, &self.derived_key, out_buf)
+        }
     }
 
     pub fn decrypt<'a>(&self, text: &[u8], out_buf: &'a mut [u8]) -> Result<&'a [u8], RnsError> {
-        self.priv_identity
-            .decrypt(OsRng, text, &self.derived_key, out_buf)
+        if let Some(derived_key) = self.pqc_derived_key.as_ref() {
+            self.priv_identity
+                .decrypt(OsRng, text, derived_key, out_buf)
+        } else {
+            self.priv_identity
+                .decrypt(OsRng, text, &self.derived_key, out_buf)
+        }
     }
 
     pub fn destination(&self) -> &DestinationDesc {
@@ -573,14 +677,21 @@ impl Link {
     pub fn rtt(&self) -> &Duration {
         &self.rtt
     }
+
+    pub fn is_pqc(&self) -> bool {
+        self.priv_identity.pqc_keys().is_some()
+    }
 }
 
 fn validate_proof_packet(
-    destination: &DestinationDesc,
-    id: &LinkId,
+    link: &mut Link,
     packet: &Packet,
 ) -> Result<Identity, RnsError> {
     const MIN_PROOF_LEN: usize = SIGNATURE_LENGTH + PUBLIC_KEY_LENGTH;
+    let min_pqc_proof_len = SIGNATURE_LENGTH + pqc::ALGORITHM_MLDSA65.length_signature() +
+        PUBLIC_KEY_LENGTH + pqc::ALGORITHM_MLKEM768.length_public_key() +
+        pqc::ALGORITHM_MLDSA65.length_public_key() +
+        pqc::ALGORITHM_MLKEM768.length_ciphertext() * 2;
     const MTU_PROOF_LEN: usize = SIGNATURE_LENGTH + PUBLIC_KEY_LENGTH + LINK_MTU_SIZE;
     const SIGN_DATA_LEN: usize = ADDRESS_HASH_SIZE + PUBLIC_KEY_LENGTH * 2 + LINK_MTU_SIZE;
 
@@ -588,13 +699,17 @@ fn validate_proof_packet(
         return Err(RnsError::PacketError);
     }
 
+    if packet.data.len() >= min_pqc_proof_len {
+        return validate_pqc_proof_packet(link, packet)
+    }
+
     let mut proof_data = [0u8; SIGN_DATA_LEN];
 
-    let verifying_key = destination.identity.verifying_key.as_bytes();
+    let verifying_key = link.destination.identity.verifying_key.as_bytes();
     let sign_data_len = {
         let mut output = OutputBuffer::new(&mut proof_data[..]);
 
-        output.write(id.as_slice())?;
+        output.write(link.id.as_slice())?;
         output.write(
             &packet.data.as_slice()[SIGNATURE_LENGTH..SIGNATURE_LENGTH + PUBLIC_KEY_LENGTH],
         )?;
@@ -616,8 +731,134 @@ fn validate_proof_packet(
     let signature = Signature::from_slice(&packet.data.as_slice()[..SIGNATURE_LENGTH])
         .map_err(|_| RnsError::CryptoError)?;
 
-    identity
-        .verify(&proof_data[..sign_data_len], &signature)
+    identity.verify(&proof_data[..sign_data_len], &signature)?;
+
+    Ok(identity)
+}
+
+fn validate_pqc_proof_packet(
+    link: &mut Link,
+    packet: &Packet,
+) -> Result<Identity, RnsError> {
+    const SIGN_DATA_LEN: usize = ADDRESS_HASH_SIZE + PUBLIC_KEY_LENGTH * 2 + LINK_MTU_SIZE;
+    let pqc_pubkey_len = pqc::ALGORITHM_MLKEM768.length_public_key();
+    let pqc_verifykey_len = pqc::ALGORITHM_MLDSA65.length_public_key();
+    let pqc_sign_data_len = SIGN_DATA_LEN + pqc_pubkey_len + pqc_verifykey_len;
+    let pqc_signature_len = pqc::ALGORITHM_MLDSA65.length_signature();
+    let pqc_ciphertext_len = pqc::ALGORITHM_MLKEM768.length_ciphertext();
+    // length of packet without MTU
+    let pqc_min_proof_len = SIGNATURE_LENGTH + pqc_signature_len + PUBLIC_KEY_LENGTH
+        + pqc_pubkey_len + pqc_verifykey_len + pqc_ciphertext_len * 2;
+
+    let mut proof_data = vec![0u8; pqc_sign_data_len];
+    // validate ECC signature
+    let verifying_key = link.destination.identity.verifying_key.as_bytes();
+
+    let mut output = OutputBuffer::new(&mut proof_data[..]);
+    output.write(link.id.as_slice())?;
+    // X25519 pubkey offset
+    let offset = SIGNATURE_LENGTH + pqc_signature_len;
+    output.write(&packet.data.as_slice()[offset..offset + PUBLIC_KEY_LENGTH])?;
+    output.write(verifying_key)?;
+
+    if packet.data.len() > pqc_min_proof_len {
+        // append MTU bytes
+        output.write(&packet.data.as_slice()[pqc_min_proof_len..pqc_min_proof_len + LINK_MTU_SIZE])?;
+    }
+    let sign_data_len = output.offset();
+
+    // construct the validated peer identity
+    let mut identity = Identity::new_from_slices(
+        &output.as_slice()[ADDRESS_HASH_SIZE..ADDRESS_HASH_SIZE + PUBLIC_KEY_LENGTH],
+        verifying_key,
+    );
+
+    let signature = Signature::from_slice(&packet.data.as_slice()[..SIGNATURE_LENGTH])
+        .map_err(|_| RnsError::CryptoError)?;
+
+    identity.verify(&output.as_slice()[..sign_data_len], &signature)?;
+
+    // get PQC keys + ciphertexts
+    let mut offset = SIGNATURE_LENGTH + pqc_signature_len + PUBLIC_KEY_LENGTH;
+    let pubkey = pqc::ALGORITHM_MLKEM768.public_key_from_bytes(
+        &packet.data.as_slice()[offset..offset + pqc_pubkey_len])
+    .map(|k| k.to_owned())
+    .ok_or_else(||{
+        log::error!("error loading PQC pubkey from proof packet");
+        RnsError::PacketError
+    })?;
+    offset += pqc_pubkey_len;
+    output.write(pubkey.as_ref())?;
+    identity.pqc_pubkey = Some(pubkey);
+    let verifykey = pqc::ALGORITHM_MLDSA65.public_key_from_bytes(
+        &packet.data.as_slice()[offset..offset + pqc_verifykey_len])
+    .map(|k| k.to_owned())
+    .ok_or_else(||{
+        log::error!("error loading PQC verifying key from proof packet");
+        RnsError::PacketError
+    })?;
+    offset += pqc_verifykey_len;
+
+    // check against the announced verifykey hash
+    let verifykey_hash = Hash::new_from_slice(verifykey.as_ref());
+    if Some(verifykey_hash) != link.destination.identity.pqc_verifykey_hash {
+        log::warn!("PQC verifykey hash comparison failed");
+        return Err(RnsError::CryptoError)
+    }
+
+    if packet.data.len() > pqc_min_proof_len {
+        // rewind MTU bytes first then append after verifykey
+        output.rewind(LINK_MTU_SIZE);
+        output.write(verifykey.as_ref())?;
+        output.write(&packet.data.as_slice()[pqc_min_proof_len..pqc_min_proof_len + LINK_MTU_SIZE])?;
+    } else {
+        output.write(verifykey.as_ref())?;
+    }
+    identity.pqc_verifykey = Some(verifykey.clone());
+    link.destination.identity.pqc_verifykey = Some(verifykey);
+    let sign_ciphertext = pqc::ALGORITHM_MLKEM768.ciphertext_from_bytes(
+        &packet.data.as_slice()[offset..offset + pqc_ciphertext_len]
+    )   .map(|k| k.to_owned())
+        .ok_or_else(||{
+            log::error!("error loading PQC signature ciphertext from proof packet");
+            RnsError::PacketError
+        })?;
+    offset += pqc_ciphertext_len;
+    let enc_ciphertext = pqc::ALGORITHM_MLKEM768.ciphertext_from_bytes(
+        &packet.data.as_slice()[offset..offset + pqc_ciphertext_len]
+    )   .map(|k| k.to_owned())
+        .ok_or_else(||{
+            log::error!("error loading PQC encryption ciphertext from proof packet");
+            RnsError::PacketError
+        })?;
+    if let Some(pqc_keys) = link.priv_identity.pqc_keys() {
+        let sign_secret = pqc::ALGORITHM_MLKEM768.decapsulate(pqc_keys.privkey(), &sign_ciphertext)
+            .map_err(|err|{
+                log::error!("error decapsulating PQC signature shared secret from proof packet: {err:?}");
+                RnsError::PacketError
+            })?;
+        let enc_secret = pqc::ALGORITHM_MLKEM768.decapsulate(pqc_keys.privkey(), &enc_ciphertext)
+            .map_err(|err|{
+                log::error!("error decapsulating PQC encryption shared secret from proof packet: {err:?}");
+                RnsError::PacketError
+            })?;
+        let derived_key = DerivedKey::from_slices(sign_secret.as_ref(), enc_secret.as_ref())
+            .ok_or_else(||{
+                log::error!("error loading secret key bytes");
+                RnsError::CryptoError
+            })?;
+        link.pqc_derived_key = Some(derived_key);
+    } else {
+        log::error!("link missing private PQC key to decapsulate shared secret");
+        return Err(RnsError::InvalidArgument)
+    }
+
+    // validate PQC signature
+    let pqc_signature = pqc::ALGORITHM_MLDSA65.signature_from_bytes(
+        &packet.data.as_slice()[SIGNATURE_LENGTH..SIGNATURE_LENGTH + pqc_signature_len]
+    ) .map(|k| k.to_owned())
+      .ok_or_else(|| RnsError::CryptoError)?;
+    identity.verify_pqc(&output.as_slice()[..output.offset()], &pqc_signature)
         .map_err(|_| RnsError::IncorrectSignature)?;
 
     Ok(identity)

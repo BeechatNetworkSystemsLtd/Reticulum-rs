@@ -10,7 +10,7 @@ use crate::{
     crypt::fernet::{Fernet, PlainText, Token},
     error::RnsError,
     hash::{AddressHash, Hash},
-    pqc::PostQuantumKeys
+    pqc::{self, PostQuantumKeys}
 };
 
 pub const PUBLIC_KEY_LENGTH: usize = ed25519_dalek::PUBLIC_KEY_LENGTH;
@@ -45,10 +45,15 @@ pub trait HashIdentity {
     fn as_address_hash_slice(&self) -> &[u8];
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct Identity {
     pub public_key: PublicKey,
     pub verifying_key: VerifyingKey,
+    /// ML-KEM-768 public key
+    pub pqc_pubkey: Option<oqs::kem::PublicKey>,
+    /// ML-DSA-65 public key
+    pub pqc_verifykey: Option<oqs::sig::PublicKey>,
+    pub pqc_verifykey_hash: Option<Hash>,
     pub address_hash: AddressHash,
 }
 
@@ -68,6 +73,9 @@ impl Identity {
             public_key,
             verifying_key,
             address_hash,
+            pqc_pubkey: None,
+            pqc_verifykey: None,
+            pqc_verifykey_hash: None
         }
     }
 
@@ -136,6 +144,15 @@ impl Identity {
         self.verifying_key
             .verify_strict(data, signature)
             .map_err(|_| RnsError::IncorrectSignature)
+    }
+
+    pub fn verify_pqc(&self, data: &[u8], signature: &oqs::sig::Signature) -> Result<(), RnsError> {
+        if let Some(verifykey) = self.pqc_verifykey.as_ref() {
+            pqc::ALGORITHM_MLDSA65.verify(data, signature, verifykey)
+                .map_err(|_| RnsError::IncorrectSignature)
+        } else {
+            Err(RnsError::InvalidArgument)
+        }
     }
 
     pub fn derive_key<R: CryptoRngCore + Copy>(&self, rng: R, salt: Option<&[u8]>) -> DerivedKey {
@@ -240,16 +257,19 @@ pub struct PrivateIdentity {
     identity: Identity,
     private_key: StaticSecret,
     sign_key: SigningKey,
-    pq_keys: Option<PostQuantumKeys>
+    pqc_keys: Option<PostQuantumKeys>,
+    /// Not valid if pqc_keys are absent
+    pqc_only: bool
 }
 
 impl PrivateIdentity {
-    pub fn new(private_key: StaticSecret, sign_key: SigningKey, pq_keys: Option<PostQuantumKeys>) -> Self {
+    pub fn new(private_key: StaticSecret, sign_key: SigningKey, pqc_keys: Option<PostQuantumKeys>, pqc_only: bool) -> Self {
         Self {
             identity: Identity::new((&private_key).into(), sign_key.verifying_key()),
             private_key,
             sign_key,
-            pq_keys
+            pqc_keys,
+            pqc_only
         }
     }
 
@@ -257,9 +277,17 @@ impl PrivateIdentity {
         let sign_key = SigningKey::generate(&mut rng);
         let private_key = StaticSecret::random_from_rng(rng);
 
-        // TODO: PQC
-        Self::new(private_key, sign_key, None)
+        Self::new(private_key, sign_key, None, false)
     }
+
+    pub fn new_from_rand_with_pqc<R: CryptoRngCore>(mut rng: R) -> oqs::Result<Self> {
+        let sign_key = SigningKey::generate(&mut rng);
+        let private_key = StaticSecret::random_from_rng(rng);
+        let pqc_keys = Some(PostQuantumKeys::generate()?);
+
+        Ok(Self::new(private_key, sign_key, pqc_keys, false))
+    }
+
 
     pub fn new_from_name(name: &str) -> Self {
         let hash = Hash::new_from_slice(name.as_bytes());
@@ -269,7 +297,7 @@ impl PrivateIdentity {
         let sign_key = SigningKey::from_bytes(hash.as_bytes());
 
         // TODO: PQC
-        Self::new(private_key, sign_key, None)
+        Self::new(private_key, sign_key, None, false)
     }
 
     pub fn new_from_hex_string(hex_string: &str) -> Result<Self, RnsError> {
@@ -293,7 +321,8 @@ impl PrivateIdentity {
         Ok(Self::new(
             StaticSecret::from(private_key_bytes),
             SigningKey::from_bytes(&sign_key_bytes),
-            None
+            None,
+            false
         ))
     }
 
@@ -309,8 +338,17 @@ impl PrivateIdentity {
         &self.identity
     }
 
-    pub fn pq_keys(&self) -> Option<&PostQuantumKeys> {
-        self.pq_keys.as_ref()
+    pub fn pqc_keys(&self) -> Option<&PostQuantumKeys> {
+        self.pqc_keys.as_ref()
+    }
+
+    pub fn pqc_only(&self) -> bool {
+        self.pqc_only
+    }
+
+    pub fn pq_capabilities_flags(&self) -> u8 {
+        self.pqc_keys.as_ref().map(|pqc_keys| pqc_keys.capabilities_flags(self.pqc_only))
+            .unwrap_or(0x0)
     }
 
     pub fn address_hash(&self) -> &AddressHash {
@@ -450,6 +488,19 @@ impl DerivedKey {
 
     pub fn as_slice(&self) -> &[u8] {
         &self.key[..]
+    }
+
+    /// Load DerivedKey from bytes. Returns None if slices do not contain the correct number of
+    /// bytes.
+    pub fn from_slices(sign_key: &[u8], enc_key: &[u8]) -> Option<Self> {
+        let mut key = [0u8; DERIVED_KEY_LENGTH];
+        if sign_key.len() != DERIVED_KEY_LENGTH / 2 || enc_key.len() != DERIVED_KEY_LENGTH / 2 {
+            None
+        } else {
+            key[..DERIVED_KEY_LENGTH / 2].copy_from_slice(sign_key);
+            key[DERIVED_KEY_LENGTH / 2..DERIVED_KEY_LENGTH].copy_from_slice(sign_key);
+            Some(DerivedKey { key })
+        }
     }
 }
 

@@ -8,4 +8,5 @@ pub enum RnsError {
     PacketError,
     ConnectionError,
     LinkClosed,
+    OqsError(oqs::Error)
 }
