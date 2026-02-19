@@ -251,6 +251,7 @@ impl Link {
         let packet = Packet {
             header: Header {
                 packet_type: PacketType::Proof,
+                destination_type: DestinationType::Link,
                 ..Default::default()
             },
             ifac: None,
