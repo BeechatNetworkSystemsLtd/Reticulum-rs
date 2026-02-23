@@ -15,12 +15,14 @@ pub struct PathEntry {
 
 pub struct PathTable {
     map: HashMap<AddressHash, PathEntry>,
+    reroute_eager: bool,
 }
 
 impl PathTable {
-    pub fn new() -> Self {
+    pub fn new(reroute_eager: bool) -> Self {
         Self {
             map: HashMap::new(),
+            reroute_eager,
         }
     }
 
@@ -49,7 +51,10 @@ impl PathTable {
         let hops = announce.header.hops + 1;
 
         if let Some(existing_entry) = self.map.get(&announce.destination) {
-            if hops >= existing_entry.hops {
+            if hops > existing_entry.hops {
+                return;
+            }
+            if !self.reroute_eager && hops == existing_entry.hops {
                 return;
             }
         }

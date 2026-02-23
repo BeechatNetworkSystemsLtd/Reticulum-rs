@@ -84,6 +84,7 @@ pub struct TransportConfig {
     identity: PrivateIdentity,
     broadcast: bool,
     retransmit: bool,
+    reroute_eager: bool,
 }
 
 #[derive(Clone)]
@@ -138,14 +139,20 @@ impl TransportConfig {
             identity: identity.clone(),
             broadcast,
             retransmit: false,
+            reroute_eager: false,
         }
     }
 
     pub fn set_retransmit(&mut self, retransmit: bool) {
         self.retransmit = retransmit;
     }
+
     pub fn set_broadcast(&mut self, broadcast: bool) {
         self.broadcast = broadcast;
+    }
+
+    pub fn set_reroute_eager(&mut self, reroute_eager: bool) {
+        self.reroute_eager = reroute_eager;
     }
 }
 
@@ -156,6 +163,7 @@ impl Default for TransportConfig {
             identity: PrivateIdentity::new_from_rand(OsRng),
             broadcast: false,
             retransmit: false,
+            reroute_eager: false,
         }
     }
 }
@@ -185,12 +193,13 @@ impl Transport {
 
         let cancel = CancellationToken::new();
         let name = config.name.clone();
+        let reroute_eager = config.reroute_eager;
         let handler = Arc::new(Mutex::new(TransportHandler {
             config,
             iface_manager: iface_manager.clone(),
             announce_table: AnnounceTable::new(),
             link_table: LinkTable::new(),
-            path_table: PathTable::new(),
+            path_table: PathTable::new(reroute_eager),
             single_in_destinations: HashMap::new(),
             single_out_destinations: HashMap::new(),
             announce_limits: AnnounceLimits::new(),
