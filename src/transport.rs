@@ -60,6 +60,7 @@ pub const PATHFINDER_M: usize = 128; // Max hops
 const INTERVAL_LINKS_CHECK: Duration = Duration::from_secs(1);
 const INTERVAL_INPUT_LINK_STALE: Duration = Duration::from_secs(10);
 const INTERVAL_INPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
+const INTERVAL_OUTPUT_LINK_RESTART: Duration = Duration::from_secs(60);
 const INTERVAL_OUTPUT_LINK_STALE: Duration = Duration::from_secs(10);
 const INTERVAL_OUTPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
 const INTERVAL_OUTPUT_LINK_REPEAT: Duration = Duration::from_secs(6);
@@ -85,6 +86,7 @@ pub struct TransportConfig {
     broadcast: bool,
     retransmit: bool,
     reroute_eager: bool,
+    restart_outlinks: bool,
 }
 
 #[derive(Clone)]
@@ -140,6 +142,7 @@ impl TransportConfig {
             broadcast,
             retransmit: false,
             reroute_eager: false,
+            restart_outlinks: false,
         }
     }
 
@@ -154,6 +157,10 @@ impl TransportConfig {
     pub fn set_reroute_eager(&mut self, reroute_eager: bool) {
         self.reroute_eager = reroute_eager;
     }
+
+    pub fn set_restart_outlinks(&mut self, restart_outlinks: bool) {
+        self.restart_outlinks = restart_outlinks;
+    }
 }
 
 impl Default for TransportConfig {
@@ -164,6 +171,7 @@ impl Default for TransportConfig {
             broadcast: false,
             retransmit: false,
             reroute_eager: false,
+            restart_outlinks: false,
         }
     }
 }
@@ -996,9 +1004,17 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
             LinkStatus::Active => if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE {
                 link.stale();
             }
-            LinkStatus::Stale => if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE + INTERVAL_OUTPUT_LINK_CLOSE {
-                link.close();
-                links_to_remove.push(*link_entry.0);
+            LinkStatus::Stale => {
+                if handler.config.restart_outlinks {
+                    if link.elapsed() > INTERVAL_OUTPUT_LINK_RESTART {
+                        link.restart();
+                    }
+                } else {
+                    if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE + INTERVAL_OUTPUT_LINK_CLOSE {
+                        link.close();
+                        links_to_remove.push(*link_entry.0);
+                    }
+                }
             }
             LinkStatus::Pending => if link.elapsed() > INTERVAL_OUTPUT_LINK_REPEAT {
                 log::warn!(
