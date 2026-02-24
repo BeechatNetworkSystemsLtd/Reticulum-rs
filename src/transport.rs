@@ -1299,18 +1299,12 @@ async fn manage_transport(
                         break;
                     },
                     _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
-                        let mut retransmit_old = false;
-
                         if let Some(instant) = last_retransmit_old {
-                            if instant.elapsed() > INTERVAL_OLD_ANNOUNCES_RETRANSMIT {
-                                retransmit_old = true;
+                            let now = time::Instant::now();
+                            if now - instant > INTERVAL_OLD_ANNOUNCES_RETRANSMIT {
+                                retransmit_announces(handler.lock().await, true).await;
+                                last_retransmit_old = Some(now);
                             }
-                        }
-
-                        retransmit_announces(handler.lock().await, retransmit_old).await;
-
-                        if retransmit_old {
-                            last_retransmit_old = Some(time::Instant::now());
                         }
                     }
                 }
