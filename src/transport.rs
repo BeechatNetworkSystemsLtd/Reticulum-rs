@@ -67,6 +67,7 @@ const INTERVAL_OUTPUT_LINK_REPEAT: Duration = Duration::from_secs(6);
 const INTERVAL_OUTPUT_LINK_KEEP: Duration = Duration::from_secs(5);
 const INTERVAL_IFACE_CLEANUP: Duration = Duration::from_secs(10);
 const INTERVAL_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(1);
+const INTERVAL_OLD_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(60);
 const INTERVAL_KEEP_PACKET_CACHED: Duration = Duration::from_secs(180);
 const INTERVAL_PACKET_CACHE_CLEANUP: Duration = Duration::from_secs(90);
 
@@ -87,6 +88,7 @@ pub struct TransportConfig {
     retransmit: bool,
     reroute_eager: bool,
     restart_outlinks: bool,
+    announce_forever: bool,
 }
 
 #[derive(Clone)]
@@ -143,6 +145,7 @@ impl TransportConfig {
             retransmit: false,
             reroute_eager: false,
             restart_outlinks: false,
+            announce_forever: false,
         }
     }
 
@@ -161,6 +164,10 @@ impl TransportConfig {
     pub fn set_restart_outlinks(&mut self, restart_outlinks: bool) {
         self.restart_outlinks = restart_outlinks;
     }
+
+    pub fn set_announce_forever(&mut self, announce_forever: bool) {
+        self.announce_forever = announce_forever;
+    }
 }
 
 impl Default for TransportConfig {
@@ -172,6 +179,7 @@ impl Default for TransportConfig {
             retransmit: false,
             reroute_eager: false,
             restart_outlinks: false,
+            announce_forever: false,
         }
     }
 }
@@ -1051,12 +1059,23 @@ async fn handle_cleanup<'a>(handler: MutexGuard<'a, TransportHandler>) {
     handler.iface_manager.lock().await.cleanup();
 }
 
-async fn retransmit_announces<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
+async fn retransmit_announces<'a>(
+    mut handler: MutexGuard<'a, TransportHandler>,
+    retransmit_old: bool
+) {
     let transport_id = handler.config.identity.address_hash().clone();
     let messages = handler.announce_table.to_retransmit(&transport_id);
 
     for message in messages {
         handler.send(message).await;
+    }
+
+    if retransmit_old {
+        let messages = handler.announce_table.to_retransmit_old(&transport_id);
+
+        for message in messages {
+            handler.send(message).await;
+        }
     }
 }
 
@@ -1086,6 +1105,11 @@ async fn manage_transport(
 ) {
     let cancel = handler.lock().await.cancel.clone();
     let retransmit = handler.lock().await.config.retransmit;
+    let mut last_retransmit_old = if handler.lock().await.config.announce_forever {
+        Some(time::Instant::now() - INTERVAL_OLD_ANNOUNCES_RETRANSMIT)
+    } else {
+        None
+    };
 
     let _packet_task = {
         let handler = handler.clone();
@@ -1275,7 +1299,19 @@ async fn manage_transport(
                         break;
                     },
                     _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
-                        retransmit_announces(handler.lock().await).await;
+                        let mut retransmit_old = false;
+
+                        if let Some(instant) = last_retransmit_old {
+                            if instant.elapsed() > INTERVAL_OLD_ANNOUNCES_RETRANSMIT {
+                                retransmit_old = true;
+                            }
+                        }
+
+                        retransmit_announces(handler.lock().await, retransmit_old).await;
+
+                        if retransmit_old {
+                            last_retransmit_old = Some(time::Instant::now());
+                        }
                     }
                 }
             }
