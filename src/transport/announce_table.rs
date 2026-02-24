@@ -31,6 +31,13 @@ impl AnnounceEntry {
 
         self.retries = self.retries.saturating_sub(1);
 
+        Some(self.always_retransmit(transport_id))
+    }
+
+    pub fn always_retransmit(
+        &self,
+        transport_id: &AddressHash,
+    ) -> TxMessage {
         let context = if self.response_to_iface.is_some() {
             PacketContext::PathResponse
         } else {
@@ -58,7 +65,7 @@ impl AnnounceEntry {
             None => TxMessageType::Broadcast(Some(self.received_from)),
         };
 
-        Some(TxMessage { tx_type, packet })
+        TxMessage { tx_type, packet }
 
     }
 }
@@ -238,6 +245,35 @@ impl AnnounceTable {
         for destination in completed {
             if let Some(announce) = self.map.remove(&destination) {
                 self.cache.insert(destination, announce);
+            }
+        }
+
+        messages
+    }
+
+    pub fn to_retransmit_old(
+        &mut self,
+        transport_id: &AddressHash,
+    ) -> Vec<TxMessage> {
+        let mut messages = vec![];
+
+        if let Some(ref cache) = self.cache.newer {
+            for (destination, ref entry) in cache {
+                if self.responses.contains_key(destination) {
+                    continue;
+                }
+
+                messages.push(entry.always_retransmit(transport_id));
+            }
+        }
+
+        if let Some(ref cache) = self.cache.older {
+            for (destination, ref entry) in cache {
+                if self.responses.contains_key(destination) {
+                    continue;
+                }
+
+                messages.push(entry.always_retransmit(transport_id));
             }
         }
 
