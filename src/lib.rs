@@ -1,4 +1,4 @@
-//! A Rust implementation of the [Reticulum Python reference implementation](https://github.com/markqvist/reticulum),
+//! A Rust port of the [Reticulum Python reference implementation](https://github.com/markqvist/reticulum),
 //! the cryptography-based networking stack for building unstoppable
 //! networks with LoRa, Packet Radio, WiFi and everything in between.
 //!
@@ -9,8 +9,8 @@
 //! encryption and connectivity, initiator anonymity, autoconfiguring
 //! cryptographically backed multi-hop transport, efficient addressing,
 //! unforgeable delivery acknowledgements and more.
-//! 
-//! More Resources:
+//!
+//! More resources:
 //!
 //! * [Homepage](https://reticulum.network/)
 //! * [Manual](https://reticulum.network/manual/index.html)
@@ -18,22 +18,23 @@
 //!
 //! # A tour of this Reticulum implementation
 //!
-//! Reticlum consists of one main [`transport::Transport`] that can connect to other reticulum instances
-//! via different kind of interfaces by connecting them with the [`iface::InterfaceManager`]:
+//! Reticlum consists of one main [`transport::Transport`] object that can connect to other
+//! Reticulum instances via different kinds of interfaces by creating them with the
+//! [`iface::InterfaceManager`]:
 //! * [`iface::tcp_client::TcpClient`]
 //! * [`iface::tcp_server::TcpServer`]
 //! * [`iface::udp::UdpInterface`]
 //! * Kaonic
 //!
 //! The main instance can be used to send messages to [`destination::Destination`]s directly
-//! or over [`destination::link::Link`]s. 
-//! 
-//! [`hash::AddressHash`] is used for adressing destinations and [`destination::link::LinkId`] for links.
-//! 
-//! [`Resources`] can be used to send arbitrary amounts of data
-//! using a simple interface.
+//! or over [`destination::link::Link`]s.
 //!
-//! ## Creating a Transport
+//! [`hash::AddressHash`] is used for adressing destinations and [`destination::link::LinkId`] for
+//! links.
+//!
+//! [`Resources`] can be used to send arbitrary amounts of data using a simple interface.
+//!
+//! ## Creating a Transport instance
 //!
 //! ```
 //! # {
@@ -44,7 +45,7 @@
 //! # }
 //! ```
 //!
-//! ## Connecting interfaces
+//! ## Creating interfaces
 //!
 //! ```
 //! # {
@@ -56,40 +57,40 @@
 //! }
 //! # }
 //! ```
-//! 
+//!
 //! ## Set up and announce destinations
-//! 
-//! Destinations are used as targets for messages or links. 
-//! Destinations need to be announced to the network. 
-//! 
+//!
+//! Destinations are used as targets for messages or links.
+//! Destinations need to be announced to the network.
+//!
 //! ```
 //! # {
 //! use rand_core::OsRng;
 //! #[tokio::main]
 //! async fn main() {
 //!     let id = PrivateIdentity::new_from_rand(OsRng);
-//! 
+//!
 //!     let destination = SingleInputDestination::new(id, DestinationName::new("example", "app"));
-//! 
+//!
 //!     transport.send_direct(client_addr, destination.announce(OsRng, None).unwrap()).await;
 //! }
 //! # }
 //! ```
 //!
 //! ## Setting up links
-//! 
-//! Links should be used for prolonged bidirectional communication. 
+//!
+//! Links should be used for prolonged bidirectional communication.
 //! Links are established by sending a link-request to the target
-//! destination. After the response from the target the link can be used. 
-//! 
+//! destination. After the response from the target the link can be used.
+//!
 //! ```
 //! # {
 //! #[tokio::main]
 //! async fn main() {
 //!     let target_destination: AddressHash;
-//! 
+//!
 //!     let mut link: Option<Link> = None;
-//! 
+//!
 //!     let announce_receiver = transport.recv_announces().await;
 //!     while let Ok(announcement) = announce_reciver.recv.await {
 //!         if accouncement.destination.lock().await.desc.address_hash == target_destination {
@@ -99,9 +100,9 @@
 //!         }
 //!     }
 //!     let link_id = link.lock().await.id().clone();
-//! 
+//!
 //!     // look for the response to the link request
-//!     // This is only neccessary if you want to track 
+//!     // This is only neccessary if you want to track
 //!     // when the link becomes active.
 //!     let link_event_receiver = transport.link_in_events();
 //!     loop {
@@ -118,11 +119,11 @@
 //! }
 //! # }
 //! ```
-//! 
+//!
 //! ## Send data
-//! 
-//! Create a data packet with the link and send that packet. 
-//! 
+//!
+//! Create a data packet with the link and send that packet.
+//!
 //! ```
 //! # {
 //! #[tokio::main]
@@ -134,11 +135,11 @@
 //! }
 //! # }
 //! ```
-//! 
+//!
 //! ## Receive data
-//! 
-//! Look for incoming data events matching a link id. 
-//! 
+//!
+//! Look for incoming data events matching a link id.
+//!
 //! ```
 //! # {
 //! #[tokio::main]
@@ -158,7 +159,6 @@
 //! }
 //! # }
 //! ```
-//! 
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
