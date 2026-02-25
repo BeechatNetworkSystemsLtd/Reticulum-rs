@@ -37,25 +37,25 @@
 //! ## Creating a Transport instance
 //!
 //! ```
-//! # {
+//! use reticulum::transport::{Transport, TransportConfig};
 //! #[tokio::main]
 //! async fn main() {
 //!     let transport = Transport::new(TransportConfig::default());
 //! }
-//! # }
 //! ```
 //!
 //! ## Creating interfaces
 //!
 //! ```
-//! # {
+//! # use reticulum::transport::{Transport, TransportConfig};
+//! # use reticulum::iface::tcp_client::TcpClient;
 //! #[tokio::main]
 //! async fn main() {
+//!     # let transport = Transport::new(TransportConfig::default());
 //!     let client_addr = transport.iface_manager()
 //!         .lock().await
 //!         .spawn(TcpClient::new("127.0.0.1:4242"), TcpClient::spawn);
 //! }
-//! # }
 //! ```
 //!
 //! ## Set up and announce destinations
@@ -64,17 +64,21 @@
 //! Destinations need to be announced to the network.
 //!
 //! ```
-//! # {
-//! use rand_core::OsRng;
+//! # use rand_core::OsRng;
+//! # use reticulum::transport::{Transport, TransportConfig};
+//! # use reticulum::identity::PrivateIdentity;
+//! # use reticulum::destination::{SingleInputDestination, DestinationName};
+//! # use reticulum::hash::AddressHash;
 //! #[tokio::main]
 //! async fn main() {
+//!     # let transport = Transport::new(TransportConfig::default());
 //!     let id = PrivateIdentity::new_from_rand(OsRng);
+//!     let client_addr = AddressHash::new_from_rand(OsRng);
 //!
 //!     let destination = SingleInputDestination::new(id, DestinationName::new("example", "app"));
 //!
 //!     transport.send_direct(client_addr, destination.announce(OsRng, None).unwrap()).await;
 //! }
-//! # }
 //! ```
 //!
 //! ## Setting up links
@@ -83,31 +87,37 @@
 //! Links are established by sending a link-request to the target
 //! destination. After the response from the target the link can be used.
 //!
-//! ```
-//! # {
+//! ```ignore
+// Ignore because the test will run forever because
+// it will never receive announcements. 
+//! # use rand_core::OsRng;
+//! # use tokio::sync::Mutex;
+//! # use std::sync::Arc;
+//! # use reticulum::transport::{Transport, TransportConfig};
+//! # use reticulum::hash::AddressHash;
+//! # use reticulum::destination::link::{Link, LinkEvent};
 //! #[tokio::main]
 //! async fn main() {
-//!     let target_destination: AddressHash;
-//!
-//!     let mut link: Option<Link> = None;
-//!
-//!     let announce_receiver = transport.recv_announces().await;
-//!     while let Ok(announcement) = announce_reciver.recv.await {
-//!         if accouncement.destination.lock().await.desc.address_hash == target_destination {
+//!     # let transport = Transport::new(TransportConfig::default());
+//!     # let target_destination = AddressHash::new_from_rand(OsRng);
+//!     # let mut link: Option<Arc<Mutex<Link>>> = None;
+//!     let mut announce_receiver = transport.recv_announces().await;
+//!     while let Ok(announcement) = announce_receiver.recv().await {
+//!         if announcement.destination.lock().await.desc.address_hash == target_destination {
 //!             // send link request to target destination
 //!             link = Some(transport.link(announcement.destination.lock().await.desc).await);
 //!             break;
 //!         }
 //!     }
-//!     let link_id = link.lock().await.id().clone();
+//!     let link_id = link.unwrap().lock().await.id().clone();
 //!
 //!     // look for the response to the link request
 //!     // This is only neccessary if you want to track
 //!     // when the link becomes active.
-//!     let link_event_receiver = transport.link_in_events();
+//!     let mut link_event_receiver = transport.in_link_events();
 //!     loop {
 //!         let link_event_data = link_event_receiver.recv().await.unwrap();
-//!         if link_event_data.id = link_id {
+//!         if link_event_data.id == link_id {
 //!             match link_event_data.event {
 //!                 LinkEvent::Activated => {
 //!                     // now this link can be used
@@ -117,7 +127,6 @@
 //!         }
 //!     }
 //! }
-//! # }
 //! ```
 //!
 //! ## Send data
@@ -125,34 +134,51 @@
 //! Create a data packet with the link and send that packet.
 //!
 //! ```
-//! # {
+//! # use rand_core::OsRng;
+//! # use reticulum::transport::{Transport, TransportConfig};
+//! # use reticulum::hash::AddressHash;
+//! # use reticulum::destination::{SingleInputDestination, DestinationName};
+//! # use reticulum::identity::PrivateIdentity;
 //! #[tokio::main]
 //! async fn main() {
-//!     let link = transport.find_out_link(&link_id).await.unwrap();
+//!     # let transport = Transport::new(TransportConfig::default());
+//!     # let data = String::from("Hello World!");
+//!     # let bytes = data.as_bytes();
+//!     # let id = PrivateIdentity::new_from_rand(OsRng);
+//!     # let destination = SingleInputDestination::new(id, DestinationName::new("example", "app"));
+//!     let link = transport.link(destination.desc).await;
 //!     let link = link.lock().await;
 //!     let packet = link.data_packet(&bytes).unwrap();
 //!     transport.send_packet(packet).await;
 //! }
-//! # }
 //! ```
 //!
 //! ## Receive data
 //!
 //! Look for incoming data events matching a link id.
 //!
-//! ```
+//! ```ignore
+// Ignore because the test will run forever because
+// it will never receive link events.
 //! # {
+//! # use rand_core::OsRng;
+//! # use reticulum::transport::{Transport, TransportConfig};
+//! # use reticulum::hash::AddressHash;
+//! # use reticulum::destination::link::LinkEvent;
 //! #[tokio::main]
 //! async fn main() {
-//!     let in_link_events = transport.link_in_events();
+//!     # let link_id = AddressHash::new_from_rand(OsRng);
+//!     # let transport = Transport::new(TransportConfig::default());
+//!     let mut in_link_events = transport.in_link_events();
 //!     loop {
 //!         let event = in_link_events.recv().await.unwrap();
-//!         if event.id = link_id {
+//!         if event.id == link_id {
 //!             match event.event {
 //!                 LinkEvent::Data(payload) => {
 //!                     let bytes: &[u8] = payload.as_slice();
 //!                     // use data
 //!                 }
+//!                 _ => {}
 //!             }
 //!         }
 //!     }
