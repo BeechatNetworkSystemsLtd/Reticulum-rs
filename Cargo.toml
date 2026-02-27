@@ -70,6 +70,14 @@ name = "tcp_client"
 path = "examples/tcp_client.rs"
 
 [[example]]
+name = "unix_socket_server"
+path = "examples/unix_socket_server.rs"
+
+[[example]]
+name = "unix_socket_client"
+path = "examples/unix_socket_client.rs"
+
+[[example]]
 name = "udp_link"
 path = "examples/udp_link.rs"
 
