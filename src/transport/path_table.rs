@@ -90,6 +90,7 @@ impl PathTable {
                 header: Header {
                     ifac_flag: IfacFlag::Authenticated,
                     header_type: HeaderType::Type2,
+                    context_flag: original_packet.header.context_flag,
                     propagation_type: original_packet.header.propagation_type,
                     destination_type: original_packet.header.destination_type,
                     packet_type: original_packet.header.packet_type,
@@ -136,6 +137,7 @@ impl PathTable {
                 header: Header {
                     ifac_flag: IfacFlag::Authenticated,
                     header_type: HeaderType::Type2,
+                    context_flag: original_packet.header.context_flag,
                     propagation_type: original_packet.header.propagation_type,
                     destination_type: original_packet.header.destination_type,
                     packet_type: original_packet.header.packet_type,
