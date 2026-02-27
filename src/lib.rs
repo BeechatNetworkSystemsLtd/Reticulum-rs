@@ -147,6 +147,8 @@ pub mod hash;
 pub mod identity;
 pub mod iface;
 pub mod packet;
+pub mod request;
+pub mod resource;
 pub mod transport;
 
 mod serde;
