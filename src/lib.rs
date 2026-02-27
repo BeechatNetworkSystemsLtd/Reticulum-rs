@@ -18,7 +18,7 @@
 //!
 //! # A tour of this Reticulum implementation
 //!
-//! Reticlum consists of one main [`transport::Transport`] object that can connect to other
+//! Reticulum consists of one main [`transport::Transport`] object that can connect to other
 //! Reticulum instances via different kinds of interfaces by creating them with the
 //! [`iface::InterfaceManager`]:
 //! * [`iface::tcp_client::TcpClient`]
