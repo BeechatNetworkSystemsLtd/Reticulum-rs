@@ -41,6 +41,7 @@ impl AnnounceEntry {
             header: Header {
                 ifac_flag: IfacFlag::Open,
                 header_type: HeaderType::Type2,
+                context_flag: self.packet.header.context_flag,
                 propagation_type: PropagationType::Broadcast,
                 destination_type: DestinationType::Single,
                 packet_type: PacketType::Announce,
