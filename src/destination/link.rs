@@ -311,6 +311,25 @@ impl Link {
                     log::error!("link({}): can't decrypt rtt packet", self.id);
                 }
             }
+            PacketContext::LinkClose => {
+                let mut buffer = [0u8; PACKET_MDU];
+                if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
+                    match plain_text[..].try_into() {
+                        Err(err) => {
+                            log::error!("link({}): invalid decode link close payload: {err}",
+                                self.id)
+                        }
+                        Ok(dest_bytes) => {
+                            let link_id = LinkId::new(dest_bytes);
+                            if self.id == link_id {
+                                let _ = self.close();
+                            }
+                        }
+                    }
+                } else {
+                    log::error!("link({}): can't decrypt link close packet", self.id);
+                }
+            }
             _ => {}
         }
 
@@ -501,11 +520,22 @@ impl Link {
             event,
         });
     }
-    pub fn close(&mut self) {
+
+    pub(crate) fn teardown(&mut self) -> Result<Option<Packet>, RnsError> {
+        let packet = if self.status != LinkStatus::Pending && self.status != LinkStatus::Closed {
+            let mut packet = self.data_packet(self.id.as_slice())?;
+            packet.context = PacketContext::LinkClose;
+            Some(packet)
+        } else {
+            None
+        };
+        self.close();
+        Ok(packet)
+    }
+
+    pub(crate) fn close(&mut self) {
         self.status = LinkStatus::Closed;
-
         self.post_event(LinkEvent::Closed);
-
         log::warn!("link: close {}", self.id);
     }
 
