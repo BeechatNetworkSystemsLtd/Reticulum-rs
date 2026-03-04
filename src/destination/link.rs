@@ -386,6 +386,7 @@ impl Link {
     pub fn data_packet(&self, data: &[u8]) -> Result<Packet, RnsError> {
         if self.status != LinkStatus::Active && self.status != LinkStatus::Stale {
             log::warn!("link: can't create data packet for closed link");
+            return Err(RnsError::LinkClosed)
         }
 
         let mut packet_data = PacketDataBuffer::new();
