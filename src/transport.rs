@@ -101,6 +101,11 @@ pub struct TransportConfig {
     /// Resend announces of remote destinations at a slower pace once
     /// the initial round of announces is over.
     announce_forever: bool,
+
+    /// If we are an intermediate node in a multihop transfer and don't know a
+    /// route to forward the packet, save it, send out a `PathRequest` and try
+    /// to send it later rather than just dropping it.
+    save_and_forward: bool,
 }
 
 #[derive(Clone)]
@@ -158,6 +163,7 @@ impl TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
+            save_and_forward: false,
         }
     }
 
@@ -180,6 +186,10 @@ impl TransportConfig {
     pub fn set_announce_forever(&mut self, announce_forever: bool) {
         self.announce_forever = announce_forever;
     }
+
+    pub fn set_save_and_forward(&mut self, save_and_forward: bool) {
+        self.save_and_forward = save_and_forward;
+    }
 }
 
 impl Default for TransportConfig {
@@ -192,6 +202,7 @@ impl Default for TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
+            save_and_forward: false,
         }
     }
 }
