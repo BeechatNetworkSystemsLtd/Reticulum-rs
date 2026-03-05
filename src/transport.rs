@@ -7,6 +7,7 @@ use path_requests::create_path_request_destination;
 use path_requests::PathRequests;
 use path_requests::TagBytes;
 use path_table::PathTable;
+use save_and_forward::SaveAndForward;
 use rand_core::OsRng;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -54,6 +55,7 @@ mod link_table;
 mod packet_cache;
 mod path_requests;
 mod path_table;
+mod save_and_forward;
 
 // TODO: Configure via features
 const PACKET_TRACE: bool = false;
@@ -67,6 +69,7 @@ const INTERVAL_OUTPUT_LINK_STALE: Duration = Duration::from_secs(10);
 const INTERVAL_OUTPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
 const INTERVAL_OUTPUT_LINK_REPEAT: Duration = Duration::from_secs(6);
 const INTERVAL_OUTPUT_LINK_KEEP: Duration = Duration::from_secs(5);
+const INTERVAL_PATH_TABLE_CHECK: Duration = Duration::from_secs(1);
 const INTERVAL_IFACE_CLEANUP: Duration = Duration::from_secs(10);
 const INTERVAL_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(1);
 const INTERVAL_OLD_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(60);
@@ -138,6 +141,8 @@ struct TransportHandler {
     received_data_tx: broadcast::Sender<ReceivedData>,
 
     fixed_dest_path_requests: AddressHash,
+
+    save_and_forward: Option<SaveAndForward>,
 
     cancel: CancellationToken,
 }
@@ -233,6 +238,13 @@ impl Transport {
         let cancel = CancellationToken::new();
         let name = config.name.clone();
         let reroute_eager = config.reroute_eager;
+
+        let save_and_forward = if config.save_and_forward {
+            Some(SaveAndForward::new())
+        } else {
+            None
+        };
+
         let handler = Arc::new(Mutex::new(TransportHandler {
             config,
             iface_manager: iface_manager.clone(),
@@ -250,6 +262,7 @@ impl Transport {
             link_in_event_tx: link_in_event_tx.clone(),
             received_data_tx: received_data_tx.clone(),
             fixed_dest_path_requests: path_request_dest,
+            save_and_forward,
             cancel: cancel.clone(),
         }));
 
@@ -698,7 +711,7 @@ async fn handle_keepalive_response<'a>(
     false
 }
 
-async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandler>) {
+async fn handle_data<'a>(packet: &Packet, mut handler: MutexGuard<'a, TransportHandler>) {
     let mut data_handled = false;
 
     if packet.header.destination_type == DestinationType::Link {
@@ -737,6 +750,15 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
                 if sent { "forwarded" } else { "could not forward" },
                 packet.destination
             );
+
+            if !sent {
+                let save_and_forward = handler.config.save_and_forward;
+
+                if save_and_forward {
+                    handler.save_and_forward.as_mut().unwrap().add(&destination, *packet);
+                    handler.request_path(&destination, None, None).await;
+                }
+            }
         }
     }
 
@@ -818,6 +840,10 @@ async fn handle_announce<'a>(
                 packet.transport,
                 iface,
             );
+
+            if let Some(save_and_forward) = handler.save_and_forward.as_mut() {
+                save_and_forward.destination_found(packet.destination);
+            }
         }
 
         let retransmit = handler.config.retransmit;
@@ -1156,6 +1182,8 @@ async fn manage_transport(
 ) {
     let cancel = handler.lock().await.cancel.clone();
     let retransmit = handler.lock().await.config.retransmit;
+    let save_and_forward = handler.lock().await.config.save_and_forward;
+
     let mut last_retransmit_old = if handler.lock().await.config.announce_forever {
         Some(time::Instant::now() - INTERVAL_OLD_ANNOUNCES_RETRANSMIT)
     } else {
@@ -1336,24 +1364,24 @@ async fn manage_transport(
     }
 
     if retransmit {
-        let handler = handler.clone();
-        let cancel = cancel.clone();
+        let handler1 = handler.clone();
+        let cancel1 = cancel.clone();
 
         tokio::spawn(async move {
             loop {
-                if cancel.is_cancelled() {
+                if cancel1.is_cancelled() {
                     break;
                 }
 
                 tokio::select! {
-                    _ = cancel.cancelled() => {
+                    _ = cancel1.cancelled() => {
                         break;
                     },
                     _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
                         if let Some(instant) = last_retransmit_old {
                             let now = time::Instant::now();
                             if now - instant > INTERVAL_OLD_ANNOUNCES_RETRANSMIT {
-                                retransmit_announces(handler.lock().await, true).await;
+                                retransmit_announces(handler1.lock().await, true).await;
                                 last_retransmit_old = Some(now);
                             }
                         }
@@ -1361,6 +1389,29 @@ async fn manage_transport(
                 }
             }
         });
+
+        if save_and_forward { // TODO remove this condition once we have
+                              // proper logic for expiring the path table entries
+            let handler = handler.clone();
+            let cancel = cancel.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+
+                    tokio::select! {
+                        _ = cancel.cancelled() => {
+                            break;
+                        },
+                        _ = time::sleep(INTERVAL_PATH_TABLE_CHECK) => {
+                            handler.lock().await.path_table.remove_stale();
+                        }
+                    }
+                }
+            });
+        }
     }
 }
 
