@@ -656,7 +656,7 @@ async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transport
 
 async fn send_to_next_hop<'a>(
     packet: &Packet,
-    handler: &MutexGuard<'a, TransportHandler>,
+    handler: &mut MutexGuard<'a, TransportHandler>,
     lookup: Option<AddressHash>
 ) -> bool {
     let (packet, maybe_iface) = handler.path_table.handle_inbound_packet(
@@ -728,8 +728,8 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
         }
 
         let lookup = handler.link_table.original_destination(&packet.destination);
-        if lookup.is_some() {
-            let sent = send_to_next_hop(packet, &handler, lookup).await;
+        if let Some(destination) = lookup {
+            let sent = send_to_next_hop(packet, &mut handler, Some(destination)).await;
 
             log::trace!(
                 "tp({}): {} packet to remote link {}",
@@ -753,7 +753,7 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
                 data: packet.data.clone(),
             }).ok();
         } else {
-            data_handled = send_to_next_hop(packet, &handler, None).await;
+            data_handled = send_to_next_hop(packet, &mut handler, None).await;
         }
     }
 
@@ -978,7 +978,7 @@ async fn handle_link_request_as_intermediate<'a>(
         next_hop_iface
     );
 
-    send_to_next_hop(packet, &handler, None).await;
+    send_to_next_hop(packet, &mut handler, None).await;
 }
 
 async fn handle_link_request<'a>(
