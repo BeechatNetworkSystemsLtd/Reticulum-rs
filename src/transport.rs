@@ -88,8 +88,18 @@ pub struct TransportConfig {
     identity: PrivateIdentity,
     broadcast: bool,
     retransmit: bool,
+
+    /// If `false`, `Transport` will replace known routes to distant destinations
+    /// only if they are shorter (fewer hops) than the new one.
+    /// If `true`, routes will also be replaced if the new route is equally long.
+    /// So newer routes are preferred over older ones.
     reroute_eager: bool,
+
+    /// Attempt to reopen lost links once they have been closed.
     restart_outlinks: bool,
+
+    /// Resend announces of remote destinations at a slower pace once
+    /// the initial round of announces is over.
     announce_forever: bool,
 }
 
