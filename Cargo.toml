@@ -58,6 +58,9 @@ fernet-aes128 = []
 [build-dependencies]
 tonic-build = "0.13.0"
 
+[dev-dependencies]
+tokio = { version = "1.44.2", features = ["test-util"] }
+
 [[example]]
 name = "tcp_server"
 path = "examples/tcp_server.rs"

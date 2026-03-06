@@ -105,7 +105,7 @@ impl From<u8> for PacketType {
 pub enum PacketContext {
     None = 0x00,                    // Generic data packet
     Resource = 0x01,                // Packet is part of a resource
-    ResourceAdvrtisement = 0x02,    // Packet is a resource advertisement
+    ResourceAdvertisement = 0x02,    // Packet is a resource advertisement
     ResourceRequest = 0x03,         // Packet is a resource part request
     ResourceHashUpdate = 0x04,      // Packet is a resource hashmap update
     ResourceProof = 0x05,           // Packet is a resource proof
@@ -130,7 +130,7 @@ impl From<u8> for PacketContext {
     fn from(value: u8) -> Self {
         match value {
             0x01 => PacketContext::Resource,
-            0x02 => PacketContext::ResourceAdvrtisement,
+            0x02 => PacketContext::ResourceAdvertisement,
             0x03 => PacketContext::ResourceRequest,
             0x04 => PacketContext::ResourceHashUpdate,
             0x05 => PacketContext::ResourceProof,

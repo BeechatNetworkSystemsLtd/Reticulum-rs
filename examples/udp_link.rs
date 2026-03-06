@@ -70,6 +70,7 @@ async fn main() {
                     std::str::from_utf8(payload.as_slice())
                         .map(str::to_string)
                         .unwrap_or_else(|_| format!("{:?}", payload.as_slice()))),
+                _ => {},
             }
         }
         transport

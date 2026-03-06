@@ -24,6 +24,10 @@ impl PathTable {
         }
     }
 
+    pub fn get(&self, destination: &AddressHash) -> Option<&PathEntry> {
+        self.map.get(destination)
+    }
+
     pub fn next_hop_full(&self, destination: &AddressHash) -> Option<(AddressHash, AddressHash)> {
         self.map.get(destination).map(|entry| (entry.received_from, entry.iface))
     }

@@ -7,4 +7,5 @@ pub enum RnsError {
     CryptoError,
     PacketError,
     ConnectionError,
+    LinkClosed,
 }
