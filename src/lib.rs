@@ -148,6 +148,7 @@ pub mod identity;
 pub mod iface;
 pub mod packet;
 pub mod transport;
+pub mod serde;
 
-mod serde;
 mod utils;
+
