@@ -29,6 +29,8 @@ use crate::destination::DestinationName;
 use crate::destination::SingleInputDestination;
 use crate::destination::SingleOutputDestination;
 
+use crate::error::RnsError;
+
 use crate::hash::AddressHash;
 use crate::hash::Hash;
 use crate::identity::PrivateIdentity;
@@ -415,6 +417,24 @@ impl Transport {
             .insert(destination.address_hash, link.clone());
 
         link
+    }
+
+    pub async fn link_close(&self, link_id: LinkId) -> Result<(), RnsError> {
+        let link = if let Some(link) = self.find_in_link(&link_id).await {
+            Some(link)
+        } else {
+            self.find_out_link(&link_id).await
+        };
+        if let Some(link) = link {
+            let mut link = link.lock().await;
+            if let Some(packet) = link.teardown()? {
+                drop(link);
+                self.send_packet(packet).await
+            }
+        } else {
+            log::warn!("tp({}): close link {link_id} not found", self.name)
+        }
+        Ok(())
     }
 
     pub async fn request_path(
@@ -967,7 +987,12 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                 link.stale();
             }
             LinkStatus::Stale => if link.elapsed() > INTERVAL_INPUT_LINK_STALE + INTERVAL_INPUT_LINK_CLOSE {
-                link.close();
+                if let Some(packet) = link.teardown().unwrap_or_else(|err| {
+                    log::error!("tp({}): teardown stale in-link error: {err:?}", handler.config.name);
+                    None
+                }) {
+                    handler.send_packet(packet).await
+                }
                 links_to_remove.push(*link_entry.0);
             }
             _ => {}
@@ -988,7 +1013,12 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                 link.stale();
             }
             LinkStatus::Stale => if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE + INTERVAL_OUTPUT_LINK_CLOSE {
-                link.close();
+                if let Some(packet) = link.teardown().unwrap_or_else(|err| {
+                    log::error!("tp({}): teardown stale out-link error: {err:?}", handler.config.name);
+                    None
+                }) {
+                    handler.send_packet(packet).await
+                }
                 links_to_remove.push(*link_entry.0);
             }
             LinkStatus::Pending => if link.elapsed() > INTERVAL_OUTPUT_LINK_REPEAT {
