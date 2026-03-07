@@ -101,6 +101,9 @@ pub struct TransportConfig {
     /// Attempt to reopen lost links once they have been closed.
     restart_outlinks: bool,
 
+    /// Send out an automatic path request to repair it whenever a link goes stale
+    proactive_links: bool,
+
     /// Resend announces of remote destinations at a slower pace once
     /// the initial round of announces is over.
     announce_forever: bool,
@@ -167,6 +170,7 @@ impl TransportConfig {
             retransmit: false,
             reroute_eager: false,
             restart_outlinks: false,
+            proactive_links: false,
             announce_forever: false,
             save_and_forward: false,
         }
@@ -188,6 +192,10 @@ impl TransportConfig {
         self.restart_outlinks = restart_outlinks;
     }
 
+    pub fn set_proactive_links(&mut self, proactive_links: bool) {
+        self.proactive_links = proactive_links;
+    }
+
     pub fn set_announce_forever(&mut self, announce_forever: bool) {
         self.announce_forever = announce_forever;
     }
@@ -206,6 +214,7 @@ impl Default for TransportConfig {
             retransmit: false,
             reroute_eager: false,
             restart_outlinks: false,
+            proactive_links: false,
             announce_forever: false,
             save_and_forward: false,
         }
@@ -1077,12 +1086,18 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
 
     links_to_remove.clear();
 
+    let mut lost_destinations = vec![];
+
     for link_entry in &handler.out_links {
         let mut link = link_entry.1.lock().await;
 
         match link.status() {
             LinkStatus::Active => if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE {
                 link.stale();
+
+                if handler.config.proactive_links {
+                    lost_destinations.push(link.destination().address_hash);
+                }
             }
             LinkStatus::Stale => {
                 if handler.config.restart_outlinks {
@@ -1115,6 +1130,10 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
             }
             _ => {}
         }
+    }
+
+    for destination in lost_destinations {
+        handler.request_path(&destination, None, None).await;
     }
 
     for addr in &links_to_remove {
