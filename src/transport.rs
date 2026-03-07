@@ -62,12 +62,14 @@ pub const PATHFINDER_M: usize = 128; // Max hops
 const INTERVAL_LINKS_CHECK: Duration = Duration::from_secs(1);
 const INTERVAL_INPUT_LINK_STALE: Duration = Duration::from_secs(10);
 const INTERVAL_INPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
+const INTERVAL_OUTPUT_LINK_RESTART: Duration = Duration::from_secs(60);
 const INTERVAL_OUTPUT_LINK_STALE: Duration = Duration::from_secs(10);
 const INTERVAL_OUTPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
 const INTERVAL_OUTPUT_LINK_REPEAT: Duration = Duration::from_secs(6);
 const INTERVAL_OUTPUT_LINK_KEEP: Duration = Duration::from_secs(5);
 const INTERVAL_IFACE_CLEANUP: Duration = Duration::from_secs(10);
 const INTERVAL_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(1);
+const INTERVAL_OLD_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(60);
 const INTERVAL_KEEP_PACKET_CACHED: Duration = Duration::from_secs(180);
 const INTERVAL_PACKET_CACHE_CLEANUP: Duration = Duration::from_secs(90);
 
@@ -86,6 +88,19 @@ pub struct TransportConfig {
     identity: PrivateIdentity,
     broadcast: bool,
     retransmit: bool,
+
+    /// If `false`, `Transport` will replace known routes to distant destinations
+    /// only if they are shorter (fewer hops) than the new one.
+    /// If `true`, routes will also be replaced if the new route is equally long.
+    /// So newer routes are preferred over older ones.
+    reroute_eager: bool,
+
+    /// Attempt to reopen lost links once they have been closed.
+    restart_outlinks: bool,
+
+    /// Resend announces of remote destinations at a slower pace once
+    /// the initial round of announces is over.
+    announce_forever: bool,
 }
 
 #[derive(Clone)]
@@ -140,14 +155,30 @@ impl TransportConfig {
             identity: identity.clone(),
             broadcast,
             retransmit: false,
+            reroute_eager: false,
+            restart_outlinks: false,
+            announce_forever: false,
         }
     }
 
     pub fn set_retransmit(&mut self, retransmit: bool) {
         self.retransmit = retransmit;
     }
+
     pub fn set_broadcast(&mut self, broadcast: bool) {
         self.broadcast = broadcast;
+    }
+
+    pub fn set_reroute_eager(&mut self, reroute_eager: bool) {
+        self.reroute_eager = reroute_eager;
+    }
+
+    pub fn set_restart_outlinks(&mut self, restart_outlinks: bool) {
+        self.restart_outlinks = restart_outlinks;
+    }
+
+    pub fn set_announce_forever(&mut self, announce_forever: bool) {
+        self.announce_forever = announce_forever;
     }
 }
 
@@ -158,6 +189,9 @@ impl Default for TransportConfig {
             identity: PrivateIdentity::new_from_rand(OsRng),
             broadcast: false,
             retransmit: false,
+            reroute_eager: false,
+            restart_outlinks: false,
+            announce_forever: false,
         }
     }
 }
@@ -187,12 +221,13 @@ impl Transport {
 
         let cancel = CancellationToken::new();
         let name = config.name.clone();
+        let reroute_eager = config.reroute_eager;
         let handler = Arc::new(Mutex::new(TransportHandler {
             config,
             iface_manager: iface_manager.clone(),
             announce_table: AnnounceTable::new(),
             link_table: LinkTable::new(),
-            path_table: PathTable::new(),
+            path_table: PathTable::new(reroute_eager),
             single_in_destinations: HashMap::new(),
             single_out_destinations: HashMap::new(),
             announce_limits: AnnounceLimits::new(),
@@ -1012,14 +1047,22 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
             LinkStatus::Active => if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE {
                 link.stale();
             }
-            LinkStatus::Stale => if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE + INTERVAL_OUTPUT_LINK_CLOSE {
-                if let Some(packet) = link.teardown().unwrap_or_else(|err| {
-                    log::error!("tp({}): teardown stale out-link error: {err:?}", handler.config.name);
-                    None
-                }) {
-                    handler.send_packet(packet).await
+            LinkStatus::Stale => {
+                if handler.config.restart_outlinks {
+                    if link.elapsed() > INTERVAL_OUTPUT_LINK_RESTART {
+                        link.restart();
+                    }
+                } else {
+                    if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE + INTERVAL_OUTPUT_LINK_CLOSE {
+                        if let Some(packet) = link.teardown().unwrap_or_else(|err| {
+                            log::error!("tp({}): teardown stale out-link error: {err:?}", handler.config.name);
+                            None
+                        }) {
+                            handler.send_packet(packet).await
+                        }
+                        links_to_remove.push(*link_entry.0);
+                    }
                 }
-                links_to_remove.push(*link_entry.0);
             }
             LinkStatus::Pending => if link.elapsed() > INTERVAL_OUTPUT_LINK_REPEAT {
                 log::warn!(
@@ -1056,12 +1099,23 @@ async fn handle_cleanup<'a>(handler: MutexGuard<'a, TransportHandler>) {
     handler.iface_manager.lock().await.cleanup();
 }
 
-async fn retransmit_announces<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
+async fn retransmit_announces<'a>(
+    mut handler: MutexGuard<'a, TransportHandler>,
+    retransmit_old: bool
+) {
     let transport_id = handler.config.identity.address_hash().clone();
     let messages = handler.announce_table.to_retransmit(&transport_id);
 
     for message in messages {
         handler.send(message).await;
+    }
+
+    if retransmit_old {
+        let messages = handler.announce_table.to_retransmit_old(&transport_id);
+
+        for message in messages {
+            handler.send(message).await;
+        }
     }
 }
 
@@ -1091,6 +1145,11 @@ async fn manage_transport(
 ) {
     let cancel = handler.lock().await.cancel.clone();
     let retransmit = handler.lock().await.config.retransmit;
+    let mut last_retransmit_old = if handler.lock().await.config.announce_forever {
+        Some(time::Instant::now() - INTERVAL_OLD_ANNOUNCES_RETRANSMIT)
+    } else {
+        None
+    };
 
     let _packet_task = {
         let handler = handler.clone();
@@ -1280,7 +1339,13 @@ async fn manage_transport(
                         break;
                     },
                     _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
-                        retransmit_announces(handler.lock().await).await;
+                        if let Some(instant) = last_retransmit_old {
+                            let now = time::Instant::now();
+                            if now - instant > INTERVAL_OLD_ANNOUNCES_RETRANSMIT {
+                                retransmit_announces(handler.lock().await, true).await;
+                                last_retransmit_old = Some(now);
+                            }
+                        }
                     }
                 }
             }
