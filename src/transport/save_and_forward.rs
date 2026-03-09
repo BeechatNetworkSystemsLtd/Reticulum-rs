@@ -7,6 +7,7 @@ use crate::packet::Packet;
 
 const CAPACITY_TOTAL: usize = 100_000;
 const CAPACITY_PER_DEST: usize = 10_000;
+const MAX_SEND_AT_ONCE: usize = 5_000;
 
 pub struct SaveAndForward {
     packets: BTreeMap<AddressHash, Vec<Packet>>,
@@ -66,10 +67,38 @@ impl SaveAndForward {
         let mut schedule = BTreeMap::new();
         let mut resent_packets = 0;
 
+        let mut waiting = 0;
         for destination in &self.found {
-            if let Some(packets) = self.packets.remove(destination) {
+            if let Some(packets) = self.packets.get(destination) {
+                waiting += packets.len();
+            }
+        }
+
+        let quota = if waiting > MAX_SEND_AT_ONCE {
+            MAX_SEND_AT_ONCE * 1024 / waiting
+        } else {
+            1024
+        };
+
+        for destination in &self.found {
+            if let Some(mut packets) = self.packets.remove(destination) {
+                let mut send_now = quota * packets.len() / 1024;
+                if send_now > MAX_SEND_AT_ONCE - resent_packets {
+                    send_now = MAX_SEND_AT_ONCE - resent_packets
+                };
+
+                if send_now < packets.len() {
+                    let send_later = packets.split_off(send_now);
+                    self.packets.insert(*destination, send_later);
+                }
+
                 resent_packets += packets.len();
+                log::error!("A {}", resent_packets);
                 schedule.insert(*destination, packets);
+            }
+
+            if resent_packets >= MAX_SEND_AT_ONCE {
+                break;
             }
         }
 
@@ -86,5 +115,81 @@ impl SaveAndForward {
         self.found.clear();
 
         schedule
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hash::ADDRESS_HASH_SIZE;
+
+    #[test]
+    fn few_packets() {
+        let address1 = AddressHash::new_from_slice(&[1u8; ADDRESS_HASH_SIZE]);
+        let address2 = AddressHash::new_from_slice(&[2u8; ADDRESS_HASH_SIZE]);
+        let address3 = AddressHash::new_from_slice(&[3u8; ADDRESS_HASH_SIZE]);
+
+        let packet1: Packet = Default::default();
+        let packet2: Packet = Default::default();
+
+        let mut testee = SaveAndForward::new("test".to_string());
+
+        testee.add(&address1, Default::default());
+        testee.add(&address2, Default::default());
+        testee.add(&address3, Default::default());
+
+        testee.destination_found(address1);
+        testee.destination_found(address2);
+
+        let result = testee.to_resend();
+
+        assert!(result.get(&address1).unwrap().len() == 1);
+        assert!(result.get(&address2).unwrap().len() == 1);
+        assert!(!result.contains_key(&address3));
+
+        testee.destination_found(address2);
+
+        let result = testee.to_resend();
+
+        assert!(!result.contains_key(&address1));
+        assert!(!result.contains_key(&address2));
+        assert!(!result.contains_key(&address3));
+
+        testee.destination_found(address3);
+
+        let result = testee.to_resend();
+
+        assert!(result.get(&address3).unwrap().len() == 1);
+    }
+
+    #[test]
+    fn many_packets() {
+        // logic tested here may change in the future
+        let address1 = AddressHash::new_from_slice(&[1u8; ADDRESS_HASH_SIZE]);
+        let address2 = AddressHash::new_from_slice(&[2u8; ADDRESS_HASH_SIZE]);
+        let address3 = AddressHash::new_from_slice(&[3u8; ADDRESS_HASH_SIZE]);
+
+        let expected = MAX_SEND_AT_ONCE / 2;
+
+        let mut testee = SaveAndForward::new("test".to_string());
+
+        for _ in 0..(expected + 500) {
+            testee.add(&address1, Default::default());
+            testee.add(&address2, Default::default());
+        }
+
+        for _ in 0..100 {
+            testee.add(&address3, Default::default());
+        }
+
+        testee.destination_found(address1);
+        testee.destination_found(address2);
+
+        let result = testee.to_resend();
+
+        assert!(result.get(&address1).unwrap().len() <= expected);
+        assert!(result.get(&address1).unwrap().len() >= expected - 1);
+        assert!(result.get(&address2).unwrap().len() <= expected);
+        assert!(result.get(&address2).unwrap().len() >= expected - 1);
     }
 }
