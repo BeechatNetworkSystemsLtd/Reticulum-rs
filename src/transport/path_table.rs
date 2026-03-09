@@ -163,23 +163,12 @@ impl PathTable {
     pub fn remove_stale(&mut self) {
         // TODO this is a temporary kludge, replace it by logic matching
         // that of Python reticulum later
-        let mut stale_destinations = vec![];
-
-        for (destination, entry) in self.map.iter() {
-            if entry.timestamp.elapsed() > STALE_PERIOD {
-                stale_destinations.push(*destination);
-            }
+        let num_entries = self.map.len();
+        let now = Instant::now();
+        self.map.retain(|_, entry| now - entry.timestamp <= STALE_PERIOD);
+        let num_stale = num_entries - self.map.len();
+        if num_stale > 0 {
+            log::info!("removed {num_stale} stale destinations from the path table");
         }
-
-        if stale_destinations.len() > 0 {
-            log::info!(
-                "removed {} stale destinations from the path table",
-                stale_destinations.len()
-            );
-        }
-
-        for destination in &stale_destinations {
-            self.map.remove(destination);
-        };
     }
 }
