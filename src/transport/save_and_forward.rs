@@ -31,11 +31,7 @@ impl SaveAndForward {
             return;
         }
 
-        if !self.packets.contains_key(destination) {
-            self.packets.insert(*destination, Vec::new());
-        }
-
-        let mut packets = self.packets.get_mut(destination).unwrap();
+        let packets = self.packets.entry(*destination).or_default();
         if packets.len() >= CAPACITY_PER_DEST {
             return;
         }
