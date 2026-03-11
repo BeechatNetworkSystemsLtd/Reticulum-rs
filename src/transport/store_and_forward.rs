@@ -9,14 +9,14 @@ const CAPACITY_TOTAL: usize = 100_000;
 const CAPACITY_PER_DEST: usize = 10_000;
 const MAX_SEND_AT_ONCE: usize = 5_000;
 
-pub struct SaveAndForward {
+pub struct StoreAndForward {
     packets: BTreeMap<AddressHash, Vec<Packet>>,
     found: BTreeSet<AddressHash>,
     name: String,
     total_packets: usize,
 }
 
-impl SaveAndForward {
+impl StoreAndForward {
     pub fn new(name: String) -> Self {
         Self {
             packets: BTreeMap::new(),
@@ -41,7 +41,7 @@ impl SaveAndForward {
 
         if packets.len() >= CAPACITY_PER_DEST {
             log::trace!(
-                "tp({}): saved packets limit for unknown destination {} reached",
+                "tp({}): stored packets limit for unknown destination {} reached",
                 self.name,
                 destination
             );
@@ -101,7 +101,7 @@ impl SaveAndForward {
         self.total_packets -= resent_packets;
 
         log::trace!(
-            "tp({}): forwarding {} saved packets to {} destinations, {} packets left",
+            "tp({}): forwarding {} stored packets to {} destinations, {} packets left",
             self.name,
             resent_packets,
             self.found.len(),
@@ -128,7 +128,7 @@ mod tests {
         let packet1: Packet = Default::default();
         let packet2: Packet = Default::default();
 
-        let mut testee = SaveAndForward::new("test".to_string());
+        let mut testee = StoreAndForward::new("test".to_string());
 
         testee.add(&address1, Default::default());
         testee.add(&address2, Default::default());
@@ -167,7 +167,7 @@ mod tests {
 
         let expected = MAX_SEND_AT_ONCE / 2;
 
-        let mut testee = SaveAndForward::new("test".to_string());
+        let mut testee = StoreAndForward::new("test".to_string());
 
         for _ in 0..(expected + 500) {
             testee.add(&address1, Default::default());
