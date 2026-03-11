@@ -7,6 +7,7 @@ use path_requests::create_path_request_destination;
 use path_requests::PathRequests;
 use path_requests::TagBytes;
 use path_table::PathTable;
+use store_and_forward::StoreAndForward;
 use rand_core::OsRng;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -54,6 +55,7 @@ mod link_table;
 mod packet_cache;
 mod path_requests;
 mod path_table;
+mod store_and_forward;
 
 // TODO: Configure via features
 const PACKET_TRACE: bool = false;
@@ -67,6 +69,7 @@ const INTERVAL_OUTPUT_LINK_STALE: Duration = Duration::from_secs(10);
 const INTERVAL_OUTPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
 const INTERVAL_OUTPUT_LINK_REPEAT: Duration = Duration::from_secs(6);
 const INTERVAL_OUTPUT_LINK_KEEP: Duration = Duration::from_secs(5);
+const INTERVAL_PATH_TABLE_CHECK: Duration = Duration::from_secs(1);
 const INTERVAL_IFACE_CLEANUP: Duration = Duration::from_secs(10);
 const INTERVAL_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(1);
 const INTERVAL_OLD_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(60);
@@ -101,6 +104,11 @@ pub struct TransportConfig {
     /// Resend announces of remote destinations at a slower pace once
     /// the initial round of announces is over.
     announce_forever: bool,
+
+    /// If we are an intermediate node in a multihop transfer and don't know a
+    /// route to forward the packet, save it, send out a `PathRequest` and try
+    /// to send it later rather than just dropping it.
+    store_and_forward: bool,
 }
 
 #[derive(Clone)]
@@ -134,6 +142,8 @@ struct TransportHandler {
 
     fixed_dest_path_requests: AddressHash,
 
+    store_and_forward: Option<StoreAndForward>,
+
     cancel: CancellationToken,
 }
 
@@ -158,6 +168,7 @@ impl TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
+            store_and_forward: false,
         }
     }
 
@@ -180,6 +191,10 @@ impl TransportConfig {
     pub fn set_announce_forever(&mut self, announce_forever: bool) {
         self.announce_forever = announce_forever;
     }
+
+    pub fn set_store_and_forward(&mut self, store_and_forward: bool) {
+        self.store_and_forward = store_and_forward;
+    }
 }
 
 impl Default for TransportConfig {
@@ -192,6 +207,7 @@ impl Default for TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
+            store_and_forward: false,
         }
     }
 }
@@ -222,6 +238,13 @@ impl Transport {
         let cancel = CancellationToken::new();
         let name = config.name.clone();
         let reroute_eager = config.reroute_eager;
+
+        let store_and_forward = if config.store_and_forward {
+            Some(StoreAndForward::new(name.clone()))
+        } else {
+            None
+        };
+
         let handler = Arc::new(Mutex::new(TransportHandler {
             config,
             iface_manager: iface_manager.clone(),
@@ -239,6 +262,7 @@ impl Transport {
             link_in_event_tx: link_in_event_tx.clone(),
             received_data_tx: received_data_tx.clone(),
             fixed_dest_path_requests: path_request_dest,
+            store_and_forward,
             cancel: cancel.clone(),
         }));
 
@@ -645,7 +669,7 @@ async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transport
 
 async fn send_to_next_hop<'a>(
     packet: &Packet,
-    handler: &MutexGuard<'a, TransportHandler>,
+    handler: &mut MutexGuard<'a, TransportHandler>,
     lookup: Option<AddressHash>
 ) -> bool {
     let (packet, maybe_iface) = handler.path_table.handle_inbound_packet(
@@ -687,7 +711,7 @@ async fn handle_keepalive_response<'a>(
     false
 }
 
-async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandler>) {
+async fn handle_data<'a>(packet: &Packet, mut handler: MutexGuard<'a, TransportHandler>) {
     let mut data_handled = false;
 
     if packet.header.destination_type == DestinationType::Link {
@@ -717,8 +741,8 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
         }
 
         let lookup = handler.link_table.original_destination(&packet.destination);
-        if lookup.is_some() {
-            let sent = send_to_next_hop(packet, &handler, lookup).await;
+        if let Some(destination) = lookup {
+            let sent = send_to_next_hop(packet, &mut handler, Some(destination)).await;
 
             log::trace!(
                 "tp({}): {} packet to remote link {}",
@@ -726,6 +750,15 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
                 if sent { "forwarded" } else { "could not forward" },
                 packet.destination
             );
+
+            if !sent {
+                let store_and_forward = handler.config.store_and_forward;
+
+                if store_and_forward {
+                    handler.store_and_forward.as_mut().unwrap().add(&destination, *packet);
+                    handler.request_path(&destination, None, None).await;
+                }
+            }
         }
     }
 
@@ -742,7 +775,7 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
                 data: packet.data.clone(),
             }).ok();
         } else {
-            data_handled = send_to_next_hop(packet, &handler, None).await;
+            data_handled = send_to_next_hop(packet, &mut handler, None).await;
         }
     }
 
@@ -807,6 +840,10 @@ async fn handle_announce<'a>(
                 packet.transport,
                 iface,
             );
+
+            if let Some(store_and_forward) = handler.store_and_forward.as_mut() {
+                store_and_forward.destination_found(packet.destination);
+            }
         }
 
         let retransmit = handler.config.retransmit;
@@ -967,7 +1004,7 @@ async fn handle_link_request_as_intermediate<'a>(
         next_hop_iface
     );
 
-    send_to_next_hop(packet, &handler, None).await;
+    send_to_next_hop(packet, &mut handler, None).await;
 }
 
 async fn handle_link_request<'a>(
@@ -1145,6 +1182,8 @@ async fn manage_transport(
 ) {
     let cancel = handler.lock().await.cancel.clone();
     let retransmit = handler.lock().await.config.retransmit;
+    let store_and_forward = handler.lock().await.config.store_and_forward;
+
     let mut last_retransmit_old = if handler.lock().await.config.announce_forever {
         Some(time::Instant::now() - INTERVAL_OLD_ANNOUNCES_RETRANSMIT)
     } else {
@@ -1325,24 +1364,24 @@ async fn manage_transport(
     }
 
     if retransmit {
-        let handler = handler.clone();
-        let cancel = cancel.clone();
+        let handler1 = handler.clone();
+        let cancel1 = cancel.clone();
 
         tokio::spawn(async move {
             loop {
-                if cancel.is_cancelled() {
+                if cancel1.is_cancelled() {
                     break;
                 }
 
                 tokio::select! {
-                    _ = cancel.cancelled() => {
+                    _ = cancel1.cancelled() => {
                         break;
                     },
                     _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
                         if let Some(instant) = last_retransmit_old {
                             let now = time::Instant::now();
                             if now - instant > INTERVAL_OLD_ANNOUNCES_RETRANSMIT {
-                                retransmit_announces(handler.lock().await, true).await;
+                                retransmit_announces(handler1.lock().await, true).await;
                                 last_retransmit_old = Some(now);
                             }
                         }
@@ -1350,6 +1389,40 @@ async fn manage_transport(
                 }
             }
         });
+
+        if store_and_forward {
+            let handler = handler.clone();
+            let cancel = cancel.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+
+                    tokio::select! {
+                        _ = cancel.cancelled() => {
+                            break;
+                        },
+                        _ = time::sleep(INTERVAL_PATH_TABLE_CHECK) => {
+                            let mut handler = handler.lock().await;
+
+                            // TODO implement proper logic for keeping
+                            // the path table up to date
+                            handler.path_table.remove_stale();
+
+                            let saf = handler.store_and_forward.as_mut().unwrap();
+                            for (destination, packets) in saf.to_resend()
+                            {
+                                for ref packet in packets {
+                                    send_to_next_hop(packet, &mut handler, Some(destination)).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
     }
 }
 

@@ -1,9 +1,11 @@
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap, time::{Duration, Instant}};
 
 use crate::{
     hash::{AddressHash, Hash},
     packet::{DestinationType, Header, HeaderType, IfacFlag, Packet, PacketType},
 };
+
+const STALE_PERIOD: Duration = Duration::from_secs(10);
 
 pub struct PathEntry {
     pub timestamp: Instant,
@@ -79,16 +81,18 @@ impl PathTable {
     }
 
     pub fn handle_inbound_packet(
-        &self,
+        &mut self,
         original_packet: &Packet,
         lookup: Option<AddressHash>,
     ) -> (Packet, Option<AddressHash>) {
         let lookup = lookup.unwrap_or(original_packet.destination);
 
-        let entry = match self.map.get(&lookup) {
+        let entry = match self.map.get_mut(&lookup) {
             Some(entry) => entry,
             None => return (*original_packet, None),
         };
+
+        entry.timestamp = Instant::now();
 
         (
             Packet {
@@ -154,5 +158,17 @@ impl PathTable {
             },
             Some(entry.iface),
         )
+    }
+
+    pub fn remove_stale(&mut self) {
+        // TODO this is a temporary kludge, replace it by logic matching
+        // that of Python reticulum later
+        let num_entries = self.map.len();
+        let now = Instant::now();
+        self.map.retain(|_, entry| now - entry.timestamp <= STALE_PERIOD);
+        let num_stale = num_entries - self.map.len();
+        if num_stale > 0 {
+            log::info!("removed {num_stale} stale destinations from the path table");
+        }
     }
 }
