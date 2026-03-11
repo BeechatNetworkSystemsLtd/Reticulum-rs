@@ -7,7 +7,7 @@ use path_requests::create_path_request_destination;
 use path_requests::PathRequests;
 use path_requests::TagBytes;
 use path_table::PathTable;
-use save_and_forward::SaveAndForward;
+use store_and_forward::StoreAndForward;
 use rand_core::OsRng;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -55,7 +55,7 @@ mod link_table;
 mod packet_cache;
 mod path_requests;
 mod path_table;
-mod save_and_forward;
+mod store_and_forward;
 
 // TODO: Configure via features
 const PACKET_TRACE: bool = false;
@@ -108,7 +108,7 @@ pub struct TransportConfig {
     /// If we are an intermediate node in a multihop transfer and don't know a
     /// route to forward the packet, save it, send out a `PathRequest` and try
     /// to send it later rather than just dropping it.
-    save_and_forward: bool,
+    store_and_forward: bool,
 }
 
 #[derive(Clone)]
@@ -142,7 +142,7 @@ struct TransportHandler {
 
     fixed_dest_path_requests: AddressHash,
 
-    save_and_forward: Option<SaveAndForward>,
+    store_and_forward: Option<StoreAndForward>,
 
     cancel: CancellationToken,
 }
@@ -168,7 +168,7 @@ impl TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
-            save_and_forward: false,
+            store_and_forward: false,
         }
     }
 
@@ -192,8 +192,8 @@ impl TransportConfig {
         self.announce_forever = announce_forever;
     }
 
-    pub fn set_save_and_forward(&mut self, save_and_forward: bool) {
-        self.save_and_forward = save_and_forward;
+    pub fn set_store_and_forward(&mut self, store_and_forward: bool) {
+        self.store_and_forward = store_and_forward;
     }
 }
 
@@ -207,7 +207,7 @@ impl Default for TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
-            save_and_forward: false,
+            store_and_forward: false,
         }
     }
 }
@@ -239,8 +239,8 @@ impl Transport {
         let name = config.name.clone();
         let reroute_eager = config.reroute_eager;
 
-        let save_and_forward = if config.save_and_forward {
-            Some(SaveAndForward::new(name.clone()))
+        let store_and_forward = if config.store_and_forward {
+            Some(StoreAndForward::new(name.clone()))
         } else {
             None
         };
@@ -262,7 +262,7 @@ impl Transport {
             link_in_event_tx: link_in_event_tx.clone(),
             received_data_tx: received_data_tx.clone(),
             fixed_dest_path_requests: path_request_dest,
-            save_and_forward,
+            store_and_forward,
             cancel: cancel.clone(),
         }));
 
@@ -752,10 +752,10 @@ async fn handle_data<'a>(packet: &Packet, mut handler: MutexGuard<'a, TransportH
             );
 
             if !sent {
-                let save_and_forward = handler.config.save_and_forward;
+                let store_and_forward = handler.config.store_and_forward;
 
-                if save_and_forward {
-                    handler.save_and_forward.as_mut().unwrap().add(&destination, *packet);
+                if store_and_forward {
+                    handler.store_and_forward.as_mut().unwrap().add(&destination, *packet);
                     handler.request_path(&destination, None, None).await;
                 }
             }
@@ -841,8 +841,8 @@ async fn handle_announce<'a>(
                 iface,
             );
 
-            if let Some(save_and_forward) = handler.save_and_forward.as_mut() {
-                save_and_forward.destination_found(packet.destination);
+            if let Some(store_and_forward) = handler.store_and_forward.as_mut() {
+                store_and_forward.destination_found(packet.destination);
             }
         }
 
@@ -1182,7 +1182,7 @@ async fn manage_transport(
 ) {
     let cancel = handler.lock().await.cancel.clone();
     let retransmit = handler.lock().await.config.retransmit;
-    let save_and_forward = handler.lock().await.config.save_and_forward;
+    let store_and_forward = handler.lock().await.config.store_and_forward;
 
     let mut last_retransmit_old = if handler.lock().await.config.announce_forever {
         Some(time::Instant::now() - INTERVAL_OLD_ANNOUNCES_RETRANSMIT)
@@ -1390,7 +1390,7 @@ async fn manage_transport(
             }
         });
 
-        if save_and_forward {
+        if store_and_forward {
             let handler = handler.clone();
             let cancel = cancel.clone();
 
@@ -1411,7 +1411,7 @@ async fn manage_transport(
                             // the path table up to date
                             handler.path_table.remove_stale();
 
-                            let saf = handler.save_and_forward.as_mut().unwrap();
+                            let saf = handler.store_and_forward.as_mut().unwrap();
                             for (destination, packets) in saf.to_resend()
                             {
                                 for ref packet in packets {
