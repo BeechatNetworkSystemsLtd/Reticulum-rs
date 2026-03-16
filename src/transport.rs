@@ -1339,13 +1339,17 @@ async fn manage_transport(
                         break;
                     },
                     _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
+                        let mut retransmit_old = false;
+
                         if let Some(instant) = last_retransmit_old {
                             let now = time::Instant::now();
                             if now - instant > INTERVAL_OLD_ANNOUNCES_RETRANSMIT {
-                                retransmit_announces(handler.lock().await, true).await;
+                                retransmit_old = true;
                                 last_retransmit_old = Some(now);
                             }
                         }
+
+                        retransmit_announces(handler.lock().await, retransmit_old).await;
                     }
                 }
             }
