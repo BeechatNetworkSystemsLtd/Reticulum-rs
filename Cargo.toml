@@ -99,11 +99,3 @@ path = "examples/kaonic_mesh.rs"
 [[example]]
 name = "multihop"
 path = "examples/multihop.rs"
-
-[[example]]
-name = "daemon"
-path = "examples/daemon/main.rs"
-
-[[example]]
-name = "convert_config"
-path = "examples/daemon/convert_config.rs"
