@@ -244,7 +244,8 @@ impl Destination<PrivateIdentity, Input, Single> {
         let mut packet_data = PacketDataBuffer::new();
 
         let rand_hash = Hash::new_from_rand(rng);
-        let rand_hash = &rand_hash.as_slice()[..RAND_HASH_LENGTH];
+        let timestamp = (std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as u64).to_be_bytes();
+        let rand_hash = [&rand_hash.as_slice()[..RAND_HASH_LENGTH / 2], &timestamp[3..]].concat();
 
         let pub_key = self.identity.as_identity().public_key_bytes();
         let verifying_key = self.identity.as_identity().verifying_key_bytes();
@@ -254,7 +255,7 @@ impl Destination<PrivateIdentity, Input, Single> {
             .chain_safe_write(pub_key)
             .chain_safe_write(verifying_key)
             .chain_safe_write(self.desc.name.as_name_hash_slice())
-            .chain_safe_write(rand_hash);
+            .chain_safe_write(&rand_hash);
 
         if let Some(data) = app_data {
             packet_data.write(data)?;
@@ -268,7 +269,7 @@ impl Destination<PrivateIdentity, Input, Single> {
             .chain_safe_write(pub_key)
             .chain_safe_write(verifying_key)
             .chain_safe_write(self.desc.name.as_name_hash_slice())
-            .chain_safe_write(rand_hash)
+            .chain_safe_write(&rand_hash)
             .chain_safe_write(&signature.to_bytes());
 
         if let Some(data) = app_data {
