@@ -133,10 +133,6 @@ impl AnnounceTable {
         destination: AddressHash,
         received_from: AddressHash
     ) {
-        if self.map.contains_key(&destination) {
-            return;
-        }
-
         let now = Instant::now();
         let hops = announce.header.hops + 1;
 

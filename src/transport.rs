@@ -795,6 +795,11 @@ async fn handle_announce<'a>(
     mut handler: MutexGuard<'a, TransportHandler>,
     iface: AddressHash
 ) {
+    if handler.has_destination(&packet.destination) {
+        // destination is local
+        return
+    }
+
     if let Some(blocked_until) = handler.announce_limits.check(&packet.destination) {
         log::info!(
             "tp({}): too many announces from {}, blocked for {} seconds",
@@ -805,34 +810,20 @@ async fn handle_announce<'a>(
         return;
     }
 
-    let destination_known = handler.has_destination(&packet.destination);
-
     if let Ok(result) = DestinationAnnounce::validate(packet) {
         let destination = result.0;
         let app_data = result.1;
         let dest_hash = destination.identity.address_hash;
         let destination = Arc::new(Mutex::new(destination));
 
-        if !destination_known {
-            if !handler
-                .single_out_destinations
-                .contains_key(&packet.destination)
-            {
-                log::trace!(
-                    "tp({}): new announce for {}",
-                    handler.config.name,
-                    packet.destination
-                );
-
-                handler
-                    .single_out_destinations
-                    .insert(packet.destination, destination.clone());
-            }
-
-            handler.announce_table.add(
-                packet,
-                dest_hash,
-                iface,
+        if !handler
+            .single_out_destinations
+            .contains_key(&packet.destination)
+        {
+            log::trace!(
+                "tp({}): new announce for {}",
+                handler.config.name,
+                packet.destination
             );
 
             handler.path_table.handle_announce(
@@ -844,7 +835,22 @@ async fn handle_announce<'a>(
             if let Some(store_and_forward) = handler.store_and_forward.as_mut() {
                 store_and_forward.destination_found(packet.destination);
             }
+            handler
+                .single_out_destinations
+                .insert(packet.destination, destination.clone());
         }
+
+        handler.announce_table.add(
+            packet,
+            dest_hash,
+            iface,
+        );
+
+        handler.path_table.handle_announce(
+            packet,
+            packet.transport,
+            iface,
+        );
 
         let retransmit = handler.config.retransmit;
         if retransmit {
