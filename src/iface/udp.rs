@@ -1,3 +1,4 @@
+use std::cmp;
 use std::sync::Arc;
 
 use tokio::net::UdpSocket;
@@ -6,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 use crate::buffer::{InputBuffer, OutputBuffer};
 use crate::error::RnsError;
 use crate::iface::RxMessage;
-use crate::packet::Packet;
+use crate::packet::{Packet,PACKET_MDU};
 use crate::serde::Serialize;
 
 use super::{Interface, InterfaceContext};
@@ -160,6 +161,7 @@ impl UdpInterface {
 
 impl Interface for UdpInterface {
     fn mtu() -> usize {
-        2048
+        // XXX: Make dynamic based on iface bitrate
+        cmp::min(2048, PACKET_MDU)
     }
 }

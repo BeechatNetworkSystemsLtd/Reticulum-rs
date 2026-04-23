@@ -6,7 +6,9 @@ use crate::buffer::StaticBuffer;
 use crate::hash::AddressHash;
 use crate::hash::Hash;
 
-pub const PACKET_MDU: usize = 2048usize;
+// Maximum possible MTU
+// XXX: This technically should be 524288, but it overflows stuff atm
+pub const PACKET_MDU: usize = 8192usize;
 pub const PACKET_IFAC_MAX_LENGTH: usize = 64usize;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]

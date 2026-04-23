@@ -1,9 +1,11 @@
 use alloc::string::String;
+use std::cmp;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
 
 use crate::error::RnsError;
+use crate::packet::PACKET_MDU;
 
 use super::tcp_client::TcpClient;
 use super::{Interface, InterfaceContext, InterfaceManager};
@@ -112,6 +114,7 @@ impl TcpServer {
 
 impl Interface for TcpServer {
     fn mtu() -> usize {
-        2048
+        // XXX: Make dynamic based on iface bitrate
+        cmp::min(2048, PACKET_MDU)
     }
 }
