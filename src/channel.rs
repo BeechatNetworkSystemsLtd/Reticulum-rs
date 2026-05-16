@@ -1,3 +1,18 @@
+//! Implementation of channels.
+//!
+//! A [Channel] in Reticulum is an abstraction on top of [Link], primarily for
+//! reliable delivery of messages. Each message that is sent through a [Channel]
+//! is answered with a receipt, so the sender knows it has been delivered.
+//!
+//! If the receipt does not arrive in time, the message is sent again.
+//! If the receipt still does not arrive after a fixed number of tries, the
+//! [Channel] is torn down and the underlying [Link] is closed.
+//!
+//! [Channel] also guarantees delivery of the messages in the order in which
+//! they were sent.
+//!
+//! This crate defines the [Message] trait and the [Channel] struct.
+
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::sync::{Arc, Weak};
 use core::ops::DerefMut;
@@ -17,11 +32,24 @@ use crate::packet::{
 };
 use crate::transport::Transport;
 
+/// Message model for `Channel`.
+///
+/// Each `Channel` has a type system for its messages. The client opening the
+/// channel defines it by implementing this trait. A typical implementation
+/// will be an `enum` that has the message types as variants.
 pub trait Message: Clone + Send + Sized + Sync + 'static {
+    /// Reconstruct a message the channel has received.
     fn unpack(packed: &[u8], message_type: u16) -> Result<Self, RnsError>;
 
+    /// The payload of the message as it should be sent over the channel.
     fn pack(&self) -> Vec<u8>;
 
+    /// The type information that channel will include in the message envelope.
+    ///
+    /// The reference implementation reserves the range `0xff00` to `0xffff` for
+    /// "system messages". Although the range is not actually used, we recommend
+    /// keeping the convention and not assigning numbers in that range to user-
+    /// defined message types.
     fn message_type(&self) -> u16;
 }
 
@@ -78,11 +106,17 @@ async fn outlet_timed_out(link: &Arc<Mutex<Link>>) {
     link.lock().await.close();
 }
 
+/// Status of a message queried by `Channel::get_message_status`
 #[derive(Debug, PartialEq)]
 pub enum MessageStatus {
+    /// No message of this hash is known
     Unknown,
+    /// The message has been queued for sending but could not yet be sent
     Waiting,
+    /// The message has been sent the specified number of times,
+    /// but we have not received a delivery proof yet.
     Sent(u16),
+    /// We have received proof that the message has been delivered.
     Delivered
 }
 
@@ -709,6 +743,14 @@ async fn spawn_receiver<M: Message>(
 }
 
 
+/// The main object.
+///
+/// Notice that wrapping a [Link] into a [Channel] is a local action; it
+/// happens in one node and is not communicated to the other side.
+/// It is up to the client to know which links are supposed to be channels.
+///
+/// Channel messages have a specific packet context, however, so if only one
+/// side opens a channel, the other side will reject all subsequent messages.
 pub struct Channel<M: Message> {
     link: Arc<Mutex<Link>>,
     outbound: Arc<Mutex<Outbound>>,
@@ -717,6 +759,9 @@ pub struct Channel<M: Message> {
 
 
 impl<M: Message> Channel<M> {
+    /// Consume `link` and wrap it in a new `Channel`.
+    ///
+    /// Fails if there is already a `Channel` wrapping `link`.
     pub async fn new(
         link: Arc<Mutex<Link>>,
         transport: &Arc<Mutex<Transport>>
@@ -749,10 +794,15 @@ impl<M: Message> Channel<M> {
         Ok(Self { link, outbound, incoming })
     }
 
+    /// Send a message over the channel.
+    ///
+    /// Fails if the channel is not ready to send. If successful, it returns
+    /// the `Hash` with which the message can be identified.
     pub async fn send(&self, message: &M) -> Result<Hash, RnsError> {
         self.outbound.lock().await.send(message).await
     }
 
+    /// Get notified when a specific message's delivery is confirmed.
     pub async fn watch_message_delivery(
         &self,
         packet_hash: Hash
@@ -760,14 +810,22 @@ impl<M: Message> Channel<M> {
         self.outbound.lock().await.watch_delivery(packet_hash).await
     }
 
+    /// Query the status of a message.
     pub async fn message_status(&self, packet_hash: &Hash) -> MessageStatus {
         self.outbound.lock().await.get_status(&packet_hash).await
     }
 
+    /// Returns `true` if the channel is currently ready to send another
+    /// message.
+    ///
+    /// That is the case if the underlying link is active and the channel
+    /// window is not full, i. e. not too many messages are awaiting
+    /// delivery.
     pub async fn is_ready(&self) -> bool {
         self.outbound.lock().await.is_ready_to_send().await
     }
 
+    /// Subscribe to the channel's incoming messages.
     pub fn subscribe(&self) -> broadcast::Receiver<M> {
         self.incoming.subscribe()
     }
