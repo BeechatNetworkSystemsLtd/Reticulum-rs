@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
-use reticulum::channel::{ChannelError, Message, MessageType, PackedMessage};
-
+use reticulum::channel::Message;
+use reticulum::error::RnsError;
 
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
@@ -14,7 +14,7 @@ fn unpack_timestamp(bytes: &[u8]) -> u64 {
 
 
 #[derive(Clone)]
-struct TextPayload {
+pub struct TextPayload {
     text: String,
     timestamp: u64
 }
@@ -24,10 +24,7 @@ impl TextPayload {
     fn new(text: String) -> Self {
         Self { text, timestamp: now() }
     }
-}
 
-
-impl TextPayload {
     fn pack(&self) -> Vec<u8> {
         // Packing format mimicks that of Python Reticulum, so the
         // channel example can be tested against the Channel.py example
@@ -44,9 +41,9 @@ impl TextPayload {
         raw
     }
 
-    fn unpack(raw: &[u8]) -> Result<Self, ChannelError> {
+    fn unpack(raw: &[u8]) -> Result<Self, RnsError> {
         if raw.len() <= 12 {
-            return Err(ChannelError::Misc)
+            return Err(RnsError::ChannelError)
         }
 
         match String::from_utf8(raw[2..raw.len()-10].to_vec()) {
@@ -56,14 +53,14 @@ impl TextPayload {
                 Ok(payload)
             },
             Err(_) => {
-                Err(ChannelError::Misc)
+                Err(RnsError::ChannelError)
             }
         }
     }
 }
 
 
-const MESSAGE_TYPE_TEXT: MessageType = 0x0101;
+const MESSAGE_TYPE_TEXT: u16 = 0x0101;
 
 
 #[derive(Clone)]
@@ -73,6 +70,8 @@ pub enum ExampleMessage {
 
 
 impl ExampleMessage {
+    #[allow(unused)]  // this function is used in channel_client, but
+                      // generates warning when building channel_server
     pub fn new_text(text: &str) -> Self {
         Self::Text(TextPayload::new(text.to_string()))
     }
@@ -89,19 +88,21 @@ impl fmt::Display for ExampleMessage {
 
 
 impl Message for ExampleMessage {
-    fn pack(&self) -> PackedMessage {
+    fn pack(&self) -> Vec<u8> {
         match self {
-            Self::Text(t) => PackedMessage::new(t.pack(), MESSAGE_TYPE_TEXT)
+            Self::Text(text) => text.pack()
         }
     }
 
-    fn unpack(packed: PackedMessage) -> Result<Self, ChannelError> {
-        let message_type = packed.message_type();
-
-        match message_type {
-            MESSAGE_TYPE_TEXT =>
-                Ok(Self::Text(TextPayload::unpack(&packed.payload())?)),
-            _ => Err(ChannelError::InvalidMessageType)
+    fn unpack(packed: &[u8], message_type: u16) -> Result<Self, RnsError> {
+        if message_type == MESSAGE_TYPE_TEXT {
+            Ok(Self::Text(TextPayload::unpack(&packed)?))
+        } else {
+            Err(RnsError::ChannelUnknownMessageType)
         }
+    }
+
+    fn message_type(&self) -> u16 {
+        MESSAGE_TYPE_TEXT
     }
 }

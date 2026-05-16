@@ -2,19 +2,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::Mutex;
 use tokio::sync::broadcast::error::TryRecvError;
 
-use rand_core::OsRng;
-use reticulum::channel::WrappedLink;
-use reticulum::destination::{DestinationName, SingleInputDestination};
-use reticulum::destination::link::{Link, LinkEvent, LinkStatus};
+use reticulum::channel::Channel;
+use reticulum::destination::DestinationName;
+use reticulum::destination::link::LinkEvent;
 use reticulum::hash::AddressHash;
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::tcp_server::TcpServer;
 use reticulum::transport::{Transport, TransportConfig};
 
-mod channel_util;
-use channel_util::ExampleMessage;
+mod utils;
+use utils::channel::ExampleMessage;
 
 #[tokio::main]
 async fn main() {
@@ -39,27 +39,26 @@ async fn main() {
     let mut out_link_events = transport.out_link_events();
     let mut in_link_events = transport.in_link_events();
 
-    let mut links = HashMap::<AddressHash, Arc<tokio::sync::Mutex<WrappedLink<ExampleMessage>>>>::new();
+    let mut links = HashMap::<AddressHash, Arc<tokio::sync::Mutex<Channel<ExampleMessage>>>>::new();
     let mut in_links = vec![];
+
+    let transport = Arc::new(Mutex::new(transport));
 
     loop {
         match announce_recv.try_recv() {
             Ok(announce) => {
                 let len = links.len();
                 let destination = announce.destination.lock().await;
-                let link = match links.get(&destination.desc.address_hash) {
-                    Some(link) => link.clone(),
-                    None => {
-                        let link = transport.link(destination.desc).await;
-                        log::trace!("wl");
-                        let link = Arc::new(
-                            tokio::sync::Mutex::new(
-                                WrappedLink::<ExampleMessage>::new(link).await
-                            ) 
-                        );
-                        links.insert(destination.desc.address_hash, link.clone());
-                        link
-                    }
+                if links.get(&destination.desc.address_hash).is_none() {
+                    let link = transport.lock().await.link(destination.desc).await;
+                    let link = Arc::new(
+                        tokio::sync::Mutex::new(
+                            Channel::<ExampleMessage>::new(link, &transport)
+                                .await
+                                .unwrap()
+                        )
+                    );
+                    links.insert(destination.desc.address_hash, link.clone());
                 };
                 log::trace!("{} to {} links", len, links.len());
             },
@@ -79,6 +78,7 @@ async fn main() {
                         std::str::from_utf8(payload.as_slice())
                             .map(str::to_string)
                             .unwrap_or_else(|_| format!("{:?}", payload.as_slice()))),
+                    LinkEvent::Proof(_) => {},
                 };
                 out_link_events.resubscribe();
             },
@@ -93,10 +93,13 @@ async fn main() {
             let id = link_event.id;
             match link_event.event {
                 LinkEvent::Activated => {
-                    if let Some(link) = transport.find_in_link(&id).await {
-                        let wrapped = WrappedLink::<ExampleMessage>::new(link).await;
-                        let mut incoming = wrapped.subscribe();
-                        in_links.push(wrapped);
+                    let maybe_link = transport.lock().await.find_in_link(&id).await;
+                    if let Some(link) = maybe_link {
+                        let channel = Channel::<ExampleMessage>::new(link, &transport)
+                            .await
+                            .unwrap();
+                        let mut incoming = channel.subscribe();
+                        in_links.push(channel);
                         log::info!("in-link {} activated, wrapped", id);
                         tokio::spawn(async move {
                             while let Ok(message) = incoming.recv().await {
@@ -111,7 +114,7 @@ async fn main() {
             }
         }
 
-        transport.send_announce(&dest, None).await;
+        transport.lock().await.send_announce(&dest, None).await;
 
         tokio::time::sleep(Duration::from_secs(1)).await;
     }

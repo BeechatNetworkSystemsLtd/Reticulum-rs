@@ -4,15 +4,14 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, sleep};
 
-use reticulum::channel::{Message, WrappedLink};
+use reticulum::channel::Channel;
 use reticulum::destination::DestinationName;
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::tcp_client::TcpClient;
-use reticulum::iface::tcp_server::TcpServer;
 use reticulum::transport::{Transport, TransportConfig};
 
-mod channel_util;
-use channel_util::ExampleMessage;
+mod utils;
+use utils::channel::ExampleMessage;
 
 
 #[tokio::main]
@@ -56,17 +55,41 @@ async fn main() {
             return;
         };
 
-        let mut wrapped = WrappedLink::<ExampleMessage>::new(link).await;
+        let mut channel = Channel::<ExampleMessage>::new(link, &arc_transport)
+            .await
+            .unwrap();
         log::info!("channel created");
 
         let message = ExampleMessage::new_text("foo");
+        let mut watch_delivery = None;
+        let mut packet_hash = None;
 
-        while wrapped.get_channel().send(&message, &arc_transport).await.is_err() {
-            log::info!("Sending message: Channel not ready, retrying....");
-            sleep(Duration::from_secs(1)).await;
+        loop {
+            match channel.send(&message).await {
+                Ok(hash) => {
+                    watch_delivery = channel.watch_message_delivery(hash).await;
+                    log::info!(
+                        "message {} successfully sent over channel", 
+                        hash
+                    );
+                    packet_hash = Some(hash);
+                },
+                Err(e) => {
+                    log::info!("error sending message: {:?}", e);
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            }
+
+            if let Some(mut watch) = watch_delivery {
+                if watch.recv().await.unwrap() {
+                    log::info!("message {} delivered!", packet_hash.unwrap());
+                }
+            }
+
+            break;
         }
-
-        log::info!("message successfully sent over channel");
+        tokio::time::sleep(Duration::from_secs(1)).await;
     });
 
     let _ = tokio::signal::ctrl_c().await;
