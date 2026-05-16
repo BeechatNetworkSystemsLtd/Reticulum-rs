@@ -39,7 +39,7 @@ impl LinkStatus {
 
 pub type LinkId = AddressHash;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LinkPayload {
     buffer: [u8; PACKET_MDU],
     len: usize,
@@ -114,7 +114,7 @@ pub enum LinkHandleResult {
     MessageReceived(Option<Packet>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum LinkEvent {
     Activated,
     // LinkPayload >2000 bytes so we box it
@@ -123,7 +123,7 @@ pub enum LinkEvent {
     Closed,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LinkEventData {
     pub id: LinkId,
     pub address_hash: AddressHash,
@@ -168,16 +168,21 @@ impl Link {
         self.proves_messages = setting;
     }
 
-    pub fn bind_to_channel(
+    pub(crate) fn bind_to_channel(
         &mut self
-    ) -> Option<tokio::sync::broadcast::Receiver<LinkPayload>> {
-        // TODO fail if we already have a channel
+    ) -> Result<tokio::sync::broadcast::Receiver<LinkPayload>, RnsError> {
+        if self.channel_tx.is_some() {
+            log::error!("link({}) cannot be bound to another channel", self.id());
+            return Err(RnsError::ChannelError);
+        }
 
         let (tx, rx) = tokio::sync::broadcast::channel(16);
         self.channel_tx = Some(tx);
+        self.prove_messages(true);
+
         log::trace!("link({}) bound to channel", self.id());
 
-        Some(rx)
+        Ok(rx)
     }
 
     pub fn new_from_request(
@@ -302,7 +307,7 @@ impl Link {
                 } else {
                     log::error!("link({}): can't decrypt packet", self.id);
                 }
-            }
+            },
             PacketContext::KeepAlive => {
                 if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFF {
                     self.touch();
@@ -314,7 +319,7 @@ impl Link {
                     self.touch();
                     return LinkHandleResult::None;
                 }
-            }
+            },
             PacketContext::LinkRTT if !out_link => {
                 let mut buffer = [0u8; PACKET_MDU];
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
@@ -345,21 +350,29 @@ impl Link {
                 } else {
                     log::error!("link({}): can't decrypt link close packet", self.id);
                 }
-            }
+            },
             PacketContext::Channel => {
                 if let Some(ref channel_tx) = self.channel_tx {
                     let mut buffer = [0u8; PACKET_MDU];
                     if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer) {
                         log::trace!("link({}): data over channel {}B", self.id, plain_text.len());
                         self.request_time = Instant::now();
+
                         channel_tx.send(LinkPayload::new_from_slice(plain_text)).ok();
+
+                        let payload = LinkPayload::new_from_slice(plain_text);
+                        self.post_event(LinkEvent::Data(Box::new(payload)));
+
+                        let proof = Some(self.message_proof(packet.hash()));
+
+                        return LinkHandleResult::MessageReceived(proof);
                     } else {
                         log::error!("link({}): can't decrypt channel packet", self.id);
                     }
                 } else {
                     log::error!("link({}): received channel packet but have no channel", self.id);
                 }
-            }
+            },
             _ => {}
         }
 
