@@ -11,7 +11,7 @@
 //! [Channel] also guarantees delivery of the messages in the order in which
 //! they were sent.
 //!
-//! This crate defines the [Message] trait and the [Channel] struct.
+//! This module defines the [Message] trait and the [Channel] struct.
 
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::sync::{Arc, Weak};
@@ -39,7 +39,7 @@ use mock::{Link, Packet, Transport};
 
 /// Message model for `Channel`.
 ///
-/// Each `Channel` has a type system for its messages. The client opening the
+/// Each `Channel` has a type for its messages. The client opening the
 /// channel defines it by implementing this trait. A typical implementation
 /// will be an `enum` that has the message types as variants.
 pub trait Message: Clone + Send + Sized + Sync + 'static {
