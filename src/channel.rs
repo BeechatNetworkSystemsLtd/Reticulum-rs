@@ -757,7 +757,7 @@ async fn spawn_receiver<M: Message>(
 /// Channel messages have a specific packet context, however, so if only one
 /// side opens a channel, the other side will reject all subsequent messages.
 pub struct Channel<M: Message> {
-    link: Arc<Mutex<Link>>,
+    pub link: Arc<Mutex<Link>>,
     outbound: Arc<Mutex<Outbound>>,
     incoming: broadcast::Sender<M>,
 }
@@ -833,10 +833,6 @@ impl<M: Message> Channel<M> {
     /// Subscribe to the channel's incoming messages.
     pub fn subscribe(&self) -> broadcast::Receiver<M> {
         self.incoming.subscribe()
-    }
-
-    pub fn get_link(&self) -> Arc<Mutex<Link>> {
-        Arc::clone(&self.link)
     }
 }
 
