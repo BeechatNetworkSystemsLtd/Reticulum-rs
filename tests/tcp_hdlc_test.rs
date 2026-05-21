@@ -1,3 +1,6 @@
+use std::sync::Once;
+use std::time::Duration;
+
 use rand_core::OsRng;
 use reticulum::{
     identity::PrivateIdentity,
@@ -6,6 +9,22 @@ use reticulum::{
     transport::{Transport, TransportConfig},
 };
 use tokio_util::sync::CancellationToken;
+
+static INIT: Once = Once::new();
+
+fn setup() {
+    INIT.call_once(|| {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init()
+    });
+}
+
+fn free_local_addr() -> String {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string()
+}
 
 async fn build_transport(name: &str, server_addr: &str, client_addr: &[&str]) -> Transport {
     let transport = Transport::new(TransportConfig::new(
@@ -34,7 +53,7 @@ async fn build_transport(name: &str, server_addr: &str, client_addr: &[&str]) ->
 
 #[tokio::test]
 async fn packet_overload() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
+    setup();
 
     let transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
     let transport_b = build_transport("b", "127.0.0.1:8082", &["127.0.0.1:8081"]).await;
@@ -101,4 +120,43 @@ async fn packet_overload() {
     let rx_counter = consumer_task.await.unwrap();
 
     log::info!("TX: {}, RX: {}", tx_counter, rx_counter);
+}
+
+#[tokio::test]
+async fn unavailable_tcp_client_does_not_block_server_traffic() {
+    setup();
+
+    let server_addr_a = free_local_addr();
+    let server_addr_b = free_local_addr();
+    let unavailable_addr = free_local_addr();
+
+    let transport_a = build_transport("a", &server_addr_a, &[&unavailable_addr]).await;
+    let transport_b = build_transport("b", &server_addr_b, &[&server_addr_a]).await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let sender = tokio::spawn(async move {
+        for counter in 0..3u8 {
+            let mut packet = Packet::default();
+            packet.data.write(&[counter]).unwrap();
+            transport_a.send_packet(packet).await;
+        }
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), sender)
+        .await
+        .expect("send_packet stalled behind an unavailable TCP client")
+        .unwrap();
+
+    let mut iface_rx = transport_b.iface_rx();
+    let mut received = 0usize;
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while received < 3 {
+            iface_rx.recv().await.unwrap();
+            received += 1;
+        }
+    })
+    .await
+    .expect("TCP server traffic stopped after another TCP client failed to connect");
 }

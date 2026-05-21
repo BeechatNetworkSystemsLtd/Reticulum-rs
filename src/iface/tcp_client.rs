@@ -50,26 +50,52 @@ impl TcpClient {
         let tx_channel = Arc::new(tokio::sync::Mutex::new(tx_channel));
 
         let mut running = true;
-        loop {
+        'outer: loop {
             if !running || context.cancel.is_cancelled() {
                 break;
             }
 
-            let stream = {
-                match stream.take() {
-                    Some(stream) => {
-                        running = false;
-                        Ok(stream)
+            let stream = match stream.take() {
+                Some(stream) => {
+                    running = false;
+                    Ok(stream)
+                }
+                None => {
+                    let mut tx_channel = tx_channel.lock().await;
+
+                    tokio::select! {
+                        biased;
+                        _ = context.cancel.cancelled() => {
+                            break;
+                        }
+                        Some(_) = tx_channel.recv() => {
+                            continue;
+                        }
+                        result = TcpStream::connect(addr.clone()) => {
+                            result.map_err(|_| RnsError::ConnectionError)
+                        }
                     }
-                    None => TcpStream::connect(addr.clone())
-                        .await
-                        .map_err(|_| RnsError::ConnectionError),
                 }
             };
 
             if let Err(_) = stream {
                 log::info!("tcp_client: couldn't connect to <{}>", addr);
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+
+                loop {
+                    let mut tx_channel = tx_channel.lock().await;
+
+                    tokio::select! {
+                        biased;
+                        _ = context.cancel.cancelled() => {
+                            break 'outer;
+                        }
+                        Some(_) = tx_channel.recv() => {}
+                        _ = tokio::time::sleep_until(retry_at) => {
+                            break;
+                        }
+                    }
+                }
                 continue;
             }
 
