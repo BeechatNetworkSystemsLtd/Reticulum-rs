@@ -10,7 +10,6 @@ use x25519_dalek::StaticSecret;
 
 use crate::{
     buffer::OutputBuffer,
-    destination::Destination,
     error::RnsError,
     hash::{AddressHash, Hash, ADDRESS_HASH_SIZE, HASH_SIZE},
     identity::{DecryptIdentity, DerivedKey, EncryptIdentity, Identity, PrivateIdentity},
