@@ -151,6 +151,7 @@ impl PathRequests {
     fn allow_recursive(
         &mut self,
         destination: &AddressHash,
+        #[expect(unused)]
         on_iface: Option<AddressHash>,
     ) -> bool {
         let now = Instant::now();
@@ -167,6 +168,7 @@ impl PathRequests {
         }
 
         // TODO implement announce queue and announce cap, reject requests based on that
+        // This will need the currently unused argument.
 
         true
     }

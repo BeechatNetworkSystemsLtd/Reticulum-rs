@@ -534,8 +534,10 @@ impl Transport {
         self.handler.lock().await.knows_destination(address)
     }
 
-    pub fn get_handler(&self) -> Arc<Mutex<TransportHandler>> {
-        // direct access to handler for testing purposes
+    #[expect(unused)]
+    // For testing purposes only. Since it is only used in unit tests, it
+    // would generate a warning when running cargo build.
+    fn get_handler(&self) -> Arc<Mutex<TransportHandler>> {
         self.handler.clone()
     }
 }
@@ -971,7 +973,7 @@ async fn handle_link_request_as_intermediate<'a>(
 async fn handle_link_request<'a>(
     packet: &Packet,
     iface: AddressHash,
-    mut handler: MutexGuard<'a, TransportHandler>
+    handler: MutexGuard<'a, TransportHandler>
 ) {
     if let Some(destination) = handler
         .single_in_destinations
