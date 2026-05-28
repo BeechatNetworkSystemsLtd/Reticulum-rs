@@ -1,0 +1,46 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [main, ci]
+  pull_request:
+    branches: [main, ci]
+
+env:
+  RUSTFLAGS: "-D warnings"
+  RUSTUP_TOOLCHAIN: "1.95"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: rust:1.95
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: "true"
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95
+          components: clippy
+      - name: install build dependencies
+        run: apt-get update && apt-get install -y protobuf-compiler
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features
+
+  test:
+    runs-on: ubuntu-latest
+    container: rust:1.95
+    needs: check
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: "true"
+      - name: test
+        run: cargo test --workspace --all-features
