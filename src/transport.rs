@@ -42,7 +42,6 @@ use crate::iface::TxMessage;
 use crate::iface::TxMessageType;
 
 use crate::packet::DestinationType;
-use crate::packet::Header;
 use crate::packet::Packet;
 use crate::packet::PacketContext;
 use crate::packet::PacketDataBuffer;
@@ -109,7 +108,7 @@ pub struct AnnounceEvent {
     pub app_data: PacketDataBuffer,
 }
 
-struct TransportHandler {
+pub(crate) struct TransportHandler {
     config: TransportConfig,
     iface_manager: Arc<Mutex<InterfaceManager>>,
     announce_tx: broadcast::Sender<AnnounceEvent>,
@@ -1117,25 +1116,6 @@ async fn retransmit_announces<'a>(
         }
     }
 }
-
-fn create_retransmit_packet(packet: &Packet) -> Packet {
-    Packet {
-        header: Header {
-            ifac_flag: packet.header.ifac_flag,
-            header_type: packet.header.header_type,
-            propagation_type: packet.header.propagation_type,
-            destination_type: packet.header.destination_type,
-            packet_type: packet.header.packet_type,
-            hops: packet.header.hops + 1,
-        },
-        ifac: packet.ifac,
-        destination: packet.destination,
-        transport: packet.transport,
-        context: packet.context,
-        data: packet.data,
-    }
-}
-
 
 async fn manage_transport(
     handler: Arc<Mutex<TransportHandler>>,
