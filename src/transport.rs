@@ -591,7 +591,6 @@ impl TransportHandler {
                     }
                 }
             },
-            _ => {}
         }
 
         let is_new = self.packet_cache.lock().await.update(packet);
@@ -956,7 +955,6 @@ async fn handle_link_request_as_destination<'a>(
 async fn handle_link_request_as_intermediate<'a>(
     received_from: AddressHash,
     next_hop: AddressHash,
-    next_hop_iface: AddressHash,
     packet: &Packet,
     mut handler: MutexGuard<'a, TransportHandler>
 ) {
@@ -965,7 +963,6 @@ async fn handle_link_request_as_intermediate<'a>(
         packet.destination,
         received_from,
         next_hop,
-        next_hop_iface
     );
 
     send_to_next_hop(packet, &handler, None).await;
@@ -995,11 +992,10 @@ async fn handle_link_request<'a>(
             packet.destination
         );
 
-        let (next_hop, next_iface) = entry;
+        let (next_hop, _) = entry;
         handle_link_request_as_intermediate(
             iface,
             next_hop,
-            next_iface,
             packet,
             handler
         ).await;

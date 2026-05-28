@@ -6,13 +6,10 @@ use crate::hash::AddressHash;
 use crate::packet::{Header, HeaderType, IfacFlag, Packet};
 
 pub struct LinkEntry {
-    pub timestamp: Instant,
     pub proof_timeout: Instant,
     pub next_hop: AddressHash,
-    pub next_hop_iface: AddressHash,
     pub received_from: AddressHash,
     pub original_destination: AddressHash,
-    pub taken_hops: u8,
     pub remaining_hops: u8,
     pub validated: bool,
 }
@@ -48,7 +45,6 @@ impl LinkTable {
         destination: AddressHash,
         received_from: AddressHash,
         next_hop: AddressHash,
-        iface: AddressHash,
     ) {
         let link_id = LinkId::from(link_request);
 
@@ -57,16 +53,12 @@ impl LinkTable {
         }
 
         let now = Instant::now();
-        let taken_hops = link_request.header.hops + 1;
 
         let entry = LinkEntry {
-            timestamp: now,
             proof_timeout: now + Duration::from_secs(600), // TODO
             next_hop: next_hop,
-            next_hop_iface: iface,
             received_from,
             original_destination: destination,
-            taken_hops,
             remaining_hops: 0,
             validated: false
         };

@@ -12,7 +12,6 @@ use crate::packet::{
 #[derive(Clone)]
 pub struct AnnounceEntry {
     pub packet: Packet,
-    pub timestamp: Instant,
     pub timeout: Instant,
     pub received_from: AddressHash,
     pub retries: u8,
@@ -105,11 +104,6 @@ impl AnnounceCache {
 
         return None;
     }
-
-    fn clear(&mut self) {
-        self.newer.as_mut().unwrap().clear();
-        self.older = None;
-    }
 }
 
 pub struct AnnounceTable {
@@ -138,7 +132,6 @@ impl AnnounceTable {
 
         let entry = AnnounceEntry {
             packet: announce.clone(),
-            timestamp: now,
             timeout: now + Duration::from_secs(60),
             received_from,
             retries: 5, // TODO: make this configurable too?
@@ -181,12 +174,6 @@ impl AnnounceTable {
         }
 
         false
-    }
-
-    pub fn clear(&mut self) {
-        self.map.clear();
-        self.responses.clear();
-        self.cache.clear();
     }
 
     pub fn new_packet(
