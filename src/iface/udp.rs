@@ -47,7 +47,7 @@ impl UdpInterface {
                 .await
                 .map_err(|_| RnsError::ConnectionError);
 
-            if let Err(_) = socket {
+            if socket.is_err() {
                 log::info!("udp_interface: couldn't bind to <{}>", bind_addr);
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 continue;
@@ -140,7 +140,7 @@ impl UdpInterface {
                                         log::trace!("udp_interface: tx >> ({}) {}", iface_address, packet);
                                     }
                                     let mut output = OutputBuffer::new(&mut tx_buffer);
-                                    if let Ok(_) = packet.serialize(&mut output) {
+                                    if packet.serialize(&mut output).is_ok() {
                                         let _ = socket.send_to(output.as_slice(), &forward_addr).await;
                                     }
                                 }

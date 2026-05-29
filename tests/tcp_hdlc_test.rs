@@ -69,7 +69,7 @@ async fn packet_overload() {
                 };
             }
 
-            return tx_counter;
+            tx_counter
         })
     };
 
@@ -89,7 +89,7 @@ async fn packet_overload() {
                 };
             }
 
-            return rx_counter;
+            rx_counter
         })
     };
 
