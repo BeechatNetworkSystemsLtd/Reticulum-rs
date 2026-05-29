@@ -534,8 +534,10 @@ impl Transport {
         self.handler.lock().await.knows_destination(address)
     }
 
-    pub fn get_handler(&self) -> Arc<Mutex<TransportHandler>> {
-        // direct access to handler for testing purposes
+    #[expect(unused)]
+    // For testing purposes only. Since it is only used in unit tests, it
+    // would generate a warning when running cargo build.
+    fn get_handler(&self) -> Arc<Mutex<TransportHandler>> {
         self.handler.clone()
     }
 }
@@ -591,7 +593,6 @@ impl TransportHandler {
                     }
                 }
             },
-            _ => {}
         }
 
         let is_new = self.packet_cache.lock().await.update(packet);
@@ -956,7 +957,6 @@ async fn handle_link_request_as_destination<'a>(
 async fn handle_link_request_as_intermediate<'a>(
     received_from: AddressHash,
     next_hop: AddressHash,
-    next_hop_iface: AddressHash,
     packet: &Packet,
     mut handler: MutexGuard<'a, TransportHandler>
 ) {
@@ -965,7 +965,6 @@ async fn handle_link_request_as_intermediate<'a>(
         packet.destination,
         received_from,
         next_hop,
-        next_hop_iface
     );
 
     send_to_next_hop(packet, &handler, None).await;
@@ -974,7 +973,7 @@ async fn handle_link_request_as_intermediate<'a>(
 async fn handle_link_request<'a>(
     packet: &Packet,
     iface: AddressHash,
-    mut handler: MutexGuard<'a, TransportHandler>
+    handler: MutexGuard<'a, TransportHandler>
 ) {
     if let Some(destination) = handler
         .single_in_destinations
@@ -995,11 +994,10 @@ async fn handle_link_request<'a>(
             packet.destination
         );
 
-        let (next_hop, next_iface) = entry;
+        let (next_hop, _) = entry;
         handle_link_request_as_intermediate(
             iface,
             next_hop,
-            next_iface,
             packet,
             handler
         ).await;

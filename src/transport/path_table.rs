@@ -1,16 +1,14 @@
-use std::{collections::HashMap, time::Instant};
+use std::collections::HashMap;
 
 use crate::{
-    hash::{AddressHash, Hash},
+    hash::AddressHash,
     packet::{DestinationType, Header, HeaderType, IfacFlag, Packet, PacketType},
 };
 
 pub struct PathEntry {
-    pub timestamp: Instant,
     pub received_from: AddressHash,
     pub hops: u8,
     pub iface: AddressHash,
-    pub packet_hash: Hash,
 }
 
 pub struct PathTable {
@@ -34,14 +32,6 @@ impl PathTable {
         self.map.get(destination).map(|entry| (entry.received_from, entry.iface))
     }
 
-    pub fn next_hop_iface(&self, destination: &AddressHash) -> Option<AddressHash> {
-        self.map.get(destination).map(|entry| entry.iface)
-    }
-
-    pub fn next_hop(&self, destination: &AddressHash) -> Option<AddressHash> {
-        self.map.get(destination).map(|entry| entry.received_from)
-    }
-
     pub fn handle_announce(
         &mut self,
         announce: &Packet,
@@ -61,11 +51,9 @@ impl PathTable {
 
         let received_from = transport_id.unwrap_or(announce.destination);
         let new_entry = PathEntry {
-            timestamp: Instant::now(),
             received_from,
             hops,
             iface,
-            packet_hash: announce.hash(),
         };
 
         self.map.insert(announce.destination, new_entry);
@@ -106,12 +94,6 @@ impl PathTable {
             },
             Some(entry.iface),
         )
-    }
-
-    pub fn refresh(&mut self, destination: &AddressHash) {
-        if let Some(entry) = self.map.get_mut(destination) {
-            entry.timestamp = Instant::now();
-        }
     }
 
     pub fn handle_packet(&mut self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
