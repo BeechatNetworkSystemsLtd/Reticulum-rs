@@ -42,5 +42,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
+      - name: install build dependencies
+        run: apt-get update && apt-get install -y protobuf-compiler
       - name: test
         run: cargo test --workspace --all-features
