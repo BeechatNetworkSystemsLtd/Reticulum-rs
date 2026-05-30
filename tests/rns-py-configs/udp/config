@@ -9,7 +9,7 @@
 
 
 [reticulum]
-  discover_interfaces = Yes
+  discover_interfaces = No
   
   # If you enable Transport, your system will route traffic
   # for other peers, pass announces and serve path requests.

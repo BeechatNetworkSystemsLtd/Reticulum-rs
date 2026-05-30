@@ -28,7 +28,9 @@ async fn python_announce() {
     setup();
 
     let script_path = format!("{}/Examples/Announce.py", *RETICULUM_PYTHON_DIR);
-    // the Python example will send application data with the announce from one of these lists
+    // the Python example will send application data with the announce from one of these lists:
+    // fruits = ["Peach", "Quince", "Date", "Tangerine", "Pomelo", "Carambola", "Grape"]
+    // noble_gases = ["Helium", "Neon", "Argon", "Krypton", "Xenon", "Radon", "Oganesson"]
     let get_list = |name| -> Vec<String> {
         let starts_with = format!("{name} = ");
         let content = std::fs::read_to_string(&script_path).expect("failed to read Python script");
@@ -38,14 +40,11 @@ async fn python_announce() {
         let json = &line[starts_with.len()..];
         serde_json::from_str(json).expect("failed to parse fruits list as JSON")
     };
-
     let fruits = get_list ("fruits");
     let noble_gases = get_list ("noble_gases");
 
-    // Find this line in script_path and parse it:
-    // fruits = ["Peach", "Quince", "Date", "Tangerine", "Pomelo", "Carambola", "Grape"]
-
     let mut child = Command::new("python3")
+        .arg("-u")  // make sure output is not buffered
         .arg(script_path)
         .arg("--config")
         .arg("tests/rns-py-configs/udp")
@@ -94,7 +93,7 @@ async fn python_announce() {
             panic!("Python exited early: {status}");
         }
         if let Some(stdin) = child.stdin.as_mut() {
-            stdin.write_all(b"\n").unwrap(); // Simulates pressing Return
+            stdin.write_all(b"\n").unwrap(); // simulates pressing Return
             stdin.flush().unwrap();
         }
         time::sleep(time::Duration::from_secs(1)).await;

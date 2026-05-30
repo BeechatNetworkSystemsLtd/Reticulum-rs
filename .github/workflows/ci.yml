@@ -38,8 +38,8 @@ jobs:
     container: rust:1.95
     needs: check
     env:
-      RETICULUM_TEST_PYTHON_DIR: /opt/reticulum
-      PYTHONPATH: /opt/reticulum
+      RETICULUM_TEST_PYTHON_DIR: /opt/Reticulum
+      PYTHONPATH: /opt/Reticulum
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -53,4 +53,4 @@ jobs:
       - name: verify Reticulum install
         run: python3 -c "import RNS; print(RNS.__file__)"
       - name: test
-        run: cargo test --workspace --all-targets --all-features -- --no-capture
+        run: cargo test --workspace --all-targets --all-features
