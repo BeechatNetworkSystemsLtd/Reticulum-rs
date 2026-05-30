@@ -222,9 +222,13 @@ impl Link {
 
         self.status = LinkStatus::Pending;
         self.id = LinkId::from(&packet);
-        self.request_time = Instant::now();
+        self.touch();
 
         packet
+    }
+
+    pub fn touch(&mut self) {
+        self.request_time = Instant::now();
     }
 
     pub fn prove(&mut self) -> Packet {
@@ -270,7 +274,7 @@ impl Link {
                 let mut buffer = [0u8; PACKET_MDU];
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
                     log::trace!("link({}): data {}B", self.id, plain_text.len());
-                    self.request_time = Instant::now();
+                    self.touch();
                     self.post_event(LinkEvent::Data(Box::new(LinkPayload::new_from_slice(plain_text))));
 
                     let proof = if self.proves_messages {
@@ -286,13 +290,13 @@ impl Link {
             }
             PacketContext::KeepAlive => {
                 if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFF {
-                    self.request_time = Instant::now();
+                    self.touch();
                     log::trace!("link({}): keep-alive request", self.id);
                     return LinkHandleResult::KeepAlive;
                 }
                 if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFE {
                     log::trace!("link({}): keep-alive response", self.id);
-                    self.request_time = Instant::now();
+                    self.touch();
                     return LinkHandleResult::None;
                 }
             }

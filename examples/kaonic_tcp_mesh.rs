@@ -4,7 +4,7 @@ use std::sync::Arc;
 use reticulum::iface::kaonic::kaonic_grpc::KaonicGrpc;
 use reticulum::iface::kaonic::{RadioConfig, RadioModule};
 use reticulum::iface::tcp_client::TcpClient;
-use reticulum::transport::{Transport, TransportConfig};
+use reticulum::transport::TransportConfig;
 use tokio::sync::Mutex;
 
 #[tokio::main]
@@ -13,11 +13,10 @@ async fn main() {
 
     let args: Vec<String> = env::args().collect();
 
-    let mut config = TransportConfig::default();
-    config.set_retransmit(true);
-    config.set_broadcast(false);
-
-    let transport = Arc::new(Mutex::new(Transport::new(config)));
+    let transport = Arc::new(Mutex::new(TransportConfig::default()
+        .set_retransmit(true)
+        .set_broadcast(false)
+        .build()));
 
     if args.len() < 3 {
         println!("Usage: {} <tcp-server> <kaonic-grpc>", args[0]);

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use reticulum::iface::kaonic::kaonic_grpc::KaonicGrpc;
 use reticulum::iface::kaonic::{RadioConfig, RadioModule};
-use reticulum::transport::{Transport, TransportConfig};
+use reticulum::transport::TransportConfig;
 use tokio::sync::Mutex;
 
 #[tokio::main]
@@ -11,11 +11,10 @@ async fn main() {
 
     log::info!(">> packet retransmitter <<");
 
-    let mut config = TransportConfig::default();
-    config.set_retransmit(true);
-    config.set_broadcast(false);
-
-    let transport = Arc::new(Mutex::new(Transport::new(config)));
+    let transport = Arc::new(Mutex::new(TransportConfig::default()
+        .set_retransmit(true)
+        .set_broadcast(false)
+        .build()));
 
     let _ = transport.lock().await.iface_manager().lock().await.spawn(
         KaonicGrpc::new(

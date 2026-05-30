@@ -12,7 +12,7 @@ use reticulum::identity::PrivateIdentity;
 use reticulum::iface::tcp_client::TcpClient;
 use reticulum::iface::tcp_server::TcpServer;
 use reticulum::packet::{HeaderType, Packet, PacketDataBuffer, PropagationType};
-use reticulum::transport::{Transport, TransportConfig};
+use reticulum::transport::TransportConfig;
 
 fn create_data_packet(message: &String, destination: AddressHash) -> Packet {
     let mut packet: Packet = Default::default();
@@ -52,9 +52,9 @@ async fn main() {
 
     log::info!("Destination on last hop will be {}", last_hop_destination.desc);
 
-    let mut config = TransportConfig::new("server", &identity, false);
-    config.set_retransmit(true);
-    let mut transport = Transport::new(config);
+    let mut transport = TransportConfig::new("server", &identity, false)
+        .set_retransmit(true)
+        .build();
 
     let our_address = format!("0.0.0.0:{}", our_hop + 5101);
 

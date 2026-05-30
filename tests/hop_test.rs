@@ -27,17 +27,9 @@ async fn build_transport_full(
     client_addr: &[&str],
     retransmit: bool
 ) -> Transport {
-    let mut config = TransportConfig::new(
-        name,
-        &PrivateIdentity::new_from_rand(OsRng),
-        true
-    );
-
-    if retransmit {
-        config.set_retransmit(true);
-    }
-
-    let transport = Transport::new(config);
+    let transport = TransportConfig::new(name, &PrivateIdentity::new_from_rand(OsRng), true)
+        .set_retransmit(retransmit)
+        .build();
 
     transport.iface_manager().lock().await.spawn(
         TcpServer::new(server_addr, transport.iface_manager()),
