@@ -91,26 +91,23 @@ async fn main() {
 
         if let Ok(link_event) = in_link_events.try_recv() {
             let id = link_event.id;
-            match link_event.event {
-                LinkEvent::Activated => {
-                    let maybe_link = transport.lock().await.find_in_link(&id).await;
-                    if let Some(link) = maybe_link {
-                        let channel = Channel::<ExampleMessage>::new(link, &transport)
-                            .await
-                            .unwrap();
-                        let mut incoming = channel.subscribe();
-                        in_links.push(channel);
-                        log::info!("in-link {} activated, wrapped", id);
-                        tokio::spawn(async move {
-                            while let Ok(message) = incoming.recv().await {
-                                log::info!("received message on {}: {}", id, message);
-                            }
-                        });
-                    } else {
-                        log::info!("Got activate for {}, but not found", id);
-                    }
+            if let LinkEvent::Activated = link_event.event {
+                let maybe_link = transport.lock().await.find_in_link(&id).await;
+                if let Some(link) = maybe_link {
+                    let channel = Channel::<ExampleMessage>::new(link, &transport)
+                        .await
+                        .unwrap();
+                    let mut incoming = channel.subscribe();
+                    in_links.push(channel);
+                    log::info!("in-link {} activated, wrapped", id);
+                    tokio::spawn(async move {
+                        while let Ok(message) = incoming.recv().await {
+                            log::info!("received message on {}: {}", id, message);
+                        }
+                    });
+                } else {
+                    log::info!("Got activate for {}, but not found", id);
                 }
-                _ => {}
             }
         }
 

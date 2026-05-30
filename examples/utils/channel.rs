@@ -96,7 +96,7 @@ impl Message for ExampleMessage {
 
     fn unpack(packed: &[u8], message_type: u16) -> Result<Self, RnsError> {
         if message_type == MESSAGE_TYPE_TEXT {
-            Ok(Self::Text(TextPayload::unpack(&packed)?))
+            Ok(Self::Text(TextPayload::unpack(packed)?))
         } else {
             Err(RnsError::ChannelUnknownMessageType)
         }

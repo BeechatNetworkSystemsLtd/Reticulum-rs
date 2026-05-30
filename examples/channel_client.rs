@@ -2,7 +2,7 @@ use rand_core::OsRng;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::time::{Duration, sleep};
+use tokio::time::Duration;
 
 use reticulum::channel::Channel;
 use reticulum::destination::DestinationName;
@@ -55,7 +55,7 @@ async fn main() {
             return;
         };
 
-        let mut channel = Channel::<ExampleMessage>::new(link, &arc_transport)
+        let channel = Channel::<ExampleMessage>::new(link, &arc_transport)
             .await
             .unwrap();
         log::info!("channel created");

@@ -821,7 +821,6 @@ mod mock {
     use tokio::sync::{broadcast, Mutex};
     use tokio::time::Duration;
 
-    use crate::destination::{DestinationName, SingleInputDestination};
     use crate::destination::link::{
         LinkEvent, LinkEventData, LinkId, LinkPayload, LinkStatus
     };
@@ -947,8 +946,6 @@ mod mock {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use rand_core::OsRng;
 
     #[test]
     fn test_envelope_raw() {
@@ -1080,7 +1077,7 @@ mod tests {
 
         let packet_hash = channel_a.send(&TestMessage::Short(1)).await.unwrap();
 
-        let mut delivered = channel_a
+        let delivered = channel_a
             .watch_message_delivery(packet_hash)
             .await
             .expect("message not found in channel a");
@@ -1204,7 +1201,7 @@ mod tests {
             &fixture.transport_b
         ).await.unwrap();
 
-        let mut incoming_b = channel_b.subscribe();
+        let incoming_b = channel_b.subscribe();
 
         channel_a.send(&TestMessage::Long(50)).await.unwrap();
         channel_a.send(&TestMessage::Long(50)).await.unwrap();
