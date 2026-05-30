@@ -13,13 +13,11 @@
 //!
 //! This module defines the [Message] trait and the [Channel] struct.
 
-use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::{Arc, Weak};
-use core::ops::DerefMut;
 
-use tokio::sync::{broadcast, Mutex, MutexGuard, mpsc, Notify};
-use tokio::task::spawn;
-use tokio::time::{Duration, Instant, sleep, timeout};
+use tokio::sync::{broadcast, Mutex, MutexGuard, mpsc};
+use tokio::time::{Duration, Instant, sleep};
 use tokio_util::sync::CancellationToken;
 
 use crate::destination::link::{
@@ -28,7 +26,7 @@ use crate::destination::link::{
 use crate::error::RnsError;
 use crate::hash::Hash;
 use crate::packet::{
-    DestinationType, PacketContext, PacketDataBuffer, PACKET_MDU
+    PacketContext, PACKET_MDU
 };
 
 #[cfg(not(test))]
@@ -36,6 +34,9 @@ use crate::{destination::link::Link, packet::Packet, transport::Transport};
 
 #[cfg(test)]
 use mock::{Link, Packet, Transport};
+
+/// Maximal payload size of a message sent through a `Channel`.
+pub const CHANNEL_MDU: usize = PACKET_MDU - 6;
 
 /// Message model for `Channel`.
 ///
@@ -57,9 +58,6 @@ pub trait Message: Clone + Send + Sized + Sync + 'static {
     /// defined message types.
     fn message_type(&self) -> u16;
 }
-
-static SMT_STREAM_DATA: u16 = 0xff00;
-
 
 async fn outlet_send(
     link: &Arc<Mutex<Link>>,
@@ -127,16 +125,15 @@ pub enum MessageStatus {
 
 struct Envelope<M: Message> {
     message: M,
-    message_type: u16,
     sequence: u16,
 }
 
 impl<M: Message> Envelope<M> {
-    fn new(message: M, message_type: u16, sequence: u16) -> Self {
-        Self { message, message_type, sequence }
+    fn new(message: M, sequence: u16) -> Self {
+        Self { message, sequence }
     }
 
-    fn unpack(raw: &[u8], link_id: LinkId) -> Result<Self, RnsError> {
+    fn unpack(raw: &[u8]) -> Result<Self, RnsError> {
         let (message_type, sequence, size) = deenvelope_raw(raw)?;
 
         if raw.len() as u16 != size + 6 {
@@ -147,7 +144,7 @@ impl<M: Message> Envelope<M> {
 
         let message = M::unpack(&raw[6..], message_type)?;
 
-        Ok(Self::new(message, message_type, sequence))
+        Ok(Self::new(message, sequence))
     }
 }
 
@@ -216,7 +213,6 @@ fn packet_timeout_time(
 static WINDOW: u16 = 2;
 
 static WINDOW_MIN: u16 = 2;
-static WINDOW_MIN_LIMIT_SLOW: u16 = 2;
 static WINDOW_MIN_LIMIT_MEDIUM: u16  = 5;
 static WINDOW_MIN_LIMIT_FAST: u16 = 16;
 
@@ -231,11 +227,6 @@ static RTT_FAST: f32 = 0.18;
 static RTT_MEDIUM: f32 = 0.75;
 static RTT_SLOW: f32 = 1.45;
 
-static WINDOW_FLEXIBILITY: u16 = 4;
-
-static SEQ_MAX: u32 = 0xFFFF;
-
-
 struct ChannelParams {
     pub max_tries: u16,
     pub fast_rate_rounds: u16,
@@ -243,7 +234,6 @@ struct ChannelParams {
     pub window: u16, 
     pub window_max: u16,
     pub window_min: u16,
-    pub window_flexibility: u16
 }
 
 
@@ -256,7 +246,6 @@ impl ChannelParams {
             window: if slow { 1 } else { WINDOW },
             window_max: if slow { 1 } else { WINDOW_MAX_SLOW },
             window_min: if slow { 1 } else { WINDOW_MIN },
-            window_flexibility: if slow { 1 } else { WINDOW_FLEXIBILITY }
         }
     }
 }
@@ -367,9 +356,9 @@ impl<M: Message> Inbound<M> {
     pub async fn receive(&mut self, raw: &[u8]) {
         log::trace!("channel({}) received {}B", self.link_id, raw.len());
 
-        let envelope = match Envelope::<M>::unpack(raw, self.link_id) {
+        let envelope = match Envelope::<M>::unpack(raw) {
             Ok(env) => env,
-            Err(e) => {
+            Err(_) => {
                 log::error!("channel({}): error unpacking message", self.link_id);
                 return;
             }
@@ -453,14 +442,6 @@ impl Outbound {
         self.link_id
     }
 
-    pub fn params(&self) -> Weak<Mutex<ChannelParams>> {
-        Arc::downgrade(&self.params)
-    }
-
-    pub fn outlet(&self) -> Weak<Mutex<Link>> {
-        Arc::downgrade(&self.outlet)
-    }
-
     async fn is_ready_to_send(&self) -> bool {
         if self.cancel.is_cancelled() {
             return false;
@@ -520,7 +501,7 @@ impl Outbound {
                 return;
             }
 
-            packet = entry.packet.clone();
+            packet = entry.packet;
         } else {
             log::error!(
                 "channel({}) internal error: timeout set for unknown message {}",
@@ -546,12 +527,12 @@ impl Outbound {
 
         tries += 1;
 
-        self.schedule_timeout(packet_hash, tries).await;
+        self.schedule_timeout(packet_hash).await;
 
         self.sent_messages.get_mut(&packet_hash).unwrap().tries = tries;
     }
 
-    async fn schedule_timeout(&self, packet_hash: Hash, tries: u16) {
+    async fn schedule_timeout(&self, packet_hash: Hash) {
         let sent_message = self.sent_messages.get(&packet_hash).unwrap();
 
         let rtt = *self.outlet.lock().await.rtt();
@@ -595,7 +576,7 @@ impl Outbound {
         {
             let raw = message_raw(message, Some(sequence));
 
-            if raw.len() > PACKET_MDU as usize {
+            if raw.len() > PACKET_MDU {
                 return Err(RnsError::ChannelMessageTooBig);
             }
 
@@ -606,7 +587,7 @@ impl Outbound {
 
             if sent {
                 let sent_message = SentMessage {
-                    packet: packet.clone(),
+                    packet,
                     delivered: delivery_tx,
                     tries: 1,
                 };
@@ -639,12 +620,8 @@ impl Outbound {
         self.sent_messages.get(&packet_hash).map(|s| s.delivered.subscribe())
     }
 
-    pub async fn mdu(&self) -> usize {
-        PACKET_MDU - 6
-    }
-
     pub async fn get_status(&self, packet_hash: &Hash) -> MessageStatus {
-        match self.sent_messages.get(&packet_hash) {
+        match self.sent_messages.get(packet_hash) {
             Some(sent_message) => {
                 let tries = sent_message.tries;
                 if tries == 0 {
@@ -654,7 +631,7 @@ impl Outbound {
                 }
             },
             None => {
-                if self.delivered.contains(&packet_hash) {
+                if self.delivered.contains(packet_hash) {
                     MessageStatus::Delivered
                 } else {
                     MessageStatus::Unknown
@@ -713,7 +690,6 @@ async fn spawn_watch_outbound(
 
 async fn spawn_receiver<M: Message>(
     mut rx: broadcast::Receiver<LinkPayload>,
-    out_link_events: broadcast::Receiver<LinkEventData>,
     our_link_id: LinkId,
     cancel: CancellationToken,
 ) -> broadcast::Sender<M> {
@@ -794,7 +770,7 @@ impl<M: Message> Channel<M> {
 
         let rx = link.lock().await.bind_to_channel()?;
 
-        let incoming = spawn_receiver(rx, out_link_events, link_id, cancel).await;
+        let incoming = spawn_receiver(rx, link_id, cancel).await;
 
         Ok(Self { link, outbound, incoming })
     }
@@ -817,7 +793,7 @@ impl<M: Message> Channel<M> {
 
     /// Query the status of a message.
     pub async fn message_status(&self, packet_hash: &Hash) -> MessageStatus {
-        self.outbound.lock().await.get_status(&packet_hash).await
+        self.outbound.lock().await.get_status(packet_hash).await
     }
 
     /// Returns `true` if the channel is currently ready to send another
