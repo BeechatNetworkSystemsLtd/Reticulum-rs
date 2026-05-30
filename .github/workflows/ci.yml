@@ -53,4 +53,4 @@ jobs:
       - name: verify Reticulum install
         run: python3 -c "import RNS; print(RNS.__file__)"
       - name: test
-        run: cargo test --workspace --all-targets --all-features
+        run: cargo test --workspace --all-targets --all-features -- --no-capture
