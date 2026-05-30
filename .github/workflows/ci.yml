@@ -39,6 +39,7 @@ jobs:
     needs: check
     env:
       RETICULUM_TEST_PYTHON_DIR: /opt/reticulum
+      PYTHONPATH: /opt/reticulum
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -50,8 +51,6 @@ jobs:
       - name: checkout Reticulum
         run: git clone https://github.com/markqvist/Reticulum.git "$RETICULUM_TEST_PYTHON_DIR"
       - name: verify Reticulum install
-        run: |
-          export PYTHONPATH="$RETICULUM_TEST_PYTHON_DIR"
-          python3 -c "import RNS; print(RNS.__file__)"
+        run: python3 -c "import RNS; print(RNS.__file__)"
       - name: test
         run: cargo test --workspace --all-targets --all-features
