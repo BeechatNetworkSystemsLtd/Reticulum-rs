@@ -1,5 +1,6 @@
 pub mod hdlc;
 
+#[cfg(feature = "grpc")]
 pub mod kaonic;
 pub mod tcp_client;
 pub mod tcp_server;
