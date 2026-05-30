@@ -127,9 +127,9 @@ impl PathRequests {
             data.safe_write(transport_id.as_slice());
         }
 
-        data.safe_write(tag.unwrap_or_else(|| create_random_tag()).as_slice());
+        data.safe_write(tag.unwrap_or_else(create_random_tag).as_slice());
 
-        let destination = self.controlled_destination.desc.address_hash.clone();
+        let destination = self.controlled_destination.desc.address_hash;
 
         Packet {
             header: Header {
@@ -142,7 +142,7 @@ impl PathRequests {
             },
             ifac: None,
             destination,
-            transport: self.transport_id.clone(),
+            transport: self.transport_id,
             context: PacketContext::None,
             data
         }

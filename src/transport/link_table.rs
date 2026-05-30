@@ -56,7 +56,7 @@ impl LinkTable {
 
         let entry = LinkEntry {
             proof_timeout: now + Duration::from_secs(600), // TODO
-            next_hop: next_hop,
+            next_hop,
             received_from,
             original_destination: destination,
             remaining_hops: 0,
@@ -67,7 +67,7 @@ impl LinkTable {
     }
 
     pub fn original_destination(&self, link_id: &LinkId) -> Option<AddressHash> {
-        self.0.get(&link_id).filter(|e| e.validated).map(|e| e.original_destination)
+        self.0.get(link_id).filter(|e| e.validated).map(|e| e.original_destination)
     }
 
     pub fn handle_keepalive(&self, packet: &Packet) -> Option<(Packet, AddressHash)> {
@@ -95,7 +95,7 @@ impl LinkTable {
                 // TODO remove active timed out links
             } else {
                 if entry.proof_timeout <= now {
-                    stale.push(link_id.clone());
+                    stale.push(*link_id);
                 }
             }
         }

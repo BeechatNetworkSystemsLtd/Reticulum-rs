@@ -176,7 +176,7 @@ async fn message_proof_over_remote_link() {
 
     transport_a.recv_announces().await.recv().await.unwrap();
     let link = transport_a.link(dest_c.lock().await.desc).await;
-    let link_id = link.lock().await.id().clone();
+    let link_id = *link.lock().await.id();
 
     time::sleep(Duration::from_secs(5)).await;
 

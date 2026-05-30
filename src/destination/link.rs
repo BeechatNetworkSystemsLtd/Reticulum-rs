@@ -63,25 +63,22 @@ impl LinkPayload {
         Self { buffer, len }
     }
 
-    pub fn new_from_vec(data: &Vec<u8>) -> Self {
-        let mut buffer = [0u8; PACKET_MDU];
-
-        for i in 0..min(buffer.len(), data.len()) {
-            buffer[i] = data[i];
-        }
-
-        Self {
-            buffer,
-            len: data.len(),
-        }
-    }
-
     pub fn len(&self) -> usize {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn as_slice(&self) -> &[u8] {
         &self.buffer[..self.len]
+    }
+}
+
+impl Default for LinkPayload {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -98,9 +95,9 @@ impl From<&Packet> for LinkId {
 
         AddressHash::new_from_hash(&Hash::new(
             Hash::generator()
-                .chain_update(&[packet.header.to_meta() & 0b00001111])
+                .chain_update([packet.header.to_meta() & 0b00001111])
                 .chain_update(packet.destination.as_slice())
-                .chain_update(&[packet.context as u8])
+                .chain_update([packet.context as u8])
                 .chain_update(hashable_data)
                 .finalize()
                 .into(),
@@ -108,6 +105,8 @@ impl From<&Packet> for LinkId {
     }
 }
 
+// TODO: consider boxing MessageReceived because Packet is >2000 bytes
+#[expect(clippy::large_enum_variant)]
 pub enum LinkHandleResult {
     None,
     Activated,
@@ -118,7 +117,8 @@ pub enum LinkHandleResult {
 #[derive(Clone)]
 pub enum LinkEvent {
     Activated,
-    Data(LinkPayload),
+    // LinkPayload >2000 bytes so we box it
+    Data(Box<LinkPayload>),
     Proof(Hash),
     Closed,
 }
@@ -247,7 +247,7 @@ impl Link {
         packet_data.safe_write(&signature.to_bytes()[..]);
         packet_data.safe_write(self.priv_identity.as_identity().public_key.as_bytes());
 
-        let packet = Packet {
+        Packet {
             header: Header {
                 packet_type: PacketType::Proof,
                 ..Default::default()
@@ -257,9 +257,7 @@ impl Link {
             transport: None,
             context: PacketContext::LinkRequestProof,
             data: packet_data,
-        };
-
-        packet
+        }
     }
 
     fn handle_data_packet(&mut self, packet: &Packet, out_link: bool) -> LinkHandleResult {
@@ -273,7 +271,7 @@ impl Link {
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
                     log::trace!("link({}): data {}B", self.id, plain_text.len());
                     self.request_time = Instant::now();
-                    self.post_event(LinkEvent::Data(LinkPayload::new_from_slice(plain_text)));
+                    self.post_event(LinkEvent::Data(Box::new(LinkPayload::new_from_slice(plain_text))));
 
                     let proof = if self.proves_messages {
                         Some(self.message_proof(packet.hash()))
@@ -287,18 +285,18 @@ impl Link {
                 }
             }
             PacketContext::KeepAlive => {
-                if packet.data.len() >= 1 && packet.data.as_slice()[0] == 0xFF {
+                if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFF {
                     self.request_time = Instant::now();
                     log::trace!("link({}): keep-alive request", self.id);
                     return LinkHandleResult::KeepAlive;
                 }
-                if packet.data.len() >= 1 && packet.data.as_slice()[0] == 0xFE {
+                if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFE {
                     log::trace!("link({}): keep-alive response", self.id);
                     self.request_time = Instant::now();
                     return LinkHandleResult::None;
                 }
             }
-            PacketContext::LinkRTT => if !out_link {
+            PacketContext::LinkRTT if !out_link => {
                 let mut buffer = [0u8; PACKET_MDU];
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
                     if let Ok(rtt) = rmp::decode::read_f32(&mut &plain_text[..]) {
@@ -321,7 +319,7 @@ impl Link {
                         Ok(dest_bytes) => {
                             let link_id = LinkId::new(dest_bytes);
                             if self.id == link_id {
-                                let _ = self.close();
+                                self.close();
                             }
                         }
                     }
@@ -341,9 +339,9 @@ impl Link {
         }
 
         match packet.header.packet_type {
-            PacketType::Data => return self.handle_data_packet(packet, out_link),
-            PacketType::Proof => return self.handle_proof_packet(packet),
-            _ => return LinkHandleResult::None,
+            PacketType::Data => self.handle_data_packet(packet, out_link),
+            PacketType::Proof => self.handle_proof_packet(packet),
+            _ => LinkHandleResult::None,
         }
     }
 
@@ -379,7 +377,7 @@ impl Link {
             }
         }
 
-        return LinkHandleResult::None;
+        LinkHandleResult::None
     }
 
     pub fn data_packet(&self, data: &[u8]) -> Result<Packet, RnsError> {
@@ -510,7 +508,7 @@ impl Link {
 
         self.derived_key = self
             .priv_identity
-            .derive_key(&self.peer_identity.public_key, Some(&self.id.as_slice()));
+            .derive_key(&self.peer_identity.public_key, Some(self.id.as_slice()));
     }
 
     fn post_event(&self, event: LinkEvent) {

@@ -28,7 +28,7 @@ async fn main() {
 
     let _ = transport.lock().await.iface_manager().lock().await.spawn(
         KaonicGrpc::new(
-            format!("http://{}", &args[2]),
+            format!("http://{}", args[2]),
             RadioConfig::new_for_module(RadioModule::RadioA),
             None,
         ),
