@@ -4,6 +4,7 @@ use crate::hash::AddressHash;
 
 use super::link::LinkId;
 
+#[derive(Default)]
 pub struct LinkMap {
     map: HashMap<AddressHash, LinkId>,
 }

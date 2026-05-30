@@ -2,7 +2,7 @@ use alloc::collections::{BTreeSet, BTreeMap};
 
 use rand_core::OsRng;
 
-use tokio::time::{Duration, Instant};
+use tokio::time::Instant;
 
 use crate::destination::DestinationName;
 use crate::destination::PlainInputDestination;
@@ -127,9 +127,9 @@ impl PathRequests {
             data.safe_write(transport_id.as_slice());
         }
 
-        data.safe_write(tag.unwrap_or_else(|| create_random_tag()).as_slice());
+        data.safe_write(tag.unwrap_or_else(create_random_tag).as_slice());
 
-        let destination = self.controlled_destination.desc.address_hash.clone();
+        let destination = self.controlled_destination.desc.address_hash;
 
         Packet {
             header: Header {
@@ -142,7 +142,7 @@ impl PathRequests {
             },
             ifac: None,
             destination,
-            transport: self.transport_id.clone(),
+            transport: self.transport_id,
             context: PacketContext::None,
             data
         }
@@ -151,6 +151,7 @@ impl PathRequests {
     fn allow_recursive(
         &mut self,
         destination: &AddressHash,
+        #[expect(unused)]
         on_iface: Option<AddressHash>,
     ) -> bool {
         let now = Instant::now();
@@ -167,6 +168,7 @@ impl PathRequests {
         }
 
         // TODO implement announce queue and announce cap, reject requests based on that
+        // This will need the currently unused argument.
 
         true
     }

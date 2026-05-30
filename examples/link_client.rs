@@ -1,7 +1,6 @@
 use rand_core::OsRng;
 
-use reticulum::destination::link::LinkEvent;
-use reticulum::destination::{DestinationAnnounce, DestinationName};
+use reticulum::destination::DestinationName;
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::tcp_client::TcpClient;
 use reticulum::transport::{Transport, TransportConfig};

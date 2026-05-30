@@ -5,6 +5,14 @@ fn main() -> Result<()> {
 
     // Generate proto files for Kaonic
     tonic_build::configure()
+        .server_mod_attribute(
+            ".",
+            "#[allow(clippy::match_single_binding)]",
+        )
+        .server_mod_attribute(
+            ".",
+            "#[allow(clippy::mixed_attributes_style)]",
+        )
         .type_attribute(
             "ConfigurationRequest",
             "#[derive(serde::Deserialize, serde::Serialize)]",
