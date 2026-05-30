@@ -66,18 +66,21 @@ cargo run --example tcp_client
 cargo run --example kaonic_client
 ```
 
+### Python integration tests
+
+Integration tests against the Python implementation can be run with the `python-tests` feature and
+setting the `RETICULUM_TEST_PYTHON_DIR` environment variable to the location of the checked out
+Python Reticulum source tree. Example:
+```
+RETICULUM_TEST_PYTHON_DIR=../Reticulum cargo test python --features="python-tests"
+```
+
 ## Use Cases
 
 * 🛰 Tactical radio mesh with Kaonic
 * 🕵️‍♂️ Covert communication using serial or sub-GHz transceivers
 * 🚁 UAV-to-ground resilient C2 and telemetry
 * 🧱 Decentralized infrastructure-free messaging
-
-## Integration tests
-
-Integration tests that run against the Python RNS reference implementation (`tests/python.rs`)
-require the Reticulum source to be checked out and the path set in the `RETICULUM_TEST_PYTHON_DIR`
-environment variable.
 
 ## License
 
