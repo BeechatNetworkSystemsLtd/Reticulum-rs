@@ -73,6 +73,12 @@ cargo run --example kaonic_client
 * 🚁 UAV-to-ground resilient C2 and telemetry
 * 🧱 Decentralized infrastructure-free messaging
 
+## Integration tests
+
+Integration tests that run against the Python RNS reference implementation (`tests/python.rs`)
+require the Reticulum source to be checked out and the path set in the `RETICULUM_TEST_PYTHON_DIR`
+environment variable.
+
 ## License
 
 This project is licensed under the MIT license.
