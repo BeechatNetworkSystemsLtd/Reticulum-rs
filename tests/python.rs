@@ -99,7 +99,7 @@ async fn python_announce() {
         }
         time::sleep(time::Duration::from_secs(1)).await;
     }
-    handle.await.expect("failed to receive announce");
+    handle.await.expect("receive announce task failure");
     let _ = child.kill();
     match tokio::time::timeout(
         time::Duration::from_secs(5),
