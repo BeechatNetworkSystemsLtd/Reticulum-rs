@@ -54,6 +54,7 @@ env_logger = "0.10"
 default = ["alloc"]
 alloc = []
 fernet-aes128 = []
+python-tests = []
 
 [build-dependencies]
 tonic-build = "0.13.0"

@@ -1,3 +1,5 @@
+#![cfg(feature = "python-tests")]
+
 use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Once};
 
