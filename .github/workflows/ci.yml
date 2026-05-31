@@ -6,6 +6,7 @@ on:
     branches: [main, ci]
   pull_request:
     branches: [main, ci]
+  workflow_dispatch:
 
 env:
   RUSTFLAGS: "-D warnings"
@@ -36,13 +37,20 @@ jobs:
     runs-on: ubuntu-latest
     container: rust:1.95
     needs: check
+    env:
+      RETICULUM_TEST_PYTHON_DIR: /opt/Reticulum
+      PYTHONPATH: /opt/Reticulum
     steps:
       - name: checkout
         uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
-      - name: install build dependencies
-        run: apt-get update && apt-get install -y protobuf-compiler
+      - name: install dependencies
+        run: apt-get update && apt-get install -y git protobuf-compiler python3
+      - name: checkout Reticulum
+        run: git clone https://github.com/markqvist/Reticulum.git "$RETICULUM_TEST_PYTHON_DIR"
+      - name: verify Reticulum install
+        run: python3 -c "import RNS; print(RNS.__file__)"
       - name: test
         run: cargo test --workspace --all-targets --all-features

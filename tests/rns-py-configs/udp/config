@@ -1,0 +1,120 @@
+# This is the default Reticulum config file.
+# You should probably edit it to include any additional,
+# interfaces and settings you might need.
+
+# Only the most basic options are included in this default
+# configuration. To see a more verbose, and much longer,
+# configuration example, you can run the command:
+# rnsd --exampleconfig
+
+
+[reticulum]
+  discover_interfaces = No
+  
+  # If you enable Transport, your system will route traffic
+  # for other peers, pass announces and serve path requests.
+  # This should only be done for systems that are suited to
+  # act as transport nodes, ie. if they are stationary and
+  # always-on. This directive is optional and can be removed
+  # for brevity.
+  
+  enable_transport = True
+  
+  
+  # By default, the first program to launch the Reticulum
+  # Network Stack will create a shared instance, that other
+  # programs can communicate with. Only the shared instance
+  # opens all the configured interfaces directly, and other
+  # local programs communicate with the shared instance over
+  # a local socket. This is completely transparent to the
+  # user, and should generally be turned on. This directive
+  # is optional and can be removed for brevity.
+  
+  share_instance = Yes
+  
+  
+  # If you want to run multiple *different* shared instances
+  # on the same system, you will need to specify different
+  # instance names for each. On platforms supporting domain
+  # sockets, this can be done with the instance_name option:
+  
+  instance_name = default
+
+# Some platforms don't support domain sockets, and if that
+# is the case, you can isolate different instances by
+# specifying a unique set of ports for each:
+
+# shared_instance_port = 37428
+# instance_control_port = 37429
+
+
+# If you want to explicitly use TCP for shared instance
+# communication, instead of domain sockets, this is also
+# possible, by using the following option:
+
+# shared_instance_type = tcp
+
+
+# You can configure Reticulum to panic and forcibly close
+# if an unrecoverable interface error occurs, such as the
+# hardware device for an interface disappearing. This is
+# an optional directive, and can be left out for brevity.
+# This behaviour is disabled by default.
+
+# panic_on_interface_error = No
+
+
+[logging]
+  # Valid log levels are 0 through 7:
+  #   0: Log only critical information
+  #   1: Log errors and lower log levels
+  #   2: Log warnings and lower log levels
+  #   3: Log notices and lower log levels
+  #   4: Log info and lower (this is the default)
+  #   5: Verbose logging
+  #   6: Debug logging
+  #   7: Extreme logging
+  
+  loglevel = 4
+
+
+# The interfaces section defines the physical and virtual
+# interfaces Reticulum will use to communicate on. This
+# section will contain examples for a variety of interface
+# types. You can modify these or use them as a basis for
+# your own config, or simply remove the unused ones.
+
+[interfaces]
+  
+  # This interface enables communication with other
+  # link-local Reticulum nodes over UDP. It does not
+  # need any functional IP infrastructure like routers
+  # or DHCP servers, but will require that at least link-
+  # local IPv6 is enabled in your operating system, which
+  # should be enabled by default in almost any OS. See
+  # the Reticulum Manual for more configuration options.
+  
+  [[Default Interface]]
+    type = AutoInterface
+    enabled = No
+
+# [[RNS TCP Node Germany 001]]
+#   type = TCPClientInterface
+#   enabled = yes
+#   target_host = 202.61.243.41
+#   target_port = 4965
+
+# [[Mynode]]
+#   type = TCPServerInterface
+#   enabled = yes
+#   listen_ip = 127.0.0.1
+#   listen_port = 4243
+
+[[UDP Interface]]
+  type = UDPInterface
+  enabled = yes
+  listen_ip = 0.0.0.0
+  listen_port = 4243
+  #forward_ip = 255.255.255.255
+  forward_ip = 127.0.0.1
+  forward_port = 4242
