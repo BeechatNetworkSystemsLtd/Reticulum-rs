@@ -1,5 +1,4 @@
-mod config;
-
+use clap::Parser;
 use config::{Config, InterfaceConfig};
 use rand_core::OsRng;
 use reticulum::identity::PrivateIdentity;
@@ -8,21 +7,17 @@ use reticulum::iface::tcp_server::TcpServer;
 use reticulum::iface::udp::UdpInterface;
 use reticulum::transport::{Transport, TransportConfig};
 use tokio::signal;
-use std::env;
 use std::path::PathBuf;
 
+mod config;
 
-fn parse_config_path() -> Option<PathBuf> {
-    env::args()
-        .fold((None, false), |(result, take_next), arg| match (&result, take_next, arg.as_str()) {
-            (Some(_), _, _) => (result, false),
-            (None, true, _) => (Some(PathBuf::from(arg)), false),
-            (None, false, "-c" | "--config") => (None, true),
-            (None, false, s) if s.starts_with("--config=") => (Some(PathBuf::from(&s[9..])), false),
-            _ => (None, false),
-        })
-        .0
+#[derive(Parser)]
+#[clap(name = "Reticulum-rs daemon", version)]
+pub struct Command {
+  #[arg(short, long, help = "Reticulum config path")]
+  pub config: Option<PathBuf>
 }
+
 
 struct Daemon {
     transport: Transport,
@@ -39,15 +34,12 @@ impl Daemon {
         log::info!("Configuration loaded from: {}", config_path.display());
 
         let identity = PrivateIdentity::new_from_rand(OsRng);
-        let transport = Transport::new({
-            let mut cfg = TransportConfig::new(
+        let transport = TransportConfig::new(
                 "rns-daemon",
                 &identity,
-                config.reticulum.enable_transport,
-            );
-            cfg.set_retransmit(config.reticulum.enable_transport);
-            cfg
-        });
+                config.reticulum.enable_transport)
+            .set_retransmit(config.reticulum.enable_transport)
+            .build();
 
         let iface_manager = transport.iface_manager();
 
@@ -139,8 +131,8 @@ impl Daemon {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config_path = parse_config_path();
-    let (config, config_path) = Config::load(config_path.as_deref())?;
+    let cmd = Command::parse();
+    let (config, config_path) = Config::load(cmd.config.as_deref())?;
 
     let daemon = Daemon::new(config, config_path).await?;
     daemon.run().await
