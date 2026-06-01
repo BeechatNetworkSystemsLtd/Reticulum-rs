@@ -1,39 +1,35 @@
-use std::{collections::HashMap, time::Instant};
+use std::collections::HashMap;
 
 use crate::{
-    hash::{AddressHash, Hash},
+    hash::AddressHash,
     packet::{DestinationType, Header, HeaderType, IfacFlag, Packet, PacketType},
 };
 
 pub struct PathEntry {
-    pub timestamp: Instant,
     pub received_from: AddressHash,
     pub hops: u8,
     pub iface: AddressHash,
-    pub packet_hash: Hash,
 }
 
 pub struct PathTable {
     map: HashMap<AddressHash, PathEntry>,
+    reroute_eager: bool,
 }
 
 impl PathTable {
-    pub fn new() -> Self {
+    pub fn new(reroute_eager: bool) -> Self {
         Self {
             map: HashMap::new(),
+            reroute_eager,
         }
+    }
+
+    pub fn get(&self, destination: &AddressHash) -> Option<&PathEntry> {
+        self.map.get(destination)
     }
 
     pub fn next_hop_full(&self, destination: &AddressHash) -> Option<(AddressHash, AddressHash)> {
         self.map.get(destination).map(|entry| (entry.received_from, entry.iface))
-    }
-
-    pub fn next_hop_iface(&self, destination: &AddressHash) -> Option<AddressHash> {
-        self.map.get(destination).map(|entry| entry.iface)
-    }
-
-    pub fn next_hop(&self, destination: &AddressHash) -> Option<AddressHash> {
-        self.map.get(destination).map(|entry| entry.received_from)
     }
 
     pub fn handle_announce(
@@ -45,18 +41,19 @@ impl PathTable {
         let hops = announce.header.hops + 1;
 
         if let Some(existing_entry) = self.map.get(&announce.destination) {
-            if hops >= existing_entry.hops {
+            if hops > existing_entry.hops {
+                return;
+            }
+            if !self.reroute_eager && hops == existing_entry.hops {
                 return;
             }
         }
 
         let received_from = transport_id.unwrap_or(announce.destination);
         let new_entry = PathEntry {
-            timestamp: Instant::now(),
             received_from,
             hops,
             iface,
-            packet_hash: announce.hash(),
         };
 
         self.map.insert(announce.destination, new_entry);
@@ -84,12 +81,10 @@ impl PathTable {
         (
             Packet {
                 header: Header {
-                    ifac_flag: IfacFlag::Authenticated,
+                    ifac_flag: IfacFlag::Open,
                     header_type: HeaderType::Type2,
-                    propagation_type: original_packet.header.propagation_type,
-                    destination_type: original_packet.header.destination_type,
-                    packet_type: original_packet.header.packet_type,
                     hops: original_packet.header.hops + 1,
+                    .. original_packet.header
                 },
                 ifac: None,
                 destination: original_packet.destination,
@@ -99,12 +94,6 @@ impl PathTable {
             },
             Some(entry.iface),
         )
-    }
-
-    pub fn refresh(&mut self, destination: &AddressHash) {
-        if let Some(entry) = self.map.get_mut(destination) {
-            entry.timestamp = Instant::now();
-        }
     }
 
     pub fn handle_packet(&mut self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
@@ -130,12 +119,8 @@ impl PathTable {
         (
             Packet {
                 header: Header {
-                    ifac_flag: IfacFlag::Authenticated,
                     header_type: HeaderType::Type2,
-                    propagation_type: original_packet.header.propagation_type,
-                    destination_type: original_packet.header.destination_type,
-                    packet_type: original_packet.header.packet_type,
-                    hops: original_packet.header.hops,
+                    .. original_packet.header
                 },
                 ifac: original_packet.ifac,
                 destination: original_packet.destination,

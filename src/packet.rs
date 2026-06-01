@@ -105,7 +105,7 @@ impl From<u8> for PacketType {
 pub enum PacketContext {
     None = 0x00,                    // Generic data packet
     Resource = 0x01,                // Packet is part of a resource
-    ResourceAdvrtisement = 0x02,    // Packet is a resource advertisement
+    ResourceAdvertisement = 0x02,    // Packet is a resource advertisement
     ResourceRequest = 0x03,         // Packet is a resource part request
     ResourceHashUpdate = 0x04,      // Packet is a resource hashmap update
     ResourceProof = 0x05,           // Packet is a resource proof
@@ -130,7 +130,7 @@ impl From<u8> for PacketContext {
     fn from(value: u8) -> Self {
         match value {
             0x01 => PacketContext::Resource,
-            0x02 => PacketContext::ResourceAdvrtisement,
+            0x02 => PacketContext::ResourceAdvertisement,
             0x03 => PacketContext::ResourceRequest,
             0x04 => PacketContext::ResourceHashUpdate,
             0x05 => PacketContext::ResourceProof,
@@ -179,12 +179,11 @@ impl Default for Header {
 
 impl Header {
     pub fn to_meta(&self) -> u8 {
-        let meta = (self.ifac_flag as u8) << 7
+        (self.ifac_flag as u8) << 7
             | (self.header_type as u8) << 6
             | (self.propagation_type as u8) << 4
             | (self.destination_type as u8) << 2
-            | (self.packet_type as u8) << 0;
-        meta
+            | (self.packet_type as u8) //<< 0
     }
 
     pub fn from_meta(meta: u8) -> Self {
@@ -193,7 +192,7 @@ impl Header {
             header_type: HeaderType::from(meta >> 6),
             propagation_type: PropagationType::from(meta >> 4),
             destination_type: DestinationType::from(meta >> 2),
-            packet_type: PacketType::from(meta >> 0),
+            packet_type: PacketType::from(meta /*>> 0*/),
             hops: 0,
         }
     }
@@ -251,9 +250,9 @@ impl Packet {
     pub fn hash(&self) -> Hash {
         Hash::new(
             Hash::generator()
-                .chain_update(&[self.header.to_meta() & 0b00001111])
+                .chain_update([self.header.to_meta() & 0b00001111])
                 .chain_update(self.destination.as_slice())
-                .chain_update(&[self.context as u8])
+                .chain_update([self.context as u8])
                 .chain_update(self.data.as_slice())
                 .finalize()
                 .into(),

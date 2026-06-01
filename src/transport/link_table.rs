@@ -6,13 +6,10 @@ use crate::hash::AddressHash;
 use crate::packet::{Header, HeaderType, IfacFlag, Packet};
 
 pub struct LinkEntry {
-    pub timestamp: Instant,
     pub proof_timeout: Instant,
     pub next_hop: AddressHash,
-    pub next_hop_iface: AddressHash,
     pub received_from: AddressHash,
     pub original_destination: AddressHash,
-    pub taken_hops: u8,
     pub remaining_hops: u8,
     pub validated: bool,
 }
@@ -20,12 +17,10 @@ pub struct LinkEntry {
 fn send_backwards(packet: &Packet, entry: &LinkEntry) -> (Packet, AddressHash) {
     let propagated = Packet {
         header: Header {
-            ifac_flag: IfacFlag::Authenticated,
+            ifac_flag: IfacFlag::Open,
             header_type: HeaderType::Type2,
-            propagation_type: packet.header.propagation_type,
-            destination_type: packet.header.destination_type,
-            packet_type: packet.header.packet_type,
             hops: packet.header.hops + 1,
+            .. packet.header
         },
         ifac: None,
         destination: packet.destination,
@@ -50,7 +45,6 @@ impl LinkTable {
         destination: AddressHash,
         received_from: AddressHash,
         next_hop: AddressHash,
-        iface: AddressHash,
     ) {
         let link_id = LinkId::from(link_request);
 
@@ -59,16 +53,12 @@ impl LinkTable {
         }
 
         let now = Instant::now();
-        let taken_hops = link_request.header.hops + 1;
 
         let entry = LinkEntry {
-            timestamp: now,
             proof_timeout: now + Duration::from_secs(600), // TODO
-            next_hop: next_hop,
-            next_hop_iface: iface,
+            next_hop,
             received_from,
             original_destination: destination,
-            taken_hops,
             remaining_hops: 0,
             validated: false
         };
@@ -77,7 +67,7 @@ impl LinkTable {
     }
 
     pub fn original_destination(&self, link_id: &LinkId) -> Option<AddressHash> {
-        self.0.get(&link_id).filter(|e| e.validated).map(|e| e.original_destination)
+        self.0.get(link_id).filter(|e| e.validated).map(|e| e.original_destination)
     }
 
     pub fn handle_keepalive(&self, packet: &Packet) -> Option<(Packet, AddressHash)> {
@@ -105,7 +95,7 @@ impl LinkTable {
                 // TODO remove active timed out links
             } else {
                 if entry.proof_timeout <= now {
-                    stale.push(link_id.clone());
+                    stale.push(*link_id);
                 }
             }
         }

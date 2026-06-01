@@ -73,13 +73,13 @@ impl Identity {
     pub fn new_from_slices(public_key: &[u8], verifying_key: &[u8]) -> Self {
         let public_key = {
             let mut key_data = [0u8; PUBLIC_KEY_LENGTH];
-            key_data.copy_from_slice(&public_key);
+            key_data.copy_from_slice(public_key);
             PublicKey::from(key_data)
         };
 
         let verifying_key = {
             let mut key_data = [0u8; PUBLIC_KEY_LENGTH];
-            key_data.copy_from_slice(&verifying_key);
+            key_data.copy_from_slice(verifying_key);
             VerifyingKey::from_bytes(&key_data).unwrap_or_default()
         };
 
@@ -211,7 +211,7 @@ impl EncryptIdentity for EmptyIdentity {
         }
 
         let result = &mut out_buf[..text.len()];
-        result.copy_from_slice(&text);
+        result.copy_from_slice(text);
         Ok(result)
     }
 }
@@ -229,7 +229,7 @@ impl DecryptIdentity for EmptyIdentity {
         }
 
         let result = &mut out_buf[..data.len()];
-        result.copy_from_slice(&data);
+        result.copy_from_slice(data);
         Ok(result)
     }
 }
@@ -384,7 +384,7 @@ impl DecryptIdentity for PrivateIdentity {
             rng,
         );
 
-        let token = Token::from(&data[..]);
+        let token = Token::from(data);
 
         let token = fernet.verify(token)?;
 

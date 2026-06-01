@@ -1,34 +1,49 @@
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
 
 use crate::hash::AddressHash;
+use crate::iface::{TxMessage, TxMessageType};
 use crate::packet::{
     DestinationType, Header, HeaderType, IfacFlag,
     Packet, PacketContext, PacketType, PropagationType
 };
 
+#[derive(Clone)]
 pub struct AnnounceEntry {
     pub packet: Packet,
-    pub timestamp: Instant,
     pub timeout: Instant,
     pub received_from: AddressHash,
     pub retries: u8,
     pub hops: u8,
+    pub response_to_iface: Option<AddressHash>,
 }
 
 impl AnnounceEntry {
     pub fn retransmit(
         &mut self,
         transport_id: &AddressHash,
-    ) -> Option<(AddressHash, Packet)> {
+    ) -> Option<TxMessage> {
         if self.retries == 0 || Instant::now() >= self.timeout {
             return None;
         }
 
         self.retries = self.retries.saturating_sub(1);
 
-        let new_packet = Packet {
+        Some(self.always_retransmit(transport_id))
+    }
+
+    pub fn always_retransmit(
+        &self,
+        transport_id: &AddressHash,
+    ) -> TxMessage {
+        let context = if self.response_to_iface.is_some() {
+            PacketContext::PathResponse
+        } else {
+            PacketContext::None
+        };
+
+        let packet = Packet {
             header: Header {
                 ifac_flag: IfacFlag::Open,
                 header_type: HeaderType::Type2,
@@ -38,26 +53,71 @@ impl AnnounceEntry {
                 hops: self.hops,
             },
             ifac: None,
-            destination: self.packet.destination, // TODO
-            transport: Some(transport_id.clone()),
-            context: PacketContext::None,
+            destination: self.packet.destination,
+            transport: Some(*transport_id),
+            context,
             data: self.packet.data,
         };
 
-        Some((self.received_from, new_packet))
+        let tx_type = match self.response_to_iface {
+            Some(iface) => TxMessageType::Direct(iface),
+            None => TxMessageType::Broadcast(Some(self.received_from)),
+        };
+
+        TxMessage { tx_type, packet }
+
+    }
+}
+
+struct AnnounceCache {
+    newer: Option<BTreeMap<AddressHash, AnnounceEntry>>,
+    older: Option<BTreeMap<AddressHash, AnnounceEntry>>,
+    capacity: usize
+}
+
+impl AnnounceCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            newer: Some(BTreeMap::new()),
+            older: None,
+            capacity
+        }
+    }
+
+    fn insert(&mut self, destination: AddressHash, entry: AnnounceEntry) {
+        if self.newer.as_ref().unwrap().len() >= self.capacity {
+            self.older = Some(self.newer.take().unwrap());
+            self.newer = Some(BTreeMap::new());
+        }
+
+        self.newer.as_mut().unwrap().insert(destination, entry);
+    }
+
+    fn get(&self, destination: &AddressHash) -> Option<AnnounceEntry> {
+        if let Some(entry) = self.newer.as_ref().unwrap().get(destination) {
+            return Some(AnnounceEntry::clone(entry));
+        }
+
+        if let Some(ref older) = self.older {
+            return older.get(destination).cloned();
+        }
+
+        None
     }
 }
 
 pub struct AnnounceTable {
-    map: HashMap<AddressHash, AnnounceEntry>,
-    stale: Vec<AddressHash>,
+    map: BTreeMap<AddressHash, AnnounceEntry>,
+    responses: BTreeMap<AddressHash, AnnounceEntry>,
+    cache: AnnounceCache,
 }
 
 impl AnnounceTable {
     pub fn new() -> Self {
         Self {
-            map: HashMap::new(),
-            stale: Vec::new(),
+            map: BTreeMap::new(),
+            responses: BTreeMap::new(),
+            cache: AnnounceCache::new(100000), // TODO make capacity configurable
         }
     }
 
@@ -67,71 +127,139 @@ impl AnnounceTable {
         destination: AddressHash,
         received_from: AddressHash
     ) {
-        if self.map.contains_key(&destination) {
-            return;
-        }
-
         let now = Instant::now();
         let hops = announce.header.hops + 1;
 
         let entry = AnnounceEntry {
-            packet: announce.clone(),
-            timestamp: now,
-            timeout: now + Duration::from_secs(60), // TODO
+            packet: *announce,
+            timeout: now + Duration::from_secs(60),
             received_from,
-            retries: 20, // TODO
+            retries: 5, // TODO: make this configurable too?
             hops,
+            response_to_iface: None,
         };
 
         self.map.insert(destination, entry);
     }
 
-    pub fn clear(&mut self) {
-        self.map.clear();
-        self.stale.clear();
+    fn do_add_response(
+        &mut self,
+        mut response: AnnounceEntry,
+        destination: AddressHash,
+        to_iface: AddressHash,
+        hops: u8,
+    ) {
+        response.retries = 1;
+        response.hops = hops;
+        response.timeout = Instant::now() + Duration::from_secs(60);
+        response.response_to_iface = Some(to_iface);
+
+        self.responses.insert(destination, response);
     }
 
-    pub fn stale(&mut self, destination: &AddressHash) {
-        self.map.remove(destination);
+    pub fn add_response(
+        &mut self,
+        destination: AddressHash,
+        to_iface: AddressHash,
+        hops: u8
+    ) -> bool {
+        if let Some(entry) = self.map.get(&destination) {
+            self.do_add_response(entry.clone(), destination, to_iface, hops);
+            return true;
+        }
+
+        if let Some(entry) = self.cache.get(&destination) {
+            self.do_add_response(entry.clone(), destination, to_iface, hops);
+            return true;
+        }
+
+        false
     }
 
     pub fn new_packet(
         &mut self,
         dest_hash: &AddressHash,
         transport_id: &AddressHash,
-    ) -> Option<(AddressHash, Packet)> {
+    ) -> Option<TxMessage> {
         // temporary hack
-        self.map.get_mut(dest_hash).map_or(None, |e| e.retransmit(transport_id))
+        self.map.get_mut(dest_hash).and_then(|e| e.retransmit(transport_id))
     }
 
-
-    pub fn to_retransmit(
+    pub fn tx_to_retransmit(
         &mut self,
         transport_id: &AddressHash,
-    ) -> Vec<(AddressHash, Packet)> {
-        let mut packets = vec![];
+    ) -> Vec<TxMessage> {
+        let mut messages = vec![];
         let mut completed = vec![];
 
         for (destination, ref mut entry) in &mut self.map {
-            if let Some(pair) = entry.retransmit(transport_id) {
-                packets.push(pair);
+            if self.responses.contains_key(destination) {
+                continue;
+            }
+
+            if let Some(message) = entry.retransmit(transport_id) {
+                messages.push(message);
             } else {
-                completed.push(destination.clone());
+                completed.push(*destination);
             }
         }
 
-        if !(packets.is_empty() && completed.is_empty()) {
+        let n_announces = messages.len();
+
+        for entry in self.responses.values_mut() {
+            if let Some(message) = entry.retransmit(transport_id) {
+                messages.push(message);
+            }
+        }
+
+        let n_responses = messages.len() - n_announces;
+
+        self.responses.clear(); // every response is only retransmitted once
+
+        if !(messages.is_empty() && completed.is_empty()) {
             log::trace!(
-                "Announce cache: {} to retransmit, {} dropped",
-                packets.len(),
+                "Announce cache: {} retransmitted, {} path responses, {} dropped",
+                n_announces,
+                n_responses,
                 completed.len(),
             );
         }
 
         for destination in completed {
-            self.map.remove(&destination);
+            if let Some(announce) = self.map.remove(&destination) {
+                self.cache.insert(destination, announce);
+            }
         }
 
-        packets
+        messages
+    }
+
+    pub fn tx_to_retransmit_old(
+        &mut self,
+        transport_id: &AddressHash,
+    ) -> Vec<TxMessage> {
+        let mut messages = vec![];
+
+        if let Some(ref cache) = self.cache.newer {
+            for (destination, entry) in cache {
+                if self.responses.contains_key(destination) {
+                    continue;
+                }
+
+                messages.push(entry.always_retransmit(transport_id));
+            }
+        }
+
+        if let Some(ref cache) = self.cache.older {
+            for (destination, entry) in cache {
+                if self.responses.contains_key(destination) {
+                    continue;
+                }
+
+                messages.push(entry.always_retransmit(transport_id));
+            }
+        }
+
+        messages
     }
 }

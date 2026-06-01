@@ -222,7 +222,7 @@ pub enum DestinationHandleStatus {
 impl Destination<PrivateIdentity, Input, Single> {
     pub fn new(identity: PrivateIdentity, name: DestinationName) -> Self {
         let address_hash = create_address_hash(&identity, &name);
-        let pub_identity = identity.as_identity().clone();
+        let pub_identity = *identity.as_identity();
 
         Self {
             direction: PhantomData,
@@ -244,7 +244,8 @@ impl Destination<PrivateIdentity, Input, Single> {
         let mut packet_data = PacketDataBuffer::new();
 
         let rand_hash = Hash::new_from_rand(rng);
-        let rand_hash = &rand_hash.as_slice()[..RAND_HASH_LENGTH];
+        let timestamp = std::time::UNIX_EPOCH.elapsed().unwrap().as_secs().to_be_bytes();
+        let rand_hash = [&rand_hash.as_slice()[..RAND_HASH_LENGTH / 2], &timestamp[3..]].concat();
 
         let pub_key = self.identity.as_identity().public_key_bytes();
         let verifying_key = self.identity.as_identity().verifying_key_bytes();
@@ -254,7 +255,7 @@ impl Destination<PrivateIdentity, Input, Single> {
             .chain_safe_write(pub_key)
             .chain_safe_write(verifying_key)
             .chain_safe_write(self.desc.name.as_name_hash_slice())
-            .chain_safe_write(rand_hash);
+            .chain_safe_write(&rand_hash);
 
         if let Some(data) = app_data {
             packet_data.write(data)?;
@@ -268,7 +269,7 @@ impl Destination<PrivateIdentity, Input, Single> {
             .chain_safe_write(pub_key)
             .chain_safe_write(verifying_key)
             .chain_safe_write(self.desc.name.as_name_hash_slice())
-            .chain_safe_write(rand_hash)
+            .chain_safe_write(&rand_hash)
             .chain_safe_write(&signature.to_bytes());
 
         if let Some(data) = app_data {
@@ -292,17 +293,25 @@ impl Destination<PrivateIdentity, Input, Single> {
         })
     }
 
+    pub fn path_response<R: CryptoRngCore + Copy>(
+        &self,
+        rng: R,
+        app_data: Option<&[u8]>,
+    ) -> Result<Packet, RnsError> {
+        let mut announce = self.announce(rng, app_data)?;
+        announce.context = PacketContext::PathResponse;
+
+        Ok(announce)
+    }
+
     pub fn handle_packet(&mut self, packet: &Packet) -> DestinationHandleStatus {
         if self.desc.address_hash != packet.destination {
             return DestinationHandleStatus::None;
         }
 
-        match packet.header.packet_type {
-            PacketType::LinkRequest => {
-                // TODO: check prove strategy
-                return DestinationHandleStatus::LinkProof;
-            }
-            _ => {}
+        if packet.header.packet_type == PacketType::LinkRequest {
+            // TODO: check prove strategy
+            return DestinationHandleStatus::LinkProof;
         }
 
         DestinationHandleStatus::None

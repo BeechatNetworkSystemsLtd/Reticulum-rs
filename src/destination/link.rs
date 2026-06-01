@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ed25519_dalek::{Signature, SigningKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
+use ed25519_dalek::{Signature, SigningKey, Verifier, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};
 use rand_core::OsRng;
 use sha2::Digest;
 use x25519_dalek::StaticSecret;
@@ -11,7 +11,7 @@ use x25519_dalek::StaticSecret;
 use crate::{
     buffer::OutputBuffer,
     error::RnsError,
-    hash::{AddressHash, Hash, ADDRESS_HASH_SIZE},
+    hash::{AddressHash, Hash, ADDRESS_HASH_SIZE, HASH_SIZE},
     identity::{DecryptIdentity, DerivedKey, EncryptIdentity, Identity, PrivateIdentity},
     packet::{
         DestinationType, Header, Packet, PacketContext, PacketDataBuffer, PacketType, PACKET_MDU,
@@ -63,25 +63,22 @@ impl LinkPayload {
         Self { buffer, len }
     }
 
-    pub fn new_from_vec(data: &Vec<u8>) -> Self {
-        let mut buffer = [0u8; PACKET_MDU];
-
-        for i in 0..min(buffer.len(), data.len()) {
-            buffer[i] = data[i];
-        }
-
-        Self {
-            buffer,
-            len: data.len(),
-        }
-    }
-
     pub fn len(&self) -> usize {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn as_slice(&self) -> &[u8] {
         &self.buffer[..self.len]
+    }
+}
+
+impl Default for LinkPayload {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -98,9 +95,9 @@ impl From<&Packet> for LinkId {
 
         AddressHash::new_from_hash(&Hash::new(
             Hash::generator()
-                .chain_update(&[packet.header.to_meta() & 0b00001111])
+                .chain_update([packet.header.to_meta() & 0b00001111])
                 .chain_update(packet.destination.as_slice())
-                .chain_update(&[packet.context as u8])
+                .chain_update([packet.context as u8])
                 .chain_update(hashable_data)
                 .finalize()
                 .into(),
@@ -108,16 +105,21 @@ impl From<&Packet> for LinkId {
     }
 }
 
+// TODO: consider boxing MessageReceived because Packet is >2000 bytes
+#[expect(clippy::large_enum_variant)]
 pub enum LinkHandleResult {
     None,
     Activated,
     KeepAlive,
+    MessageReceived(Option<Packet>),
 }
 
 #[derive(Clone)]
 pub enum LinkEvent {
     Activated,
-    Data(LinkPayload),
+    // LinkPayload >2000 bytes so we box it
+    Data(Box<LinkPayload>),
+    Proof(Hash),
     Closed,
 }
 
@@ -138,6 +140,7 @@ pub struct Link {
     request_time: Instant,
     rtt: Duration,
     event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
+    proves_messages: bool,
 }
 
 impl Link {
@@ -155,7 +158,12 @@ impl Link {
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
             event_tx,
+            proves_messages: false,
         }
+    }
+
+    pub fn prove_messages(&mut self, setting: bool) {
+        self.proves_messages = setting;
     }
 
     pub fn new_from_request(
@@ -186,6 +194,7 @@ impl Link {
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
             event_tx,
+            proves_messages: false,
         };
 
         link.handshake(peer_identity);
@@ -213,9 +222,13 @@ impl Link {
 
         self.status = LinkStatus::Pending;
         self.id = LinkId::from(&packet);
-        self.request_time = Instant::now();
+        self.touch();
 
         packet
+    }
+
+    pub fn touch(&mut self) {
+        self.request_time = Instant::now();
     }
 
     pub fn prove(&mut self) -> Packet {
@@ -238,7 +251,7 @@ impl Link {
         packet_data.safe_write(&signature.to_bytes()[..]);
         packet_data.safe_write(self.priv_identity.as_identity().public_key.as_bytes());
 
-        let packet = Packet {
+        Packet {
             header: Header {
                 packet_type: PacketType::Proof,
                 ..Default::default()
@@ -248,12 +261,10 @@ impl Link {
             transport: None,
             context: PacketContext::LinkRequestProof,
             data: packet_data,
-        };
-
-        packet
+        }
     }
 
-    fn handle_data_packet(&mut self, packet: &Packet) -> LinkHandleResult {
+    fn handle_data_packet(&mut self, packet: &Packet, out_link: bool) -> LinkHandleResult {
         if self.status != LinkStatus::Active {
             log::warn!("link({}): handling data packet in inactive state", self.id);
         }
@@ -263,22 +274,61 @@ impl Link {
                 let mut buffer = [0u8; PACKET_MDU];
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
                     log::trace!("link({}): data {}B", self.id, plain_text.len());
-                    self.request_time = Instant::now();
-                    self.post_event(LinkEvent::Data(LinkPayload::new_from_slice(plain_text)));
+                    self.touch();
+                    self.post_event(LinkEvent::Data(Box::new(LinkPayload::new_from_slice(plain_text))));
+
+                    let proof = if self.proves_messages {
+                        Some(self.message_proof(packet.hash()))
+                    } else {
+                        None
+                    };
+
+                    return LinkHandleResult::MessageReceived(proof);
                 } else {
                     log::error!("link({}): can't decrypt packet", self.id);
                 }
             }
             PacketContext::KeepAlive => {
-                if packet.data.len() >= 1 && packet.data.as_slice()[0] == 0xFF {
-                    self.request_time = Instant::now();
+                if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFF {
+                    self.touch();
                     log::trace!("link({}): keep-alive request", self.id);
                     return LinkHandleResult::KeepAlive;
                 }
-                if packet.data.len() >= 1 && packet.data.as_slice()[0] == 0xFE {
+                if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFE {
                     log::trace!("link({}): keep-alive response", self.id);
-                    self.request_time = Instant::now();
+                    self.touch();
                     return LinkHandleResult::None;
+                }
+            }
+            PacketContext::LinkRTT if !out_link => {
+                let mut buffer = [0u8; PACKET_MDU];
+                if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
+                    if let Ok(rtt) = rmp::decode::read_f32(&mut &plain_text[..]) {
+                        self.rtt = Duration::from_secs_f32(rtt);
+                    } else {
+                        log::error!("link({}): failed to decode rtt", self.id);
+                    }
+                } else {
+                    log::error!("link({}): can't decrypt rtt packet", self.id);
+                }
+            }
+            PacketContext::LinkClose => {
+                let mut buffer = [0u8; PACKET_MDU];
+                if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
+                    match plain_text[..].try_into() {
+                        Err(err) => {
+                            log::error!("link({}): invalid decode link close payload: {err}",
+                                self.id)
+                        }
+                        Ok(dest_bytes) => {
+                            let link_id = LinkId::new(dest_bytes);
+                            if self.id == link_id {
+                                self.close();
+                            }
+                        }
+                    }
+                } else {
+                    log::error!("link({}): can't decrypt link close packet", self.id);
                 }
             }
             _ => {}
@@ -287,45 +337,57 @@ impl Link {
         LinkHandleResult::None
     }
 
-    pub fn handle_packet(&mut self, packet: &Packet) -> LinkHandleResult {
+    pub fn handle_packet(&mut self, packet: &Packet, out_link: bool) -> LinkHandleResult {
         if packet.destination != self.id {
             return LinkHandleResult::None;
         }
 
         match packet.header.packet_type {
-            PacketType::Data => return self.handle_data_packet(packet),
-            PacketType::Proof => {
-                if self.status == LinkStatus::Pending
-                    && packet.context == PacketContext::LinkRequestProof
-                {
-                    if let Ok(identity) = validate_proof_packet(&self.destination, &self.id, packet)
-                    {
-                        log::debug!("link({}): has been proved", self.id);
+            PacketType::Data => self.handle_data_packet(packet, out_link),
+            PacketType::Proof => self.handle_proof_packet(packet),
+            _ => LinkHandleResult::None,
+        }
+    }
 
-                        self.handshake(identity);
+    fn handle_proof_packet(&mut self, packet: &Packet) -> LinkHandleResult {
+        if self.status == LinkStatus::Pending
+            && packet.context == PacketContext::LinkRequestProof
+        {
+            if let Ok(identity) = validate_proof_packet(&self.destination, &self.id, packet)
+            {
+                log::debug!("link({}): has been proved", self.id);
 
-                        self.status = LinkStatus::Active;
-                        self.rtt = self.request_time.elapsed();
+                self.handshake(identity);
 
-                        log::debug!("link({}): activated", self.id);
+                self.status = LinkStatus::Active;
+                self.rtt = self.request_time.elapsed();
 
-                        self.post_event(LinkEvent::Activated);
+                log::debug!("link({}): activated", self.id);
 
-                        return LinkHandleResult::Activated;
-                    } else {
-                        log::warn!("link({}): proof is not valid", self.id);
-                    }
-                }
+                self.post_event(LinkEvent::Activated);
+
+                return LinkHandleResult::Activated;
+            } else {
+                log::warn!("link({}): proof is not valid", self.id);
             }
-            _ => {}
         }
 
-        return LinkHandleResult::None;
+        if self.status == LinkStatus::Active && packet.context == PacketContext::None {
+            if let Ok(hash) = validate_message_proof(
+                &self.destination,
+                packet.data.as_slice()
+            ) {
+                self.post_event(LinkEvent::Proof(hash));
+            }
+        }
+
+        LinkHandleResult::None
     }
 
     pub fn data_packet(&self, data: &[u8]) -> Result<Packet, RnsError> {
-        if self.status != LinkStatus::Active {
+        if self.status != LinkStatus::Active && self.status != LinkStatus::Stale {
             log::warn!("link: can't create data packet for closed link");
+            return Err(RnsError::LinkClosed)
         }
 
         let mut packet_data = PacketDataBuffer::new();
@@ -367,6 +429,29 @@ impl Link {
             destination: self.id,
             transport: None,
             context: PacketContext::KeepAlive,
+            data: packet_data,
+        }
+    }
+
+    pub fn message_proof(&self, hash: Hash) -> Packet {
+        log::trace!("link({}): creating proof for message hash {}", self.id, hash);
+
+        let signature = self.priv_identity.sign(hash.as_slice());
+
+        let mut packet_data = PacketDataBuffer::new();
+        packet_data.safe_write(hash.as_slice());
+        packet_data.safe_write(&signature.to_bytes()[..]);
+
+        Packet {
+            header: Header {
+                destination_type: DestinationType::Link,
+                packet_type: PacketType::Proof,
+                ..Default::default()
+            },
+            ifac: None,
+            destination: self.id,
+            transport: None,
+            context: PacketContext::None,
             data: packet_data,
         }
     }
@@ -427,7 +512,7 @@ impl Link {
 
         self.derived_key = self
             .priv_identity
-            .derive_key(&self.peer_identity.public_key, Some(&self.id.as_slice()));
+            .derive_key(&self.peer_identity.public_key, Some(self.id.as_slice()));
     }
 
     fn post_event(&self, event: LinkEvent) {
@@ -437,12 +522,29 @@ impl Link {
             event,
         });
     }
-    pub fn close(&mut self) {
+
+    pub(crate) fn teardown(&mut self) -> Result<Option<Packet>, RnsError> {
+        let packet = if self.status != LinkStatus::Pending && self.status != LinkStatus::Closed {
+            let mut packet = self.data_packet(self.id.as_slice())?;
+            packet.context = PacketContext::LinkClose;
+            Some(packet)
+        } else {
+            None
+        };
+        self.close();
+        Ok(packet)
+    }
+
+    pub(crate) fn close(&mut self) {
         self.status = LinkStatus::Closed;
-
         self.post_event(LinkEvent::Closed);
-
         log::warn!("link: close {}", self.id);
+    }
+
+    pub fn stale(&mut self) {
+        self.status = LinkStatus::Stale;
+
+        log::warn!("link: stale {}", self.id);
     }
 
     pub fn restart(&mut self) {
@@ -465,6 +567,10 @@ impl Link {
 
     pub fn id(&self) -> &LinkId {
         &self.id
+    }
+
+    pub fn rtt(&self) -> &Duration {
+        &self.rtt
     }
 }
 
@@ -514,4 +620,27 @@ fn validate_proof_packet(
         .map_err(|_| RnsError::IncorrectSignature)?;
 
     Ok(identity)
+}
+
+fn validate_message_proof(
+    destination: &DestinationDesc,
+    data: &[u8],
+) -> Result<Hash, RnsError> {
+    if data.len() <= HASH_SIZE {
+        return Err(RnsError::PacketError);
+    }
+
+    let maybe_signature = Signature::from_slice(&data[HASH_SIZE..]);
+    let signature = match maybe_signature {
+        Ok(s) => s,
+        Err(_) => return Err(RnsError::PacketError),
+    };
+
+    let hash_slice = &data[..HASH_SIZE];
+
+    if destination.identity.verifying_key.verify(hash_slice, &signature).is_ok() {
+        Ok(Hash::new(hash_slice.try_into().unwrap()))
+    } else {
+        Err(RnsError::IncorrectSignature)
+    }
 }
