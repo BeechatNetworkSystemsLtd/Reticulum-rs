@@ -159,14 +159,11 @@ impl Default for LoggingConfig {
 impl Config {
     pub fn search_paths() -> Vec<PathBuf> {
         let mut paths = vec![];
-        
         if let Some(home) = dirs::home_dir() {
             paths.push(home.join(".config/reticulum"));
             paths.push(home.join(".reticulum"));
         }
-        
         paths.push(PathBuf::from("/etc/reticulum"));
-        
         paths
     }
 
@@ -188,7 +185,6 @@ impl Config {
         } else {
             path.join("config.toml")
         };
-        
         let content = std::fs::read_to_string(&config_file)?;
         let config: Self = toml::from_str(&content).inspect_err(|_e| {
             eprintln!();
@@ -205,12 +201,10 @@ impl Config {
             eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
             eprintln!();
         })?;
-        
         if config.reticulum.share_instance {
             log::warn!("share_instance is enabled but shared instances are not supported in reticulum-rs");
             log::warn!("Each Rust daemon process runs independently and is only limited by available ports");
         }
-        
         Ok(config)
     }
 
@@ -219,7 +213,6 @@ impl Config {
             let config = Self::from_file(path)?;
             return Ok((config, path.to_path_buf()));
         }
-        
         if let Some(existing) = Self::find_existing() {
             let config = Self::from_file(&existing)?;
             Ok((config, existing))
@@ -227,14 +220,11 @@ impl Config {
             log::warn!("No existing configuration found, creating default config");
             let default_dir = Self::default_path();
             std::fs::create_dir_all(&default_dir)?;
-            
             let config = Self::default_config();
             let config_file = default_dir.join("config.toml");
             std::fs::write(&config_file, toml::to_string_pretty(&config)?)?;
-            
             log::warn!("Created default configuration at: {}", config_file.display());
             log::warn!("Please review and customize the configuration for your needs");
-            
             Ok((config, default_dir))
         }
     }
