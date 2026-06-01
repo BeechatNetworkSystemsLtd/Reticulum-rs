@@ -20,7 +20,3 @@ reticulum = { path = ".." }
 [[bin]]
 name = "rnsd-rs"
 path = "src/main.rs"
-
-[[bin]]
-name = "convert_config"
-path = "src/bin/convert_config.rs"

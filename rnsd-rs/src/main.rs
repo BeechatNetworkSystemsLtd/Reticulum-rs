@@ -1,5 +1,6 @@
+use std::path::PathBuf;
+
 use clap::Parser;
-use config::{Config, InterfaceConfig};
 use rand_core::OsRng;
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::tcp_client::TcpClient;
@@ -7,24 +8,47 @@ use reticulum::iface::tcp_server::TcpServer;
 use reticulum::iface::udp::UdpInterface;
 use reticulum::transport::TransportConfig;
 use tokio::signal;
-use std::path::PathBuf;
 
 mod config;
+use self::config::{Config, InterfaceConfig};
 
+/// Reticulum-rs daemon
 #[derive(Parser)]
-#[clap(name = "Reticulum-rs daemon", version)]
+#[clap(version)]
+#[clap(args_conflicts_with_subcommands=true)]
 pub struct Command {
-  #[arg(short, long, help = "Reticulum config path")]
-  pub config: Option<PathBuf>
+    /// Reticulum config directory
+    #[arg(short, long)]
+    pub config_dir: Option<PathBuf>,
+    #[command(subcommand)]
+    pub convert_config: Option<Subcommand>,
 }
 
-async fn run(config: Config, config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+#[derive(clap::Subcommand)]
+pub enum Subcommand {
+    /// Convert a Python Reticulum config file to TOML
+    ConvertConfig {
+        /// Path to the Python Reticulum config file
+        config_file: PathBuf
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cmd = Command::parse();
+    if let Some(subcommand) = cmd.convert_config {
+        match subcommand {
+            Subcommand::ConvertConfig { config_file } => return config::migrate_config(&config_file)
+        }
+    }
+
+    let (config, config_path) = Config::load(cmd.config_dir.as_deref())?;
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or(config.log_filter())
     ).init();
 
-    log::info!("Reticulum daemon starting");
     log::info!("Configuration loaded from: {}", config_path.display());
+    log::info!("Reticulum daemon starting");
 
     let identity = PrivateIdentity::new_from_rand(OsRng);
     let transport = TransportConfig::new(
@@ -110,13 +134,5 @@ async fn run(config: Config, config_path: PathBuf) -> Result<(), Box<dyn std::er
 
     log::info!("Shutdown signal received, cleaning up");
     drop(transport);
-
     Ok(())
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cmd = Command::parse();
-    let (config, config_path) = Config::load(cmd.config.as_deref())?;
-    run(config, config_path).await
 }
