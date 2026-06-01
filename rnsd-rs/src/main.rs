@@ -5,7 +5,7 @@ use reticulum::identity::PrivateIdentity;
 use reticulum::iface::tcp_client::TcpClient;
 use reticulum::iface::tcp_server::TcpServer;
 use reticulum::iface::udp::UdpInterface;
-use reticulum::transport::{Transport, TransportConfig};
+use reticulum::transport::TransportConfig;
 use tokio::signal;
 use std::path::PathBuf;
 
@@ -18,30 +18,23 @@ pub struct Command {
   pub config: Option<PathBuf>
 }
 
+async fn run(config: Config, config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(config.log_filter())
+    ).init();
 
-struct Daemon {
-    transport: Transport,
-    config_path: std::path::PathBuf,
-}
+    log::info!("Reticulum daemon starting");
+    log::info!("Configuration loaded from: {}", config_path.display());
 
-impl Daemon {
-    async fn new(config:Config, config_path: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or(config.log_filter())
-        ).init();
+    let identity = PrivateIdentity::new_from_rand(OsRng);
+    let transport = TransportConfig::new(
+            "rns-daemon",
+            &identity,
+            config.reticulum.enable_transport)
+        .set_retransmit(config.reticulum.enable_transport)
+        .build();
 
-        log::info!("Reticulum daemon starting");
-        log::info!("Configuration loaded from: {}", config_path.display());
-
-        let identity = PrivateIdentity::new_from_rand(OsRng);
-        let transport = TransportConfig::new(
-                "rns-daemon",
-                &identity,
-                config.reticulum.enable_transport)
-            .set_retransmit(config.reticulum.enable_transport)
-            .build();
-
-        let iface_manager = transport.iface_manager();
+    let iface_manager = transport.iface_manager();
 
     for iface in config.interfaces {
         let enabled = match &iface.config {
@@ -56,7 +49,7 @@ impl Daemon {
             InterfaceConfig::AX25KISSInterface { enabled, .. } => *enabled,
             InterfaceConfig::Unsupported => false,
         };
-    
+
         if !enabled {
             continue;
         }
@@ -111,29 +104,19 @@ impl Daemon {
         }
     }
 
-        Ok(Self {
-            transport,
-            config_path,
-        })
-    }
+    log::info!("Reticulum instance running, interfaces initialized");
 
-    async fn run(self) -> Result<(), Box<dyn std::error::Error>> {
-        log::info!("Reticulum instance running, interfaces initialized");
-        
-        signal::ctrl_c().await?;
-        
-        log::info!("Shutdown signal received, cleaning up");
-        drop(self.transport);
-        
-        Ok(())
-    }
+    signal::ctrl_c().await?;
+
+    log::info!("Shutdown signal received, cleaning up");
+    drop(transport);
+
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cmd = Command::parse();
     let (config, config_path) = Config::load(cmd.config.as_deref())?;
-
-    let daemon = Daemon::new(config, config_path).await?;
-    daemon.run().await
+    run(config, config_path).await
 }
