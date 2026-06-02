@@ -16,6 +16,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     container: rust:1.95
+    timeout-minutes: 5
 
     steps:
       - name: checkout
@@ -37,6 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     container: rust:1.95
     needs: check
+    timeout-minutes: 10
     env:
       RETICULUM_TEST_PYTHON_DIR: /opt/Reticulum
       PYTHONPATH: /opt/Reticulum
