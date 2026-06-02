@@ -28,19 +28,6 @@ async fn main() {
         .await
         .spawn(TcpClient::new("127.0.0.1:4242"), TcpClient::spawn);
 
-    let identity = PrivateIdentity::new_from_name("link-example");
-
-    let in_destination = transport
-        .add_destination(
-            identity,
-            DestinationName::new("example_utilities", "linkexample")
-        )
-        .await;
-
-    transport
-        .send_direct(client_addr, in_destination.lock().await.announce(OsRng, None).unwrap())
-        .await;
-
     tokio::spawn(async move {
         let recv = transport.recv_announces();
         let mut recv = recv.await;
