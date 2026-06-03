@@ -1073,7 +1073,6 @@ dependencies = [
  "log",
  "prost",
  "rand_core",
- "regex",
  "rmp",
  "serde",
  "serde_json",
