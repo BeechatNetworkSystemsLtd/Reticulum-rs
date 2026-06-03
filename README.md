@@ -39,11 +39,11 @@ Reticulum-rs/
 │   ├── tcp_client.rs
 │   ├── tcp_server.rs
 │   └── testnet_client.rs
-├────── daemon/           # RNS Daemon 
+├── reticulum-daemon/           # RNS Daemon
+│   ├── Cargo.toml
+│   └── src/
 │       ├── config.rs
-│       ├── main.rs 
-│       └── convert_config.rs
-    
+│       └── main.rs
 ├── Cargo.toml           # Crate configuration
 ├── LICENSE              # License (MIT/Apache)
 └── build.rs             
@@ -61,25 +61,30 @@ Reticulum-rs/
 cargo build --release
 ```
 
-### Configuration
+### Reticulum daemon
+
+#### Converting config from Python Reticulum
 
 Reticulum-rs uses TOML for configuration, whereas the original Python Reticulum uses a custom format parsed by configobj, a Python-only library. If you have an existing Python Reticulum configuration, you must convert it before use.
 
-#### Converting from Python Reticulum config
 ```bash
-cargo run --example convert_config -- ~/.reticulum/config
+cd reticulum-daemon
+cargo run -- convert-config <config_file>
 ```
 
 This creates a backup at `~/.reticulum/config.backup` and converts the original file in place. The converter handles boolean normalization (True/False/Yes/No → true/false), quotes string values, transforms interface declarations to TOML array-of-tables syntax, and comments out None/nil values which TOML does not support.
 
-### Running the Daemon
+#### Running the daemon
+
 ```bash
+cd reticulum-daemon
+
 # Use default config search paths (~/.config/reticulum, ~/.reticulum, /etc/reticulum)
-cargo run --example daemon
+cargo run
 
 # Specify a custom config directory
-cargo run --example daemon -- --config /path/to/config/dir
-cargo run --example daemon -- -c /path/to/config/dir
+cargo run -- --config /path/to/config/dir
+cargo run -- -c /path/to/config/dir
 ```
 
 The daemon searches for either `config` (legacy filename) or `config.toml` in the specified directory.
