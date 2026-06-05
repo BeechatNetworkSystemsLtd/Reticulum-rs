@@ -1,9 +1,10 @@
 #![cfg(feature = "python-tests")]
 
-use std::process::{Command, Stdio};
-use std::sync::{mpsc, LazyLock, Once};
+use std::process::Stdio;
+use std::sync::{LazyLock, Once};
 
-use tokio::sync::Mutex;
+use tokio::process::Command;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time;
 
 use reticulum::hash::AddressHash;
@@ -27,7 +28,7 @@ fn setup() {
 #[tokio::test]
 /// Spawn Python Reticulum Example/Announce.py and listen for announce
 async fn python_announce() {
-    use std::io::Write;
+    use tokio::io::AsyncWriteExt;
     let _guard = TEST_MUTEX.lock().await;
     setup();
 
@@ -97,18 +98,15 @@ async fn python_announce() {
             panic!("Python exited early: {status}");
         }
         if let Some(stdin) = child.stdin.as_mut() {
-            stdin.write_all(b"\n").unwrap(); // simulates pressing Return
-            stdin.flush().unwrap();
+            stdin.write_all(b"\n").await.unwrap(); // simulates pressing Return
+            stdin.flush().await.unwrap();
         }
         time::sleep(time::Duration::from_secs(1)).await;
     }
     handle.await.expect("receive announce task failure");
-    let _ = child.kill();
-    match tokio::time::timeout(
-        time::Duration::from_secs(5),
-        tokio::task::spawn_blocking(move || child.wait())
-    ).await {
-        Ok(Ok(Ok(status))) => log::debug!("Python exited with: {status}"),
+    let _ = child.start_kill();
+    match tokio::time::timeout(time::Duration::from_secs(5), child.wait()).await {
+        Ok(Ok(status)) => log::debug!("Python exited with: {status}"),
         _ => log::warn!("Python did not exit cleanly after kill")
     }
 }
@@ -116,14 +114,11 @@ async fn python_announce() {
 #[tokio::test]
 /// Spawn Python Reticulum Example/Link.py and exchange messages
 async fn python_link() {
-    use std::io::BufRead;
+    use tokio::io::AsyncBufReadExt;
     let _guard = TEST_MUTEX.lock().await;
     setup();
 
     let script_path = format!("{}/Examples/Link.py", *RETICULUM_PYTHON_DIR);
-    // the Python example will send application data with the announce from one of these lists:
-    // fruits = ["Peach", "Quince", "Date", "Tangerine", "Pomelo", "Carambola", "Grape"]
-    // noble_gases = ["Helium", "Neon", "Argon", "Krypton", "Xenon", "Radon", "Oganesson"]
 
     let mut child = Command::new("python3")
         .arg("-u")  // make sure output is not buffered
@@ -135,12 +130,17 @@ async fn python_link() {
         .stdout(Stdio::piped())  // to be able to process stdout lines
         .spawn()
         .expect("failed to start Announce.py");
-    let (tx, rx) = mpsc::channel();
+    let (tx, mut rx) = mpsc::unbounded_channel();
     let stdout = child.stdout.take().expect("child process has no stdout");
     // forward stdout and return server destination hash
-    let stdout_handle = std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stdout).lines() {
-            let line = line.unwrap();
+    let stdout_handle = tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        // when the child process is killed next_line() will return None
+        while let Some(line) = lines.next_line().await.map_err(|err|{
+            let err = format!("error iterating over child stdout lines: {err}");
+            log::error!("{err}");
+            err
+        })? {
             println!("{line}");
             // parse the hash from:
             // [2026-06-03 12:03:33] [Notice]   Link example <5d3a09e13b866e49624d1bb576c23976> running, waiting for a connection.
@@ -164,7 +164,7 @@ async fn python_link() {
         }
         Ok(())
     });
-    let server_hash = rx.recv().expect("child process sender hung up");
+    let server_hash = rx.recv().await.expect("child process sender hung up");
     log::info!("got server destination hash: {server_hash}");
     let transport = TransportConfig::default().build();
     let _ = transport.iface_manager().lock().await.spawn(
@@ -210,15 +210,12 @@ async fn python_link() {
         }
     }
     // shutdown
-    let _ = child.kill();
-    match tokio::time::timeout(
-        time::Duration::from_secs(5),
-        tokio::task::spawn_blocking(move || child.wait())
-    ).await {
-        Ok(Ok(Ok(status))) => log::debug!("Python exited with: {status}"),
+    let _ = child.start_kill();
+    match tokio::time::timeout(time::Duration::from_secs(5), child.wait()).await {
+        Ok(Ok(status)) => log::debug!("Python exited with: {status}"),
         _ => log::warn!("Python did not exit cleanly after kill")
     }
-    match stdout_handle.join() {
+    match stdout_handle.await {
         Ok(Ok(())) => log::debug!("child stdout thread finished normally"),
         Ok(Err(err)) => panic!("error in child stdout thread: {err}"),
         Err(err) => panic!("child stdout thread failed to join: {err:?}")
