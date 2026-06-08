@@ -327,7 +327,7 @@ impl Config {
 
     pub fn default_path() -> PathBuf {
         dirs::home_dir()
-            .expect("home directory")
+            .expect("cannot write config: user has no home directory")
             .join(".config/reticulum")
     }
 
