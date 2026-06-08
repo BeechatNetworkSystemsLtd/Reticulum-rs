@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (config, config_path) = Config::load(cmd.config_dir.as_deref())?;
     env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(config.log_filter())
+        env_logger::Env::default().default_filter_or(format!("{:?}", config.logging.loglevel))
     ).init();
 
     log::info!("Configuration loaded from: {}", config_path.display());

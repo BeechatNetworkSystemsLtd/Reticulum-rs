@@ -34,7 +34,7 @@ pub struct ReticulumConfig {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LoggingConfig {
     #[serde(default = "default_loglevel")]
-    pub loglevel: u8,
+    pub loglevel: log::LevelFilter,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -139,7 +139,7 @@ pub enum InterfaceConfig {
 fn default_true() -> bool { true }
 fn default_shared_port() -> u16 { 37428 }
 fn default_control_port() -> u16 { 37429 }
-fn default_loglevel() -> u8 { 4 }
+fn default_loglevel() -> log::LevelFilter { log::LevelFilter::Info }
 
 pub fn migrate_config(config_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if !config_file.exists() {
@@ -184,6 +184,7 @@ pub fn migrate_config(config_file: &Path) -> Result<(), Box<dyn std::error::Erro
     println!("✓ Converted config written to: {}", new_config_file.display());
     println!();
     println!("Changes made:");
+    println!("  - Converted numeric log level to log level string");
     println!("  - Converted True/False/Yes/No → true/false");
     println!("  - Quoted all string values (IPs, hostnames, paths, types)");
     println!("  - Converted [[Interface Name]] → [[interfaces]] with name field");
@@ -221,6 +222,7 @@ fn convert_config(content: &str) -> String {
     let re_false = Regex::new(r" = \b(No|no|False)\b").unwrap();
     let re_true = Regex::new(r" = \b(Yes|yes|True)\b").unwrap();
     let re_nil = Regex::new(r"^(\w+)\s*=\s*\b(None|none|nil|Nil|null|Null)\b").unwrap();
+    let re_loglevel = Regex::new(r"(\bloglevel\s*=\s*)(\d+)\b").unwrap();
     for line in content.lines() {
         let trimmed = line.trim();
         // Empty lines pass through
@@ -257,6 +259,15 @@ fn convert_config(content: &str) -> String {
             output.push('\n');
             continue;
         }
+
+        // Convert numeric loglevel
+        converted = re_loglevel.replace(&converted, |caps: &regex::Captures| {
+            let level_num: u8 = caps[2].parse().unwrap();
+            let level = python_log_filter(level_num);
+            let out = format!("{}{}", &caps[1], level);
+            out
+        }).to_string();
+
         // Quote unquoted string values (only for non-comments)
         if !converted.starts_with('#') {
             converted = quote_if_needed(&converted, "type");
@@ -270,6 +281,7 @@ fn convert_config(content: &str) -> String {
             converted = quote_if_needed(&converted, "port");
             converted = quote_if_needed(&converted, "callsign");
             converted = quote_if_needed(&converted, "parity");
+            converted = quote_if_needed(&converted, "loglevel");
         }
         output.push_str(&converted);
         output.push('\n');
@@ -292,7 +304,7 @@ impl Default for ReticulumConfig {
 
 impl Default for LoggingConfig {
     fn default() -> Self {
-        Self { loglevel: 4 }
+        Self { loglevel: default_loglevel() }
     }
 }
 
@@ -396,17 +408,17 @@ impl Config {
             ],
         }
     }
+}
 
-    pub fn log_filter(&self) -> &'static str {
-        match self.logging.loglevel {
-            0 => "error",
-            1 => "error",
-            2 => "warn",
-            3 => "info",
-            4 => "info",
-            5 => "debug",
-            6 => "debug",
-            _ => "trace",
-        }
+pub fn python_log_filter(loglevel: u8) -> log::LevelFilter {
+    match loglevel {
+        0 => log::LevelFilter::Error,
+        1 => log::LevelFilter::Error,
+        2 => log::LevelFilter::Warn,
+        3 => log::LevelFilter::Info,
+        4 => log::LevelFilter::Info,
+        5 => log::LevelFilter::Debug,
+        6 => log::LevelFilter::Debug,
+        _ => log::LevelFilter::Trace,
     }
 }
