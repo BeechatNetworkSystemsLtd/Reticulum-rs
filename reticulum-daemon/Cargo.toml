@@ -1,9 +1,9 @@
 [package]
-name = "rnsd-rs"
+name = "reticulum-daemon"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-default-run = "rnsd-rs"
+default-run = "rs-rnsd"
 
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
@@ -18,5 +18,5 @@ toml = "0.9.11"
 reticulum = { path = ".." }
 
 [[bin]]
-name = "rnsd-rs"
+name = "rs-rnsd"
 path = "src/main.rs"

@@ -165,7 +165,7 @@ pub fn migrate_config(config_file: &Path) -> Result<(), Box<dyn std::error::Erro
         match toml::from_str::<Config>(&converted) {
             Ok(_) => {}
             Err(err) => {
-                eprintln!("error: converted text is not a valid rnsd-rs Config file");
+                eprintln!("error: converted text is not a valid rs-rnsd Config file");
                 return Err(err.into())
             }
         }
@@ -343,7 +343,7 @@ impl Config {
                     eprintln!("Your config file appears to be in Python Reticulum format.");
                     eprintln!("You can use the converter tool to migrate it to standard TOML:");
                     eprintln!();
-                    eprintln!("  cargo run -p rnsd-rs -- convert-config {}", config_file.display());
+                    eprintln!("  cargo run -p reticulum-daemon -- convert-config {}", config_file.display());
                     eprintln!();
                     eprintln!("This command will create a backup and convert your config to valid TOML.");
                     eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

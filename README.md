@@ -68,7 +68,7 @@ cargo build --release
 Reticulum-rs uses TOML for configuration, whereas the original Python Reticulum uses a custom format parsed by configobj, a Python-only library. If you have an existing Python Reticulum configuration, it will be read and converted to TOML in-memory. If you want to apply the conversion and save a TOML copy, run the `convert-config` subcommand:
 
 ```bash
-cargo run -p rnsd-rs -- convert-config <config_file>
+cargo run -p reticulum-daemon -- convert-config <config_file>
 ```
 
 This leaves the original file and creates a copy with .toml extension. The converter handles boolean normalization (True/False/Yes/No → true/false), quotes string values, transforms interface declarations to TOML array-of-tables syntax, and comments out None/nil values which TOML does not support.
@@ -77,11 +77,11 @@ This leaves the original file and creates a copy with .toml extension. The conve
 
 ```bash
 # Use default config search paths (~/.config/reticulum, ~/.reticulum, /etc/reticulum)
-cargo run -p rnsd-rs
+cargo run -p reticulum-daemon
 
 # Specify a custom config directory
-cargo run -p rnsd-rs -- --config /path/to/config/dir
-cargo run -p rnsd-rs -- -c /path/to/config/dir
+cargo run -p reticulum-daemon -- --config /path/to/config/dir
+cargo run -p reticulum-daemon -- -c /path/to/config/dir
 ```
 
 The daemon searches for either `config` (legacy filename) or `config.toml` in the specified directory.
