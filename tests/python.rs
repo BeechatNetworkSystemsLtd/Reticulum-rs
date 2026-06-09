@@ -58,7 +58,7 @@ async fn python_announce() {
         .arg("tests/rns-py-configs/udp")
         .stdin(Stdio::piped())  // to be able to send to stdin
         .spawn()
-        .expect("failed to start Announce.py");
+        .expect("failed to start {script_path}");
 
     let transport = TransportConfig::default().build();
     let _ = transport.iface_manager().lock().await.spawn(
@@ -130,7 +130,7 @@ async fn python_link_client() {
         .arg("tests/rns-py-configs/udp")
         .stdout(Stdio::piped())  // to be able to process stdout lines
         .spawn()
-        .expect("failed to start Announce.py");
+        .expect("failed to start {script_path}");
     let (tx, mut rx) = mpsc::unbounded_channel();
     let stdout = child.stdout.take().expect("child process has no stdout");
     // forward stdout and return server destination hash
@@ -256,7 +256,7 @@ async fn python_link_server() {
         .stdin(Stdio::piped())   // to be able to send to stdin
         .stdout(Stdio::piped())  // to be able to process stdout lines
         .spawn()
-        .expect("failed to start Announce.py");
+        .expect("failed to start {script_path}");
     let stdout = child.stdout.take().expect("child process has no stdout");
     static RUNNING: atomic::AtomicBool = atomic::AtomicBool::new(true);
     static READY_TO_SEND: atomic::AtomicBool = atomic::AtomicBool::new(false);
