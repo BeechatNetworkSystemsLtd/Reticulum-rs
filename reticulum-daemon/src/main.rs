@@ -1,0 +1,138 @@
+use std::path::PathBuf;
+
+use clap::Parser;
+use rand_core::OsRng;
+use reticulum::identity::PrivateIdentity;
+use reticulum::iface::tcp_client::TcpClient;
+use reticulum::iface::tcp_server::TcpServer;
+use reticulum::iface::udp::UdpInterface;
+use reticulum::transport::TransportConfig;
+use tokio::signal;
+
+mod config;
+use self::config::{Config, InterfaceConfig};
+
+/// Reticulum-rs daemon
+#[derive(Parser)]
+#[clap(version)]
+#[clap(args_conflicts_with_subcommands=true)]
+pub struct Command {
+    /// Reticulum config directory
+    #[arg(short, long)]
+    pub config_dir: Option<PathBuf>,
+    #[command(subcommand)]
+    pub convert_config: Option<Subcommand>,
+}
+
+#[derive(clap::Subcommand)]
+pub enum Subcommand {
+    /// Convert a Python Reticulum config file to TOML
+    ConvertConfig {
+        /// Path to the Python Reticulum config file
+        config_file: PathBuf
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cmd = Command::parse();
+    if let Some(subcommand) = cmd.convert_config {
+        match subcommand {
+            Subcommand::ConvertConfig { config_file } => return config::migrate_config(&config_file)
+        }
+    }
+
+    let (config, config_path) = Config::load(cmd.config_dir.as_deref())?;
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(format!("{:?}", config.logging.loglevel))
+    ).init();
+
+    log::info!("Configuration loaded from: {}", config_path.display());
+    log::info!("Reticulum daemon starting");
+
+    let identity = PrivateIdentity::new_from_rand(OsRng);
+    let transport = TransportConfig::new(
+            "rns-daemon",
+            &identity,
+            config.reticulum.enable_transport)
+        .set_retransmit(config.reticulum.enable_transport)
+        .build();
+
+    let iface_manager = transport.iface_manager();
+
+    for iface in config.interfaces {
+        let enabled = match &iface.config {
+            InterfaceConfig::TCPServerInterface { enabled, .. } => *enabled,
+            InterfaceConfig::TCPClientInterface { enabled, .. } => *enabled,
+            InterfaceConfig::UDPInterface { enabled, .. } => *enabled,
+            InterfaceConfig::AutoInterface { enabled, .. } => *enabled,
+            InterfaceConfig::I2PInterface { enabled, .. } => *enabled,
+            InterfaceConfig::RNodeInterface { enabled, .. } => *enabled,
+            InterfaceConfig::BLEInterface { enabled, .. } => *enabled,
+            InterfaceConfig::KISSInterface { enabled, .. } => *enabled,
+            InterfaceConfig::AX25KISSInterface { enabled, .. } => *enabled,
+            InterfaceConfig::Unsupported => false,
+        };
+
+        if !enabled {
+            continue;
+        }
+
+        match iface.config {
+            InterfaceConfig::TCPServerInterface { bind_host, bind_port, .. } => {
+                let addr = format!("{}:{}", bind_host.trim_end_matches(':'), bind_port);
+                log::info!("Enabling interface '{}': TCP Server on {}", iface.name, addr);
+                iface_manager.lock().await.spawn(
+                    TcpServer::new(addr, iface_manager.clone()),
+                    TcpServer::spawn,
+                );
+            }
+            InterfaceConfig::TCPClientInterface { target_host, target_port, .. } => {
+                let addr = format!("{}:{}", target_host.trim_end_matches(':'), target_port);
+                log::info!("Enabling interface '{}': TCP Client to {}", iface.name, addr);
+                iface_manager.lock().await.spawn(
+                    TcpClient::new(addr),
+                    TcpClient::spawn,
+                );
+            }
+            InterfaceConfig::UDPInterface { listen_ip, listen_port, forward_ip, forward_port, .. } => {
+                let bind_addr = format!("{}:{}", listen_ip, listen_port);
+                let forward_addr = format!("{}:{}", forward_ip, forward_port);
+                log::info!("Enabling interface '{}': UDP {}→{}", iface.name, bind_addr, forward_addr);
+                iface_manager.lock().await.spawn(
+                    UdpInterface::new(bind_addr, Some(forward_addr)),
+                    UdpInterface::spawn,
+                );
+            }
+            InterfaceConfig::AutoInterface { .. } => {
+                log::warn!("Interface '{}' type 'AutoInterface' is not yet supported", iface.name);
+            }
+            InterfaceConfig::I2PInterface { .. } => {
+                log::warn!("Interface '{}' type 'I2PInterface' is not yet supported", iface.name);
+            }
+            InterfaceConfig::RNodeInterface { .. } => {
+                log::warn!("Interface '{}' type 'RNodeInterface' is not yet supported", iface.name);
+            }
+            InterfaceConfig::BLEInterface { .. } => {
+                log::warn!("Interface '{}' type 'BLEInterface' is not yet supported", iface.name);
+            }
+            InterfaceConfig::KISSInterface { .. } => {
+                log::warn!("Interface '{}' type 'KISSInterface' is not yet supported", iface.name);
+            }
+            InterfaceConfig::AX25KISSInterface { .. } => {
+                log::warn!("Interface '{}' type 'AX25KISSInterface' is not yet supported", iface.name);
+            }
+            InterfaceConfig::Unsupported => {
+                log::warn!("Interface '{}' uses an unsupported type", iface.name);
+            }
+        }
+    }
+
+    log::info!("Reticulum instance running, interfaces initialized");
+
+    signal::ctrl_c().await?;
+
+    log::info!("Shutdown signal received, cleaning up");
+    drop(transport);
+    Ok(())
+}
