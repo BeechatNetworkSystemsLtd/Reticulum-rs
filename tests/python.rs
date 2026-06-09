@@ -186,8 +186,8 @@ async fn python_link_client() {
     let mut out_link_events = transport.out_link_events();
     let link = transport.link(server_dest.lock().await.desc).await;
     loop {
-        match out_link_events.recv().await {
-            Ok(event) => match event.event {
+        match tokio::time::timeout(time::Duration::from_secs(5), out_link_events.recv()).await {
+            Ok(Ok(event)) => match event.event {
                 LinkEvent::Activated => {
                     // send data
                     log::debug!("link activated: sending data");
@@ -207,7 +207,8 @@ async fn python_link_client() {
                 LinkEvent::Proof(_) => {}
                 LinkEvent::Closed => panic!("error: link closed unexpectedly")
             }
-            Err(err) => panic!("error receiving out link events: {err}")
+            Ok(Err(err)) => panic!("error receiving out link events: {err}"),
+            Err(err) => panic!("timed out recieving out link events: {err}")
         }
     }
     // shutdown
