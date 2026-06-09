@@ -128,6 +128,7 @@ async fn python_link_client() {
         .arg("--server")
         .arg("--config")
         .arg("tests/rns-py-configs/udp")
+        .stdin(Stdio::piped())  // we do not send to stdin in this example but to prevent EOF error
         .stdout(Stdio::piped())  // to be able to process stdout lines
         .spawn()
         .expect("failed to start {script_path}");
