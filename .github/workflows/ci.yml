@@ -51,7 +51,9 @@ jobs:
       - name: install dependencies
         run: apt-get update && apt-get install -y git protobuf-compiler python3
       - name: checkout Reticulum
-        run: git clone https://github.com/markqvist/Reticulum.git "$RETICULUM_TEST_PYTHON_DIR"
+        run: |
+          git clone https://github.com/markqvist/Reticulum.git "$RETICULUM_TEST_PYTHON_DIR"
+          echo "Reticulum rev $(cd $RETICULUM_TEST_PYTHON_DIR && git rev-parse HEAD)"
       - name: verify Reticulum install
         run: python3 -c "import RNS; print(RNS.__file__)"
       - name: test
