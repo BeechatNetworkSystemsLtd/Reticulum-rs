@@ -163,7 +163,10 @@ async fn message_proof_over_remote_link() {
         .add_destination(id_c, DestinationName::new("test", "link_to"))
         .await;
     let dest_c_hash = dest_c.lock().await.desc.address_hash;
-
+    // NOTE: we have to wait before sending announce because if the TCP client has not yet
+    // connected, the outgoing packet will be dropped
+    // TODO: can we do this without waiting?
+    time::sleep(Duration::from_millis(100)).await;
     transport_c.send_announce(&dest_c, None).await;
 
     transport_a.recv_announces().await.recv().await.unwrap();
