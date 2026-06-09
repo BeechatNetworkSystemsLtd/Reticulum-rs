@@ -139,15 +139,11 @@ pub struct Link {
     status: LinkStatus,
     request_time: Instant,
     rtt: Duration,
-    event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
     proves_messages: bool,
 }
 
 impl Link {
-    pub fn new(
-        destination: DestinationDesc,
-        event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
-    ) -> Self {
+    pub fn new(destination: DestinationDesc) -> Self {
         Self {
             id: AddressHash::new_empty(),
             destination,
@@ -157,7 +153,6 @@ impl Link {
             status: LinkStatus::Pending,
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
-            event_tx,
             proves_messages: false,
         }
     }
@@ -169,8 +164,7 @@ impl Link {
     pub fn new_from_request(
         packet: &Packet,
         signing_key: SigningKey,
-        destination: DestinationDesc,
-        event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
+        destination: DestinationDesc
     ) -> Result<Self, RnsError> {
         if packet.data.len() < PUBLIC_KEY_LENGTH * 2 {
             return Err(RnsError::InvalidArgument);
@@ -193,7 +187,6 @@ impl Link {
             status: LinkStatus::Pending,
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
-            event_tx,
             proves_messages: false,
         };
 
@@ -231,12 +224,14 @@ impl Link {
         self.request_time = Instant::now();
     }
 
-    pub fn prove(&mut self) -> Packet {
+    pub(crate) fn prove(&mut self, event_tx: &tokio::sync::broadcast::Sender<LinkEventData>)
+        -> Packet
+    {
         log::debug!("link({}): prove", self.id);
 
         if self.status != LinkStatus::Active {
             self.status = LinkStatus::Active;
-            self.post_event(LinkEvent::Activated);
+            self.post_event(event_tx, LinkEvent::Activated);
         }
 
         let mut packet_data = PacketDataBuffer::new();
@@ -264,7 +259,9 @@ impl Link {
         }
     }
 
-    fn handle_data_packet(&mut self, packet: &Packet, out_link: bool) -> LinkHandleResult {
+    fn handle_data_packet(&mut self,
+        event_tx: &tokio::sync::broadcast::Sender<LinkEventData>, packet: &Packet, out_link: bool
+    ) -> LinkHandleResult {
         if self.status != LinkStatus::Active {
             log::warn!("link({}): handling data packet in inactive state", self.id);
         }
@@ -275,7 +272,8 @@ impl Link {
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
                     log::trace!("link({}): data {}B", self.id, plain_text.len());
                     self.touch();
-                    self.post_event(LinkEvent::Data(Box::new(LinkPayload::new_from_slice(plain_text))));
+                    self.post_event(event_tx,
+                        LinkEvent::Data(Box::new(LinkPayload::new_from_slice(plain_text))));
 
                     let proof = if self.proves_messages {
                         Some(self.message_proof(packet.hash()))
@@ -323,7 +321,7 @@ impl Link {
                         Ok(dest_bytes) => {
                             let link_id = LinkId::new(dest_bytes);
                             if self.id == link_id {
-                                self.close();
+                                self.close(event_tx);
                             }
                         }
                     }
@@ -337,24 +335,30 @@ impl Link {
         LinkHandleResult::None
     }
 
-    pub fn handle_packet(&mut self, packet: &Packet, out_link: bool) -> LinkHandleResult {
+    pub(crate) fn handle_packet(&mut self,
+        event_tx: &tokio::sync::broadcast::Sender<LinkEventData>,
+        packet: &Packet,
+        out_link: bool
+    ) -> LinkHandleResult {
         if packet.destination != self.id {
             return LinkHandleResult::None;
         }
 
         match packet.header.packet_type {
-            PacketType::Data => self.handle_data_packet(packet, out_link),
-            PacketType::Proof => self.handle_proof_packet(packet),
+            PacketType::Data => self.handle_data_packet(event_tx, packet, out_link),
+            PacketType::Proof => self.handle_proof_packet(event_tx, packet),
             _ => LinkHandleResult::None,
         }
     }
 
-    fn handle_proof_packet(&mut self, packet: &Packet) -> LinkHandleResult {
+    fn handle_proof_packet(&mut self,
+        event_tx: &tokio::sync::broadcast::Sender<LinkEventData>,
+        packet: &Packet
+    ) -> LinkHandleResult {
         if self.status == LinkStatus::Pending
             && packet.context == PacketContext::LinkRequestProof
         {
-            if let Ok(identity) = validate_proof_packet(&self.destination, &self.id, packet)
-            {
+            if let Ok(identity) = validate_proof_packet(&self.destination, &self.id, packet) {
                 log::debug!("link({}): has been proved", self.id);
 
                 self.handshake(identity);
@@ -364,7 +368,7 @@ impl Link {
 
                 log::debug!("link({}): activated", self.id);
 
-                self.post_event(LinkEvent::Activated);
+                self.post_event(event_tx, LinkEvent::Activated);
 
                 return LinkHandleResult::Activated;
             } else {
@@ -377,7 +381,7 @@ impl Link {
                 &self.destination,
                 packet.data.as_slice()
             ) {
-                self.post_event(LinkEvent::Proof(hash));
+                self.post_event(event_tx, LinkEvent::Proof(hash));
             }
         }
 
@@ -512,15 +516,17 @@ impl Link {
             .derive_key(&self.peer_identity.public_key, Some(self.id.as_slice()));
     }
 
-    fn post_event(&self, event: LinkEvent) {
-        let _ = self.event_tx.send(LinkEventData {
+    fn post_event(&self, event_tx: &tokio::sync::broadcast::Sender<LinkEventData>, event: LinkEvent) {
+        let _ = event_tx.send(LinkEventData {
             id: self.id,
             address_hash: self.destination.address_hash,
             event,
         });
     }
 
-    pub(crate) fn teardown(&mut self) -> Result<Option<Packet>, RnsError> {
+    pub(crate) fn teardown(&mut self, event_tx: &tokio::sync::broadcast::Sender<LinkEventData>)
+        -> Result<Option<Packet>, RnsError>
+    {
         let packet = if self.status != LinkStatus::Pending && self.status != LinkStatus::Closed {
             let mut packet = self.data_packet(self.id.as_slice())?;
             packet.context = PacketContext::LinkClose;
@@ -528,13 +534,13 @@ impl Link {
         } else {
             None
         };
-        self.close();
+        self.close(event_tx);
         Ok(packet)
     }
 
-    pub(crate) fn close(&mut self) {
+    pub(crate) fn close(&mut self, event_tx: &tokio::sync::broadcast::Sender<LinkEventData>) {
         self.status = LinkStatus::Closed;
-        self.post_event(LinkEvent::Closed);
+        self.post_event(event_tx, LinkEvent::Closed);
         log::warn!("link: close {}", self.id);
     }
 

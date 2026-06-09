@@ -154,6 +154,7 @@ pub(crate) struct TransportHandler {
     path_requests: PathRequests,
 
     link_in_event_tx: broadcast::Sender<LinkEventData>,
+    link_out_event_tx: broadcast::Sender<LinkEventData>,
     received_data_tx: broadcast::Sender<ReceivedData>,
 
     fixed_dest_path_requests: AddressHash,
@@ -277,6 +278,7 @@ impl Transport {
             path_requests,
             announce_tx,
             link_in_event_tx: link_in_event_tx.clone(),
+            link_out_event_tx: link_out_event_tx.clone(),
             received_data_tx: received_data_tx.clone(),
             fixed_dest_path_requests: path_request_dest,
             cancel: cancel.clone(),
@@ -463,7 +465,7 @@ impl Transport {
             }
         }
 
-        let mut link = Link::new(destination, self.link_out_event_tx.clone());
+        let mut link = Link::new(destination);
 
         let packet = link.request();
 
@@ -489,13 +491,13 @@ impl Transport {
 
     pub async fn link_close(&self, link_id: LinkId) -> Result<(), RnsError> {
         let link = if let Some(link) = self.find_in_link(&link_id).await {
-            Some(link)
+            Some((link, &self.link_in_event_tx))
         } else {
-            self.find_out_link(&link_id).await
+            self.find_out_link(&link_id).await.map(|link| (link, &self.link_out_event_tx))
         };
-        if let Some(link) = link {
+        if let Some((link, event_tx)) = link {
             let mut link = link.lock().await;
-            if let Some(packet) = link.teardown()? {
+            if let Some(packet) = link.teardown(event_tx)? {
                 drop(link);
                 self.send_packet(packet).await
             }
@@ -665,7 +667,10 @@ impl TransportHandler {
     }
 }
 
-async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, TransportHandler>) {
+async fn handle_proof<'a>(
+    packet: &Packet,
+    mut handler: MutexGuard<'a, TransportHandler>
+) {
     log::trace!(
         "tp({}): handle proof for {}",
         handler.config.name,
@@ -674,7 +679,7 @@ async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transport
 
     for link in handler.out_links.values() {
         let mut link = link.lock().await;
-        if let LinkHandleResult::Activated = link.handle_packet(packet, true) {
+        if let LinkHandleResult::Activated = link.handle_packet(&handler.link_out_event_tx, packet, true) {
             let rtt_packet = link.create_rtt();
             handler.send_packet(rtt_packet).await;
         }
@@ -742,7 +747,7 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
 
         if let Some(link) = handler.in_links.get(&packet.destination).cloned() {
             let mut link = link.lock().await;
-            let result = link.handle_packet(packet, false);
+            let result = link.handle_packet(&handler.link_in_event_tx, packet, false);
             match result {
                 LinkHandleResult::KeepAlive => {
                     let packet = link.keep_alive_packet(KEEP_ALIVE_RESPONSE);
@@ -758,7 +763,7 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
         for link in handler.out_links.values() {
             let mut link = link.lock().await;
             if link.id() == &packet.destination {
-                let _ = link.handle_packet(packet, true);
+                let _ = link.handle_packet(&handler.link_out_event_tx, packet, true);
                 local_out_link_handled = true;
                 data_handled = true;
             }
@@ -985,11 +990,10 @@ async fn handle_link_request_as_destination<'a>(
                     packet,
                     destination.sign_key().clone(),
                     destination.desc,
-                    handler.link_in_event_tx.clone(),
                 );
 
                 if let Ok(mut link) = link {
-                    handler.send_packet(link.prove()).await;
+                    handler.send_packet(link.prove(&handler.link_in_event_tx)).await;
 
                     log::debug!(
                         "tp({}): save input link {} for destination {}",
@@ -1071,7 +1075,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                 link.stale();
             }
             LinkStatus::Stale if link.elapsed() > timer_config.in_link_stale + timer_config.in_link_close => {
-                if let Some(packet) = link.teardown().unwrap_or_else(|err| {
+                if let Some(packet) = link.teardown(&handler.link_in_event_tx).unwrap_or_else(|err| {
                     log::error!("tp({}): teardown stale in-link error: {err:?}", handler.config.name);
                     None
                 }) {
@@ -1103,7 +1107,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                     }
                 } else {
                     if link.elapsed() > timer_config.out_link_stale + timer_config.out_link_close {
-                        if let Some(packet) = link.teardown().unwrap_or_else(|err| {
+                        if let Some(packet) = link.teardown(&handler.link_out_event_tx).unwrap_or_else(|err| {
                             log::error!(
                                 "tp({}): teardown stale out-link error: {err:?}",
                                 handler.config.name
@@ -1125,7 +1129,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                 handler.send_packet(link.request()).await;
             }
             LinkStatus::Closed => {
-                link.close();
+                link.close(&handler.link_out_event_tx);
                 links_to_remove.push(*link_entry.0);
             }
             _ => {}
