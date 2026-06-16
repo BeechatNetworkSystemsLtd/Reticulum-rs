@@ -49,7 +49,7 @@ async fn main() {
             Ok(announce) => {
                 let len = links.len();
                 let destination = announce.destination.lock().await;
-                if links.get(&destination.desc.address_hash).is_none() {
+                if links.contains_key(&destination.desc.address_hash) {
                     let link = transport.lock().await.link(destination.desc).await;
                     let link = Arc::new(
                         tokio::sync::Mutex::new(

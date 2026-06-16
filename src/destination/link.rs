@@ -168,6 +168,8 @@ impl Link {
         self.proves_messages = setting;
     }
 
+    #[allow(unused)]  // This method is mocked out in the unit tests, so clippy
+                      // will complain about it being unused in the test build.
     pub(crate) fn bind_to_channel(
         &mut self
     ) -> Result<tokio::sync::broadcast::Receiver<LinkPayload>, RnsError> {
