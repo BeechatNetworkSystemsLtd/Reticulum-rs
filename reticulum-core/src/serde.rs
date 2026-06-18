@@ -30,10 +30,8 @@ impl Serialize for Packet {
     fn serialize(&self, buffer: &mut OutputBuffer) -> Result<usize, RnsError> {
         self.header.serialize(buffer)?;
 
-        if self.header.header_type == HeaderType::Type2 {
-            if let Some(transport) = &self.transport {
-                transport.serialize(buffer)?;
-            }
+        if self.header.header_type == HeaderType::Type2 && let Some(transport) = &self.transport {
+            transport.serialize(buffer)?;
         }
 
         self.destination.serialize(buffer)?;

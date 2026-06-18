@@ -357,7 +357,7 @@ impl Link {
     }
 
     fn post_event<E: LinkEventSink>(&self, event_tx: &E, event: LinkEvent) {
-        let _ = event_tx.send(LinkEventData {
+        event_tx.send(LinkEventData {
             id: self.id,
             address_hash: self.destination.address_hash,
             event,
@@ -509,13 +509,10 @@ impl Link {
             }
         }
 
-        if self.status == LinkStatus::Active && packet.context == PacketContext::None {
-            if let Ok(hash) = validate_message_proof(
-                &self.destination,
-                packet.data.as_slice()
-            ) {
-                self.post_event(event_tx, LinkEvent::Proof(hash));
-            }
+        if self.status == LinkStatus::Active && packet.context == PacketContext::None
+            && let Ok(hash) = validate_message_proof(&self.destination, packet.data.as_slice())
+        {
+            self.post_event(event_tx, LinkEvent::Proof(hash));
         }
 
         LinkHandleResult::None
