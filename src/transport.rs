@@ -1,51 +1,21 @@
-use alloc::sync::Arc;
-use announce_limits::AnnounceLimits;
-use announce_table::AnnounceTable;
-use link_table::LinkTable;
-use packet_cache::PacketCache;
-use path_requests::create_path_request_destination;
-use path_requests::PathRequests;
-use path_requests::TagBytes;
-use path_table::PathTable;
-use rand_core::OsRng;
 use std::collections::HashMap;
 use std::time::Duration;
+
+use alloc::sync::Arc;
+use rand_core::OsRng;
+use tokio::sync::{broadcast, Mutex, MutexGuard};
 use tokio::time;
 use tokio_util::sync::CancellationToken;
 
-use tokio::sync::broadcast;
-use tokio::sync::Mutex;
-use tokio::sync::MutexGuard;
-
-use crate::destination::link::Link;
-use crate::destination::link::LinkEventData;
-use crate::destination::link::LinkHandleResult;
-use crate::destination::link::LinkId;
-use crate::destination::link::LinkStatus;
-use crate::destination::DestinationAnnounce;
-use crate::destination::DestinationDesc;
-use crate::destination::DestinationHandleStatus;
-use crate::destination::DestinationName;
-use crate::destination::SingleInputDestination;
-use crate::destination::SingleOutputDestination;
-
+use crate::destination::link::{Link, LinkEventData, LinkEventSink, LinkExt, LinkHandleResult,
+    LinkId, LinkStatus};
+use crate::destination::{DestinationAnnounce, DestinationDesc, DestinationHandleStatus,
+    DestinationName, SingleInputDestination, SingleOutputDestination};
 use crate::error::RnsError;
-
-use crate::hash::AddressHash;
-use crate::hash::Hash;
+use crate::hash::{AddressHash, Hash};
 use crate::identity::PrivateIdentity;
-
-use crate::iface::InterfaceManager;
-use crate::iface::InterfaceRxReceiver;
-use crate::iface::RxMessage;
-use crate::iface::TxMessage;
-use crate::iface::TxMessageType;
-
-use crate::packet::DestinationType;
-use crate::packet::Packet;
-use crate::packet::PacketContext;
-use crate::packet::PacketDataBuffer;
-use crate::packet::PacketType;
+use crate::iface::{InterfaceManager, InterfaceRxReceiver, RxMessage, TxMessage, TxMessageType};
+use crate::packet::{DestinationType, Packet, PacketContext, PacketDataBuffer, PacketType};
 
 mod announce_limits;
 mod announce_table;
@@ -53,6 +23,13 @@ mod link_table;
 mod packet_cache;
 mod path_requests;
 mod path_table;
+
+use self::announce_limits::AnnounceLimits;
+use self::announce_table::AnnounceTable;
+use self::link_table::LinkTable;
+use self::packet_cache::PacketCache;
+use self::path_requests::{create_path_request_destination, PathRequests, TagBytes};
+use self::path_table::PathTable;
 
 // TODO: Configure via features
 const PACKET_TRACE: bool = false;
@@ -133,6 +110,19 @@ pub struct AnnounceEvent {
     pub app_data: PacketDataBuffer,
 }
 
+#[derive(Clone)]
+struct BroadcastLinkEventSink(broadcast::Sender<LinkEventData>);
+impl From<broadcast::Sender<LinkEventData>> for BroadcastLinkEventSink {
+    fn from(sender: broadcast::Sender<LinkEventData>) -> Self {
+        Self(sender)
+    }
+}
+impl LinkEventSink for BroadcastLinkEventSink {
+    fn send(&self, event: LinkEventData) {
+        let _ = self.0.send(event);
+    }
+}
+
 pub(crate) struct TransportHandler {
     config: TransportConfig,
     iface_manager: Arc<Mutex<InterfaceManager>>,
@@ -153,8 +143,8 @@ pub(crate) struct TransportHandler {
 
     path_requests: PathRequests,
 
-    link_in_event_tx: broadcast::Sender<LinkEventData>,
-    link_out_event_tx: broadcast::Sender<LinkEventData>,
+    link_in_event_tx: BroadcastLinkEventSink,
+    link_out_event_tx: BroadcastLinkEventSink,
     received_data_tx: broadcast::Sender<ReceivedData>,
 
     fixed_dest_path_requests: AddressHash,
@@ -164,8 +154,8 @@ pub(crate) struct TransportHandler {
 
 pub struct Transport {
     name: String,
-    link_in_event_tx: broadcast::Sender<LinkEventData>,
-    link_out_event_tx: broadcast::Sender<LinkEventData>,
+    link_in_event_tx: BroadcastLinkEventSink,
+    link_out_event_tx: BroadcastLinkEventSink,
     received_data_tx: broadcast::Sender<ReceivedData>,
     iface_messages_tx: broadcast::Sender<RxMessage>,
     handler: Arc<Mutex<TransportHandler>>,
@@ -277,8 +267,8 @@ impl Transport {
             packet_cache: Mutex::new(PacketCache::new()),
             path_requests,
             announce_tx,
-            link_in_event_tx: link_in_event_tx.clone(),
-            link_out_event_tx: link_out_event_tx.clone(),
+            link_in_event_tx: link_in_event_tx.clone().into(),
+            link_out_event_tx: link_out_event_tx.clone().into(),
             received_data_tx: received_data_tx.clone(),
             fixed_dest_path_requests: path_request_dest,
             cancel: cancel.clone(),
@@ -296,8 +286,8 @@ impl Transport {
         Self {
             name,
             iface_manager,
-            link_in_event_tx,
-            link_out_event_tx,
+            link_in_event_tx: link_in_event_tx.into(),
+            link_out_event_tx: link_out_event_tx.into(),
             received_data_tx,
             iface_messages_tx,
             handler,
@@ -521,11 +511,11 @@ impl Transport {
     }
 
     pub fn out_link_events(&self) -> broadcast::Receiver<LinkEventData> {
-        self.link_out_event_tx.subscribe()
+        self.link_out_event_tx.0.subscribe()
     }
 
     pub fn in_link_events(&self) -> broadcast::Receiver<LinkEventData> {
-        self.link_in_event_tx.subscribe()
+        self.link_in_event_tx.0.subscribe()
     }
 
     pub fn received_data_events(&self) -> broadcast::Receiver<ReceivedData> {
