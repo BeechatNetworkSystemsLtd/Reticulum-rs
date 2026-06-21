@@ -59,7 +59,7 @@ impl UdpInterface {
             let socket = socket.unwrap();
             let read_socket = Arc::new(socket);
             let write_socket = read_socket.clone();
-            write_socket.set_broadcast(true);
+            let _ = write_socket.set_broadcast(true);
 
             log::info!("udp_interface bound to <{}>", bind_addr);
 
