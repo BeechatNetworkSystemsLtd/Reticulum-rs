@@ -1,0 +1,60 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [main, ci]
+  pull_request:
+    branches: [main, ci]
+  workflow_dispatch:
+
+env:
+  RUSTFLAGS: "-D warnings"
+  RUSTUP_TOOLCHAIN: "1.95"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: rust:1.95
+    timeout-minutes: 5
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: "true"
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95
+          components: clippy
+      - name: install build dependencies
+        run: apt-get update && apt-get install -y protobuf-compiler
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features
+
+  test:
+    runs-on: ubuntu-latest
+    container: rust:1.95
+    needs: check
+    timeout-minutes: 10
+    env:
+      RETICULUM_TEST_PYTHON_DIR: /opt/Reticulum
+      PYTHONPATH: /opt/Reticulum
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: "true"
+      - name: install dependencies
+        run: apt-get update && apt-get install -y git protobuf-compiler python3
+      - name: checkout Reticulum
+        run: |
+          git clone https://github.com/markqvist/Reticulum.git "$RETICULUM_TEST_PYTHON_DIR"
+          echo "Reticulum rev $(cd $RETICULUM_TEST_PYTHON_DIR && git rev-parse HEAD)"
+      - name: verify Reticulum install
+        run: python3 -c "import RNS; print(RNS.__file__)"
+      - name: test
+        run: cargo test --workspace --all-targets --features="python-tests" -- --no-capture

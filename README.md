@@ -39,6 +39,11 @@ Reticulum-rs/
 │   ├── tcp_client.rs
 │   ├── tcp_server.rs
 │   └── testnet_client.rs
+├── reticulum-daemon/           # RNS Daemon
+│   ├── Cargo.toml
+│   └── src/
+│       ├── config.rs
+│       └── main.rs
 ├── Cargo.toml           # Crate configuration
 ├── LICENSE              # License (MIT/Apache)
 └── build.rs             
@@ -56,6 +61,31 @@ Reticulum-rs/
 cargo build --release
 ```
 
+### Reticulum daemon
+
+#### Converting config from Python Reticulum
+
+Reticulum-rs uses TOML for configuration, whereas the original Python Reticulum uses a custom format parsed by configobj, a Python-only library. If you have an existing Python Reticulum configuration, it will be read and converted to TOML in-memory. If you want to apply the conversion and save a TOML copy, run the `convert-config` subcommand:
+
+```bash
+cargo run -p reticulum-daemon -- convert-config <config_file>
+```
+
+This leaves the original file and creates a copy with .toml extension. The converter handles boolean normalization (True/False/Yes/No → true/false), quotes string values, transforms interface declarations to TOML array-of-tables syntax, and comments out None/nil values which TOML does not support.
+
+#### Running the daemon
+
+```bash
+# Use default config search paths (~/.config/reticulum, ~/.reticulum, /etc/reticulum)
+cargo run -p reticulum-daemon
+
+# Specify a custom config directory
+cargo run -p reticulum-daemon -- --config /path/to/config/dir
+cargo run -p reticulum-daemon -- -c /path/to/config/dir
+```
+
+The daemon searches for either `config` (legacy filename) or `config.toml` in the specified directory.
+
 ### Run Examples
 
 ```bash
@@ -64,6 +94,15 @@ cargo run --example tcp_client
 
 # Kaonic mesh test client
 cargo run --example kaonic_client
+```
+
+### Python integration tests
+
+Integration tests against the Python implementation can be run with the `python-tests` feature and
+setting the `RETICULUM_TEST_PYTHON_DIR` environment variable to the location of the checked out
+Python Reticulum source tree. Example:
+```
+RETICULUM_TEST_PYTHON_DIR=../Reticulum cargo test python --features="python-tests"
 ```
 
 ## Use Cases

@@ -1,7 +1,7 @@
 .cache
 **/.DS_Store
-
 /target
-
 .vscode
-
+tests/rns-py-configs/**/interfaces
+tests/rns-py-configs/**/storage
+rust-analyzer.log

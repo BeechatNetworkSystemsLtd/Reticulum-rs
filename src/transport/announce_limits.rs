@@ -87,7 +87,7 @@ impl AnnounceLimits {
         }
 
         self.limits.insert(
-            destination.clone(),
+            *destination,
             AnnounceLimitEntry::new(Default::default())
         );
 

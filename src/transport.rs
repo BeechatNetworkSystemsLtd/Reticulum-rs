@@ -42,7 +42,6 @@ use crate::iface::TxMessage;
 use crate::iface::TxMessageType;
 
 use crate::packet::DestinationType;
-use crate::packet::Header;
 use crate::packet::Packet;
 use crate::packet::PacketContext;
 use crate::packet::PacketDataBuffer;
@@ -59,20 +58,6 @@ mod path_table;
 const PACKET_TRACE: bool = false;
 pub const PATHFINDER_M: usize = 128; // Max hops
 
-const INTERVAL_LINKS_CHECK: Duration = Duration::from_secs(1);
-const INTERVAL_INPUT_LINK_STALE: Duration = Duration::from_secs(10);
-const INTERVAL_INPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
-const INTERVAL_OUTPUT_LINK_RESTART: Duration = Duration::from_secs(60);
-const INTERVAL_OUTPUT_LINK_STALE: Duration = Duration::from_secs(10);
-const INTERVAL_OUTPUT_LINK_CLOSE: Duration = Duration::from_secs(5);
-const INTERVAL_OUTPUT_LINK_REPEAT: Duration = Duration::from_secs(6);
-const INTERVAL_OUTPUT_LINK_KEEP: Duration = Duration::from_secs(5);
-const INTERVAL_IFACE_CLEANUP: Duration = Duration::from_secs(10);
-const INTERVAL_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(1);
-const INTERVAL_OLD_ANNOUNCES_RETRANSMIT: Duration = Duration::from_secs(60);
-const INTERVAL_KEEP_PACKET_CACHED: Duration = Duration::from_secs(180);
-const INTERVAL_PACKET_CACHE_CLEANUP: Duration = Duration::from_secs(90);
-
 // Other constants
 const KEEP_ALIVE_REQUEST: u8 = 0xFF;
 const KEEP_ALIVE_RESPONSE: u8 = 0xFE;
@@ -81,6 +66,43 @@ const KEEP_ALIVE_RESPONSE: u8 = 0xFE;
 pub struct ReceivedData {
     pub destination: AddressHash,
     pub data: PacketDataBuffer,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TimerConfig {
+    pub link_check: Duration,
+    pub in_link_stale: Duration,
+    pub in_link_close: Duration,
+    pub out_link_restart: Duration,
+    pub out_link_stale: Duration,
+    pub out_link_close: Duration,
+    pub out_link_repeat: Duration,
+    pub out_link_keep: Duration,
+    pub iface_cleanup: Duration,
+    pub announces_retransmit: Duration,
+    pub old_announces_retransmit: Duration,
+    pub keep_packet_cached: Duration,
+    pub packet_cache_cleanup: Duration,
+}
+
+impl Default for TimerConfig {
+    fn default() -> Self {
+        Self {
+            link_check: Duration::from_secs(1),
+            in_link_stale: Duration::from_secs(10),
+            in_link_close: Duration::from_secs(5),
+            out_link_restart: Duration::from_secs(60),
+            out_link_stale: Duration::from_secs(10),
+            out_link_close: Duration::from_secs(5),
+            out_link_repeat: Duration::from_secs(6),
+            out_link_keep: Duration::from_secs(5),
+            iface_cleanup: Duration::from_secs(10),
+            announces_retransmit: Duration::from_secs(1),
+            old_announces_retransmit: Duration::from_secs(60),
+            keep_packet_cached: Duration::from_secs(180),
+            packet_cache_cleanup: Duration::from_secs(90),
+        }
+    }
 }
 
 pub struct TransportConfig {
@@ -101,6 +123,8 @@ pub struct TransportConfig {
     /// Resend announces of remote destinations at a slower pace once
     /// the initial round of announces is over.
     announce_forever: bool,
+
+    timer_config: TimerConfig,
 }
 
 #[derive(Clone)]
@@ -109,7 +133,7 @@ pub struct AnnounceEvent {
     pub app_data: PacketDataBuffer,
 }
 
-struct TransportHandler {
+pub(crate) struct TransportHandler {
     config: TransportConfig,
     iface_manager: Arc<Mutex<InterfaceManager>>,
     announce_tx: broadcast::Sender<AnnounceEvent>,
@@ -158,27 +182,42 @@ impl TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
+            timer_config: TimerConfig::default(),
         }
     }
 
-    pub fn set_retransmit(&mut self, retransmit: bool) {
+    pub fn set_retransmit(mut self, retransmit: bool) -> Self {
         self.retransmit = retransmit;
+        self
     }
 
-    pub fn set_broadcast(&mut self, broadcast: bool) {
+    pub fn set_broadcast(mut self, broadcast: bool) -> Self {
         self.broadcast = broadcast;
+        self
     }
 
-    pub fn set_reroute_eager(&mut self, reroute_eager: bool) {
+    pub fn set_reroute_eager(mut self, reroute_eager: bool) -> Self {
         self.reroute_eager = reroute_eager;
+        self
     }
 
-    pub fn set_restart_outlinks(&mut self, restart_outlinks: bool) {
+    pub fn set_restart_outlinks(mut self, restart_outlinks: bool) -> Self {
         self.restart_outlinks = restart_outlinks;
+        self
     }
 
-    pub fn set_announce_forever(&mut self, announce_forever: bool) {
+    pub fn set_announce_forever(mut self, announce_forever: bool) -> Self {
         self.announce_forever = announce_forever;
+        self
+    }
+
+    pub fn set_timer_config(mut self, timer_config: TimerConfig) -> Self {
+        self.timer_config = timer_config;
+        self
+    }
+
+    pub fn build(self) -> Transport {
+        Transport::new(self)
     }
 }
 
@@ -192,6 +231,7 @@ impl Default for TransportConfig {
             reroute_eager: false,
             restart_outlinks: false,
             announce_forever: false,
+            timer_config: Default::default(),
         }
     }
 }
@@ -211,7 +251,7 @@ impl Transport {
         let iface_manager = Arc::new(Mutex::new(iface_manager));
 
         let transport_id = if config.retransmit {
-            Some(config.identity.address_hash().clone())
+            Some(*config.identity.address_hash())
         } else {
             None
         };
@@ -264,15 +304,10 @@ impl Transport {
     }
 
     pub async fn outbound(&self, packet: &Packet) {
-        let (packet, maybe_iface) = self
-            .handler
-            .lock()
-            .await
-            .path_table
-            .handle_packet(packet);
+        let (packet, maybe_iface) = self.handler.lock().await.path_table.handle_packet(packet);
 
         if let Some(iface) = maybe_iface {
-            self.send_direct(iface, packet.clone()).await;
+            self.send_direct(iface, packet).await;
             log::trace!("Sent outbound packet to {}", iface);
         }
 
@@ -348,27 +383,24 @@ impl Transport {
         }
     }
 
-    pub async fn send_to_out_links(
-        &self,
-        destination: &AddressHash,
-        payload: &[u8]
-    ) -> Vec<Hash> {
+    pub async fn send_to_out_links(&self, destination: &AddressHash, payload: &[u8]) -> Vec<Hash> {
         let mut sent_packets = vec![];
         let handler = self.handler.lock().await;
         for link in handler.out_links.values() {
-            let link = link.lock().await;
+            let mut link = link.lock().await;
             if link.destination().address_hash == *destination
                 && link.status() == LinkStatus::Active
             {
                 let packet = link.data_packet(payload);
                 if let Ok(packet) = packet {
                     handler.send_packet(packet).await;
+                    link.touch();
                     sent_packets.push(packet.hash());
                 }
             }
         }
 
-        if sent_packets.len() == 0 {
+        if sent_packets.is_empty() {
             log::trace!(
                 "tp({}): no output links for {} destination",
                 self.name,
@@ -383,7 +415,7 @@ impl Transport {
         let handler = self.handler.lock().await;
         let mut count = 0usize;
         for link in handler.in_links.values() {
-            let link = link.lock().await;
+            let mut link = link.lock().await;
 
             if link.destination().address_hash == *destination
                 && link.status() == LinkStatus::Active
@@ -391,6 +423,7 @@ impl Transport {
                 let packet = link.data_packet(payload);
                 if let Ok(packet) = packet {
                     handler.send_packet(packet).await;
+                    link.touch();
                     count += 1;
                 }
             }
@@ -478,7 +511,11 @@ impl Transport {
         on_iface: Option<AddressHash>,
         tag: Option<TagBytes>,
     ) {
-        self.handler.lock().await.request_path(destination, on_iface, tag).await
+        self.handler
+            .lock()
+            .await
+            .request_path(destination, on_iface, tag)
+            .await
     }
 
     pub fn out_link_events(&self) -> broadcast::Receiver<LinkEventData> {
@@ -514,16 +551,28 @@ impl Transport {
         destination
     }
 
-    pub async fn get_in_destination(&self, address: &AddressHash)
-        -> Option<Arc<Mutex<SingleInputDestination>>>
-    {
-        self.handler.lock().await.single_in_destinations.get(address).cloned()
+    pub async fn get_in_destination(
+        &self,
+        address: &AddressHash,
+    ) -> Option<Arc<Mutex<SingleInputDestination>>> {
+        self.handler
+            .lock()
+            .await
+            .single_in_destinations
+            .get(address)
+            .cloned()
     }
 
-    pub async fn get_out_destination(&self, address: &AddressHash)
-        -> Option<Arc<Mutex<SingleOutputDestination>>>
-    {
-        self.handler.lock().await.single_out_destinations.get(address).cloned()
+    pub async fn get_out_destination(
+        &self,
+        address: &AddressHash,
+    ) -> Option<Arc<Mutex<SingleOutputDestination>>> {
+        self.handler
+            .lock()
+            .await
+            .single_out_destinations
+            .get(address)
+            .cloned()
     }
 
     pub async fn has_destination(&self, address: &AddressHash) -> bool {
@@ -534,8 +583,10 @@ impl Transport {
         self.handler.lock().await.knows_destination(address)
     }
 
-    pub fn get_handler(&self) -> Arc<Mutex<TransportHandler>> {
-        // direct access to handler for testing purposes
+    #[allow(unused)]
+    // For testing purposes only. Since it is only used in unit tests, it
+    // would generate a warning when running cargo build.
+    fn get_handler(&self) -> Arc<Mutex<TransportHandler>> {
         self.handler.clone()
     }
 }
@@ -575,13 +626,13 @@ impl TransportHandler {
         match packet.header.packet_type {
             PacketType::Announce => {
                 return true;
-            },
+            }
             PacketType::LinkRequest => {
                 allow_duplicate = true;
-            },
+            }
             PacketType::Data => {
                 allow_duplicate = packet.context == PacketContext::KeepAlive;
-            },
+            }
             PacketType::Proof => {
                 if packet.context == PacketContext::LinkRequestProof {
                     if let Some(link) = self.in_links.get(&packet.destination) {
@@ -591,7 +642,6 @@ impl TransportHandler {
                     }
                 }
             },
-            _ => {}
         }
 
         let is_new = self.packet_cache.lock().await.update(packet);
@@ -603,14 +653,15 @@ impl TransportHandler {
         &mut self,
         address: &AddressHash,
         on_iface: Option<AddressHash>,
-        tag: Option<TagBytes>
+        tag: Option<TagBytes>,
     ) {
         let packet = self.path_requests.generate(address, tag);
 
         self.send(TxMessage {
             tx_type: TxMessageType::Broadcast(on_iface),
             packet,
-        }).await;
+        })
+        .await;
     }
 }
 
@@ -623,42 +674,38 @@ async fn handle_proof<'a>(packet: &Packet, mut handler: MutexGuard<'a, Transport
 
     for link in handler.out_links.values() {
         let mut link = link.lock().await;
-        match link.handle_packet(packet, true) {
-            LinkHandleResult::Activated => {
-                let rtt_packet = link.create_rtt();
-                handler.send_packet(rtt_packet).await;
-            },
-            _ => {}
+        if let LinkHandleResult::Activated = link.handle_packet(packet, true) {
+            let rtt_packet = link.create_rtt();
+            handler.send_packet(rtt_packet).await;
         }
     }
 
     let maybe_packet = handler.link_table.handle_proof(packet);
 
     if let Some((packet, iface)) = maybe_packet {
-        handler.send(TxMessage {
-            tx_type: TxMessageType::Direct(iface),
-            packet
-        })
-        .await;
+        handler
+            .send(TxMessage {
+                tx_type: TxMessageType::Direct(iface),
+                packet,
+            })
+            .await;
     }
 }
 
 async fn send_to_next_hop<'a>(
     packet: &Packet,
     handler: &MutexGuard<'a, TransportHandler>,
-    lookup: Option<AddressHash>
+    lookup: Option<AddressHash>,
 ) -> bool {
-    let (packet, maybe_iface) = handler.path_table.handle_inbound_packet(
-        packet,
-        lookup
-    );
+    let (packet, maybe_iface) = handler.path_table.handle_inbound_packet(packet, lookup);
 
     if let Some(iface) = maybe_iface {
-        handler.send(TxMessage {
-            tx_type: TxMessageType::Direct(iface),
-            packet,
-        })
-        .await;
+        handler
+            .send(TxMessage {
+                tx_type: TxMessageType::Direct(iface),
+                packet,
+            })
+            .await;
     }
 
     maybe_iface.is_some()
@@ -666,22 +713,22 @@ async fn send_to_next_hop<'a>(
 
 async fn handle_keepalive_response<'a>(
     packet: &Packet,
-    handler: &MutexGuard<'a, TransportHandler>
+    handler: &MutexGuard<'a, TransportHandler>,
 ) -> bool {
-    if packet.context == PacketContext::KeepAlive {
-        if packet.data.as_slice()[0] == KEEP_ALIVE_RESPONSE {
-            let lookup = handler.link_table.handle_keepalive(packet);
+    if packet.context == PacketContext::KeepAlive
+        && packet.data.as_slice()[0] == KEEP_ALIVE_RESPONSE
+    {
+        let lookup = handler.link_table.handle_keepalive(packet);
 
-            if let Some((propagated, iface)) = lookup {
-                handler.send(TxMessage {
-                    tx_type: TxMessageType::Direct(iface),
-                    packet: propagated,
-                })
-                .await;
-            }
-
-            return true;
+        if let Some((propagated, iface)) = lookup {
+            handler.send(TxMessage {
+                tx_type: TxMessageType::Direct(iface),
+                packet: propagated,
+            })
+            .await;
         }
+
+        return true;
     }
 
     false
@@ -691,6 +738,8 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
     let mut data_handled = false;
 
     if packet.header.destination_type == DestinationType::Link {
+        let mut local_out_link_handled = false;
+
         if let Some(link) = handler.in_links.get(&packet.destination).cloned() {
             let mut link = link.lock().await;
             let result = link.handle_packet(packet, false);
@@ -698,34 +747,43 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
                 LinkHandleResult::KeepAlive => {
                     let packet = link.keep_alive_packet(KEEP_ALIVE_RESPONSE);
                     handler.send_packet(packet).await;
-                },
+                }
                 LinkHandleResult::MessageReceived(Some(proof)) => {
                     handler.send_packet(proof).await;
-                },
+                }
                 _ => {}
             }
         }
 
         for link in handler.out_links.values() {
             let mut link = link.lock().await;
-            let _ = link.handle_packet(packet, true);
-            data_handled = true;
+            if link.id() == &packet.destination {
+                let _ = link.handle_packet(packet, true);
+                local_out_link_handled = true;
+                data_handled = true;
+            }
         }
 
-        if handle_keepalive_response(packet, &handler).await {
+        if !local_out_link_handled && handle_keepalive_response(packet, &handler).await {
             return;
         }
 
-        let lookup = handler.link_table.original_destination(&packet.destination);
-        if lookup.is_some() {
-            let sent = send_to_next_hop(packet, &handler, lookup).await;
+        if !local_out_link_handled {
+            let lookup = handler.link_table.original_destination(&packet.destination);
+            if lookup.is_some() {
+                let sent = send_to_next_hop(packet, &handler, lookup).await;
 
-            log::trace!(
-                "tp({}): {} packet to remote link {}",
-                handler.config.name,
-                if sent { "forwarded" } else { "could not forward" },
-                packet.destination
-            );
+                log::trace!(
+                    "tp({}): {} packet to remote link {}",
+                    handler.config.name,
+                    if sent {
+                        "forwarded"
+                    } else {
+                        "could not forward"
+                    },
+                    packet.destination
+                );
+            }
         }
     }
 
@@ -738,8 +796,8 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
             data_handled = true;
 
             handler.received_data_tx.send(ReceivedData {
-                destination: packet.destination.clone(),
-                data: packet.data.clone(),
+                destination: packet.destination,
+                data: packet.data,
             }).ok();
         } else {
             data_handled = send_to_next_hop(packet, &handler, None).await;
@@ -760,18 +818,18 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
 async fn handle_announce<'a>(
     packet: &Packet,
     mut handler: MutexGuard<'a, TransportHandler>,
-    iface: AddressHash
+    iface: AddressHash,
 ) {
     if handler.has_destination(&packet.destination) {
         // destination is local
-        return
+        return;
     }
 
     if let Some(blocked_until) = handler.announce_limits.check(&packet.destination) {
         log::info!(
             "tp({}): too many announces from {}, blocked for {} seconds",
             handler.config.name,
-            &packet.destination,
+            packet.destination,
             blocked_until.as_secs(),
         );
         return;
@@ -798,32 +856,23 @@ async fn handle_announce<'a>(
                 .insert(packet.destination, destination.clone());
         }
 
-        handler.announce_table.add(
-            packet,
-            dest_hash,
-            iface,
-        );
+        handler.announce_table.add(packet, dest_hash, iface);
 
-        handler.path_table.handle_announce(
-            packet,
-            packet.transport,
-            iface,
-        );
+        handler
+            .path_table
+            .handle_announce(packet, packet.transport, iface);
 
         let retransmit = handler.config.retransmit;
         if retransmit {
-            let transport_id = handler.config.identity.address_hash().clone();
-            if let Some(message) = handler.announce_table.new_packet(
-                &dest_hash,
-                &transport_id,
-            ) {
+            let transport_id = *handler.config.identity.address_hash();
+            if let Some(message) = handler.announce_table.new_packet(&dest_hash, &transport_id) {
                 handler.send(message).await;
             }
         }
 
         let _ = handler.announce_tx.send(AnnounceEvent {
             destination,
-            app_data: PacketDataBuffer::new_from_slice(&app_data),
+            app_data: PacketDataBuffer::new_from_slice(app_data),
         });
     }
 }
@@ -841,10 +890,12 @@ async fn handle_path_request<'a>(
                 .path_response(OsRng, None)
                 .expect("valid path response");
 
-            handler.send(TxMessage {
-                tx_type: TxMessageType::Direct(iface),
-                packet: response,
-            }).await;
+            handler
+                .send(TxMessage {
+                    tx_type: TxMessageType::Direct(iface),
+                    packet: response,
+                })
+                .await;
 
             log::trace!(
                 "tp({}): send direct path response over {}",
@@ -870,7 +921,9 @@ async fn handle_path_request<'a>(
 
                 let hops = entry.hops;
 
-                handler.announce_table.add_response(request.destination, iface, hops);
+                handler
+                    .announce_table
+                    .add_response(request.destination, iface, hops);
 
                 log::trace!(
                     "tp({}): scheduled remote path response to {} ({} hops) over {}",
@@ -884,15 +937,17 @@ async fn handle_path_request<'a>(
             }
         }
 
-        if let Some(packet) = handler.path_requests.generate_recursive(
-            &request.destination,
-            Some(iface),
-            None
-        ) {
-            handler.send(TxMessage {
-                tx_type: TxMessageType::Broadcast(Some(iface)),
-                packet
-            }).await;
+        if let Some(packet) =
+            handler
+                .path_requests
+                .generate_recursive(&request.destination, Some(iface), None)
+        {
+            handler
+                .send(TxMessage {
+                    tx_type: TxMessageType::Broadcast(Some(iface)),
+                    packet,
+                })
+                .await;
         }
     }
 }
@@ -900,7 +955,7 @@ async fn handle_path_request<'a>(
 async fn handle_fixed_destinations<'a>(
     packet: &Packet,
     handler: &mut MutexGuard<'a, TransportHandler>,
-    iface: AddressHash
+    iface: AddressHash,
 ) -> bool {
     if packet.destination == handler.fixed_dest_path_requests {
         handle_path_request(packet, handler, iface).await;
@@ -913,7 +968,7 @@ async fn handle_fixed_destinations<'a>(
 async fn handle_link_request_as_destination<'a>(
     destination: Arc<Mutex<SingleInputDestination>>,
     packet: &Packet,
-    mut handler: MutexGuard<'a, TransportHandler>
+    mut handler: MutexGuard<'a, TransportHandler>,
 ) {
     let mut destination = destination.lock().await;
     match destination.handle_packet(packet) {
@@ -956,16 +1011,14 @@ async fn handle_link_request_as_destination<'a>(
 async fn handle_link_request_as_intermediate<'a>(
     received_from: AddressHash,
     next_hop: AddressHash,
-    next_hop_iface: AddressHash,
     packet: &Packet,
-    mut handler: MutexGuard<'a, TransportHandler>
+    mut handler: MutexGuard<'a, TransportHandler>,
 ) {
     handler.link_table.add(
         packet,
         packet.destination,
         received_from,
         next_hop,
-        next_hop_iface
     );
 
     send_to_next_hop(packet, &handler, None).await;
@@ -974,7 +1027,7 @@ async fn handle_link_request_as_intermediate<'a>(
 async fn handle_link_request<'a>(
     packet: &Packet,
     iface: AddressHash,
-    mut handler: MutexGuard<'a, TransportHandler>
+    handler: MutexGuard<'a, TransportHandler>
 ) {
     if let Some(destination) = handler
         .single_in_destinations
@@ -995,14 +1048,8 @@ async fn handle_link_request<'a>(
             packet.destination
         );
 
-        let (next_hop, next_iface) = entry;
-        handle_link_request_as_intermediate(
-            iface,
-            next_hop,
-            next_iface,
-            packet,
-            handler
-        ).await;
+        let (next_hop, _) = entry;
+        handle_link_request_as_intermediate(iface, next_hop, packet, handler).await;
     } else {
         log::trace!(
             "tp({}): dropping link request to unknown destination {}",
@@ -1014,15 +1061,16 @@ async fn handle_link_request<'a>(
 
 async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     let mut links_to_remove: Vec<AddressHash> = Vec::new();
+    let timer_config = handler.config.timer_config;
 
     // Clean up input links
     for link_entry in &handler.in_links {
         let mut link = link_entry.1.lock().await;
         match link.status() {
-            LinkStatus::Active => if link.elapsed() > INTERVAL_INPUT_LINK_STALE {
+            LinkStatus::Active if link.elapsed() > timer_config.in_link_stale => {
                 link.stale();
             }
-            LinkStatus::Stale => if link.elapsed() > INTERVAL_INPUT_LINK_STALE + INTERVAL_INPUT_LINK_CLOSE {
+            LinkStatus::Stale if link.elapsed() > timer_config.in_link_stale + timer_config.in_link_close => {
                 if let Some(packet) = link.teardown().unwrap_or_else(|err| {
                     log::error!("tp({}): teardown stale in-link error: {err:?}", handler.config.name);
                     None
@@ -1036,7 +1084,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     }
 
     for addr in &links_to_remove {
-        handler.in_links.remove(&addr);
+        handler.in_links.remove(addr);
     }
 
     links_to_remove.clear();
@@ -1045,18 +1093,21 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
         let mut link = link_entry.1.lock().await;
 
         match link.status() {
-            LinkStatus::Active => if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE {
+            LinkStatus::Active if link.elapsed() > timer_config.out_link_stale => {
                 link.stale();
             }
             LinkStatus::Stale => {
                 if handler.config.restart_outlinks {
-                    if link.elapsed() > INTERVAL_OUTPUT_LINK_RESTART {
+                    if link.elapsed() > timer_config.out_link_restart {
                         link.restart();
                     }
                 } else {
-                    if link.elapsed() > INTERVAL_OUTPUT_LINK_STALE + INTERVAL_OUTPUT_LINK_CLOSE {
+                    if link.elapsed() > timer_config.out_link_stale + timer_config.out_link_close {
                         if let Some(packet) = link.teardown().unwrap_or_else(|err| {
-                            log::error!("tp({}): teardown stale out-link error: {err:?}", handler.config.name);
+                            log::error!(
+                                "tp({}): teardown stale out-link error: {err:?}",
+                                handler.config.name
+                            );
                             None
                         }) {
                             handler.send_packet(packet).await
@@ -1065,7 +1116,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                     }
                 }
             }
-            LinkStatus::Pending => if link.elapsed() > INTERVAL_OUTPUT_LINK_REPEAT {
+            LinkStatus::Pending if link.elapsed() > timer_config.out_link_repeat => {
                 log::warn!(
                     "tp({}): repeat link request {}",
                     handler.config.name,
@@ -1082,7 +1133,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     }
 
     for addr in &links_to_remove {
-        handler.out_links.remove(&addr);
+        handler.out_links.remove(addr);
     }
 }
 
@@ -1091,7 +1142,9 @@ async fn handle_keep_links<'a>(handler: MutexGuard<'a, TransportHandler>) {
         let link = link.lock().await;
 
         if link.status() == LinkStatus::Active {
-            handler.send_packet(link.keep_alive_packet(KEEP_ALIVE_REQUEST)).await;
+            handler
+                .send_packet(link.keep_alive_packet(KEEP_ALIVE_REQUEST))
+                .await;
         }
     }
 }
@@ -1102,42 +1155,23 @@ async fn handle_cleanup<'a>(handler: MutexGuard<'a, TransportHandler>) {
 
 async fn retransmit_announces<'a>(
     mut handler: MutexGuard<'a, TransportHandler>,
-    retransmit_old: bool
+    retransmit_old: bool,
 ) {
-    let transport_id = handler.config.identity.address_hash().clone();
-    let messages = handler.announce_table.to_retransmit(&transport_id);
+    let transport_id = *handler.config.identity.address_hash();
+    let messages = handler.announce_table.tx_to_retransmit(&transport_id);
 
     for message in messages {
         handler.send(message).await;
     }
 
     if retransmit_old {
-        let messages = handler.announce_table.to_retransmit_old(&transport_id);
+        let messages = handler.announce_table.tx_to_retransmit_old(&transport_id);
 
         for message in messages {
             handler.send(message).await;
         }
     }
 }
-
-fn create_retransmit_packet(packet: &Packet) -> Packet {
-    Packet {
-        header: Header {
-            ifac_flag: packet.header.ifac_flag,
-            header_type: packet.header.header_type,
-            propagation_type: packet.header.propagation_type,
-            destination_type: packet.header.destination_type,
-            packet_type: packet.header.packet_type,
-            hops: packet.header.hops + 1,
-        },
-        ifac: packet.ifac,
-        destination: packet.destination,
-        transport: packet.transport,
-        context: packet.context,
-        data: packet.data,
-    }
-}
-
 
 async fn manage_transport(
     handler: Arc<Mutex<TransportHandler>>,
@@ -1146,8 +1180,10 @@ async fn manage_transport(
 ) {
     let cancel = handler.lock().await.cancel.clone();
     let retransmit = handler.lock().await.config.retransmit;
+    let timer_config = handler.lock().await.config.timer_config;
+
     let mut last_retransmit_old = if handler.lock().await.config.announce_forever {
-        Some(time::Instant::now() - INTERVAL_OLD_ANNOUNCES_RETRANSMIT)
+        Some(time::Instant::now() - timer_config.old_announces_retransmit)
     } else {
         None
     };
@@ -1243,7 +1279,7 @@ async fn manage_transport(
                     _ = cancel.cancelled() => {
                         break;
                     },
-                    _ = time::sleep(INTERVAL_LINKS_CHECK) => {
+                    _ = time::sleep(timer_config.link_check) => {
                         handle_check_links(handler.lock().await).await;
                     }
                 }
@@ -1265,7 +1301,7 @@ async fn manage_transport(
                     _ = cancel.cancelled() => {
                         break;
                     },
-                    _ = time::sleep(INTERVAL_OUTPUT_LINK_KEEP) => {
+                    _ = time::sleep(timer_config.out_link_keep) => {
                         handle_keep_links(handler.lock().await).await;
                     }
                 }
@@ -1287,7 +1323,7 @@ async fn manage_transport(
                     _ = cancel.cancelled() => {
                         break;
                     },
-                    _ = time::sleep(INTERVAL_IFACE_CLEANUP) => {
+                    _ = time::sleep(timer_config.iface_cleanup) => {
                         handle_cleanup(handler.lock().await).await;
                     }
                 }
@@ -1309,14 +1345,14 @@ async fn manage_transport(
                     _ = cancel.cancelled() => {
                         break;
                     },
-                    _ = time::sleep(INTERVAL_PACKET_CACHE_CLEANUP) => {
+                    _ = time::sleep(timer_config.packet_cache_cleanup) => {
                         let mut handler = handler.lock().await;
 
                         handler
                             .packet_cache
                             .lock()
                             .await
-                            .release(INTERVAL_KEEP_PACKET_CACHED);
+                            .release(timer_config.keep_packet_cached);
 
                         handler.link_table.remove_stale();
                     },
@@ -1339,12 +1375,12 @@ async fn manage_transport(
                     _ = cancel.cancelled() => {
                         break;
                     },
-                    _ = time::sleep(INTERVAL_ANNOUNCES_RETRANSMIT) => {
+                    _ = time::sleep(timer_config.announces_retransmit) => {
                         let mut retransmit_old = false;
 
                         if let Some(instant) = last_retransmit_old {
                             let now = time::Instant::now();
-                            if now - instant > INTERVAL_OLD_ANNOUNCES_RETRANSMIT {
+                            if now - instant > timer_config.old_announces_retransmit {
                                 retransmit_old = true;
                                 last_retransmit_old = Some(now);
                             }
@@ -1366,14 +1402,14 @@ mod tests {
 
     #[tokio::test]
     async fn drop_duplicates() {
-        let mut config: TransportConfig = Default::default();
-        config.set_retransmit(true);
+        let transport = TransportConfig::default()
+            .set_retransmit(true)
+            .build();
 
-        let transport = Transport::new(config);
         let handler = transport.get_handler();
 
-        let source1 = AddressHash::new_from_slice(&[1u8; 32]);
-        let source2 = AddressHash::new_from_slice(&[2u8; 32]);
+        let _source1 = AddressHash::new_from_slice(&[1u8; 32]);
+        let _source2 = AddressHash::new_from_slice(&[2u8; 32]);
         let next_hop_iface = AddressHash::new_from_slice(&[3u8; 32]);
         let destination = AddressHash::new_from_slice(&[4u8; 32]);
 
@@ -1383,26 +1419,66 @@ mod tests {
         announce.header.hops = 3;
         announce.transport = Some(destination);
 
-        assert!(handler.lock().await.filter_duplicate_packets(&announce).await);
+        assert!(
+            handler
+                .lock()
+                .await
+                .filter_duplicate_packets(&announce)
+                .await
+        );
 
         handle_announce(&announce, handler.lock().await, next_hop_iface).await;
 
-        let mut data_packet: Packet = Default::default();
-        data_packet.data = PacketDataBuffer::new_from_slice(b"foo");
-        data_packet.destination = destination;
-        let mut duplicate: Packet = data_packet.clone();
+        let data_packet: Packet = Packet {
+            data: PacketDataBuffer::new_from_slice(b"foo"),
+            destination,
+            ..Default::default()
+        };
+        let duplicate: Packet = data_packet;
 
-        let mut different_packet = data_packet.clone();
-        different_packet.data = PacketDataBuffer::new_from_slice(b"bar");
+        let different_packet = Packet {
+            data: PacketDataBuffer::new_from_slice(b"bar"),
+            .. data_packet
+        };
 
-        assert!(handler.lock().await.filter_duplicate_packets(&data_packet).await);
-        assert!(!handler.lock().await.filter_duplicate_packets(&duplicate).await);
-        assert!(handler.lock().await.filter_duplicate_packets(&different_packet).await);
+        assert!(
+            handler
+                .lock()
+                .await
+                .filter_duplicate_packets(&data_packet)
+                .await
+        );
+        assert!(
+            !handler
+                .lock()
+                .await
+                .filter_duplicate_packets(&duplicate)
+                .await
+        );
+        assert!(
+            handler
+                .lock()
+                .await
+                .filter_duplicate_packets(&different_packet)
+                .await
+        );
 
         tokio::time::sleep(Duration::from_secs(2)).await;
-        handler.lock().await.packet_cache.lock().await.release(Duration::from_secs(1));
+        handler
+            .lock()
+            .await
+            .packet_cache
+            .lock()
+            .await
+            .release(Duration::from_secs(1));
 
         // Packet should have been removed from cache (stale)
-        assert!(handler.lock().await.filter_duplicate_packets(&duplicate).await);
+        assert!(
+            handler
+                .lock()
+                .await
+                .filter_duplicate_packets(&duplicate)
+                .await
+        );
     }
 }

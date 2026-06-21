@@ -27,17 +27,9 @@ async fn build_transport_full(
     client_addr: &[&str],
     retransmit: bool
 ) -> Transport {
-    let mut config = TransportConfig::new(
-        name,
-        &PrivateIdentity::new_from_rand(OsRng),
-        true
-    );
-
-    if retransmit {
-        config.set_retransmit(true);
-    }
-
-    let transport = Transport::new(config);
+    let transport = TransportConfig::new(name, &PrivateIdentity::new_from_rand(OsRng), true)
+        .set_retransmit(retransmit)
+        .build();
 
     transport.iface_manager().lock().await.spawn(
         TcpServer::new(server_addr, transport.iface_manager()),
@@ -171,12 +163,15 @@ async fn message_proof_over_remote_link() {
         .add_destination(id_c, DestinationName::new("test", "link_to"))
         .await;
     let dest_c_hash = dest_c.lock().await.desc.address_hash;
-
+    // NOTE: we have to wait before sending announce because if the TCP client has not yet
+    // connected, the outgoing packet will be dropped
+    // TODO: can we do this without waiting?
+    time::sleep(Duration::from_millis(100)).await;
     transport_c.send_announce(&dest_c, None).await;
 
     transport_a.recv_announces().await.recv().await.unwrap();
     let link = transport_a.link(dest_c.lock().await.desc).await;
-    let link_id = link.lock().await.id().clone();
+    let link_id = *link.lock().await.id();
 
     time::sleep(Duration::from_secs(5)).await;
 
