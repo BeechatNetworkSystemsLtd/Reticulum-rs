@@ -62,7 +62,7 @@ async fn python_announce() {
 
     let transport = TransportConfig::default().build();
     let _ = transport.iface_manager().lock().await.spawn(
-        UdpInterface::new("0.0.0.0:4242", Some("127.0.0.1:4243")),
+        UdpInterface::new("0.0.0.0:4242", Some("127.0.0.1:4243"), false),
         UdpInterface::spawn);
     let mut recv_announces = transport.recv_announces().await;
     let handle = tokio::spawn(async move {
@@ -170,7 +170,7 @@ async fn python_link_client() {
     log::info!("got server destination hash: {server_hash}");
     let transport = TransportConfig::default().build();
     let _ = transport.iface_manager().lock().await.spawn(
-        UdpInterface::new("0.0.0.0:4242", Some("127.0.0.1:4243")),
+        UdpInterface::new("0.0.0.0:4242", Some("127.0.0.1:4243"), false),
         UdpInterface::spawn);
     let mut recv_announces = transport.recv_announces().await;
     // request announce
@@ -236,7 +236,7 @@ async fn python_link_server() {
     //let server_identity = PrivateIdentity::new_from_name("test-python-link-server");
     let mut transport = TransportConfig::default().build();
     let _ = transport.iface_manager().lock().await.spawn(
-        UdpInterface::new("0.0.0.0:4242", Some("127.0.0.1:4243")),
+        UdpInterface::new("0.0.0.0:4242", Some("127.0.0.1:4243"), false),
         UdpInterface::spawn);
     let destination = transport
         .add_destination(server_identity, DestinationName::new("example_utilities", "linkexample"))

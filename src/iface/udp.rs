@@ -16,17 +16,20 @@ const PACKET_TRACE: bool = true;
 
 pub struct UdpInterface {
     bind_addr: String,
-    forward_addr: Option<String>
+    forward_addr: Option<String>,
+    broadcast: bool
 }
 
 impl UdpInterface {
     pub fn new<T: Into<String>>(
         bind_addr: T,
-        forward_addr: Option<T>
+        forward_addr: Option<T>,
+        broadcast: bool
     ) -> Self {
         Self {
             bind_addr: bind_addr.into(),
             forward_addr: forward_addr.map(Into::into),
+            broadcast
         }
     }
 
@@ -59,6 +62,10 @@ impl UdpInterface {
             let socket = socket.unwrap();
             let read_socket = Arc::new(socket);
             let write_socket = read_socket.clone();
+            if context.inner.lock().unwrap().broadcast {
+                let _ = write_socket.set_broadcast(true)
+                    .map_err(|err| log::error!("error setting broadcast: {err}"));
+            }
 
             log::info!("udp_interface bound to <{}>", bind_addr);
 
