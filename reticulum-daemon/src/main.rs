@@ -100,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let forward_addr = format!("{}:{}", forward_ip, forward_port);
                 log::info!("Enabling interface '{}': UDP {}→{}", iface.name, bind_addr, forward_addr);
                 iface_manager.lock().await.spawn(
-                    UdpInterface::new(bind_addr, Some(forward_addr)),
+                    UdpInterface::new(bind_addr, Some(forward_addr), false),
                     UdpInterface::spawn,
                 );
             }

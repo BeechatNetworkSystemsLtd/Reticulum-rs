@@ -33,7 +33,7 @@ async fn main() {
     let transport = Transport::new(TransportConfig::new("server", &id, true));
 
     let _ = transport.iface_manager().lock().await.spawn(
-        UdpInterface::new("0.0.0.0:4243", Some("127.0.0.1:4242")),
+        UdpInterface::new("0.0.0.0:4243", Some("127.0.0.1:4242"), false),
         UdpInterface::spawn);
 
     let dest = Arc::new(tokio::sync::Mutex::new (destination));
