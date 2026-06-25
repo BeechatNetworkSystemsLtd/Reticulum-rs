@@ -18,22 +18,15 @@ constrained deployments with maximum performance and minimal dependencies.
 """
 
 [dependencies]
+reticulum-core = { version = "*", path = "reticulum-core" }
 
 # Protobuf and gRPC
 tonic = "0.13.0"
 prost = "0.13.5"
 
 # Crypto
-crypto-common = { version = "0.1.6", features = ["rand_core"] }
-aes = "0.8.4"
-cbc = "0.1.2"
-x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
-ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
-hkdf = "0.12.4"
 
 # Hash
-hmac = "0.12.1"
-sha2 = "0.10.8"
 
 # Random Number generator
 rand_core = { version = "0.6.4", features = ["getrandom"] }
@@ -52,8 +45,8 @@ env_logger = "0.10"
 
 [features]
 default = ["alloc"]
-alloc = []
-fernet-aes128 = []
+alloc = ["reticulum-core/alloc"]
+fernet-aes128 = ["reticulum-core/fernet-aes128"]
 python-tests = []
 
 [build-dependencies]
@@ -65,6 +58,7 @@ tokio = { version = "1.44.2", features = ["test-util"] }
 
 [workspace]
 members = [
+  "reticulum-core",
   "reticulum-daemon"
 ]
 

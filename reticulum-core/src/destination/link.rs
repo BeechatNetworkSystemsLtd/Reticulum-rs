@@ -130,6 +130,10 @@ pub struct LinkEventData {
     pub event: LinkEvent,
 }
 
+pub trait LinkEventSink: Clone + Send + Sync + 'static {
+    fn send(&self, event: LinkEventData);
+}
+
 pub struct Link {
     id: LinkId,
     destination: DestinationDesc,
@@ -139,15 +143,11 @@ pub struct Link {
     status: LinkStatus,
     request_time: Instant,
     rtt: Duration,
-    event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
     proves_messages: bool,
 }
 
 impl Link {
-    pub fn new(
-        destination: DestinationDesc,
-        event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
-    ) -> Self {
+    pub fn new(destination: DestinationDesc) -> Self {
         Self {
             id: AddressHash::new_empty(),
             destination,
@@ -157,7 +157,6 @@ impl Link {
             status: LinkStatus::Pending,
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
-            event_tx,
             proves_messages: false,
         }
     }
@@ -169,8 +168,7 @@ impl Link {
     pub fn new_from_request(
         packet: &Packet,
         signing_key: SigningKey,
-        destination: DestinationDesc,
-        event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
+        destination: DestinationDesc
     ) -> Result<Self, RnsError> {
         if packet.data.len() < PUBLIC_KEY_LENGTH * 2 {
             return Err(RnsError::InvalidArgument);
@@ -193,7 +191,6 @@ impl Link {
             status: LinkStatus::Pending,
             request_time: Instant::now(),
             rtt: Duration::from_secs(0),
-            event_tx,
             proves_messages: false,
         };
 
@@ -229,159 +226,6 @@ impl Link {
 
     pub fn touch(&mut self) {
         self.request_time = Instant::now();
-    }
-
-    pub fn prove(&mut self) -> Packet {
-        log::debug!("link({}): prove", self.id);
-
-        if self.status != LinkStatus::Active {
-            self.status = LinkStatus::Active;
-            self.post_event(LinkEvent::Activated);
-        }
-
-        let mut packet_data = PacketDataBuffer::new();
-
-        packet_data.safe_write(self.id.as_slice());
-        packet_data.safe_write(self.priv_identity.as_identity().public_key.as_bytes());
-        packet_data.safe_write(self.priv_identity.as_identity().verifying_key.as_bytes());
-
-        let signature = self.priv_identity.sign(packet_data.as_slice());
-
-        packet_data.reset();
-        packet_data.safe_write(&signature.to_bytes()[..]);
-        packet_data.safe_write(self.priv_identity.as_identity().public_key.as_bytes());
-
-        Packet {
-            header: Header {
-                packet_type: PacketType::Proof,
-                ..Default::default()
-            },
-            ifac: None,
-            destination: self.id,
-            transport: None,
-            context: PacketContext::LinkRequestProof,
-            data: packet_data,
-        }
-    }
-
-    fn handle_data_packet(&mut self, packet: &Packet, out_link: bool) -> LinkHandleResult {
-        if self.status != LinkStatus::Active {
-            log::warn!("link({}): handling data packet in inactive state", self.id);
-        }
-
-        match packet.context {
-            PacketContext::None => {
-                let mut buffer = [0u8; PACKET_MDU];
-                if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
-                    log::trace!("link({}): data {}B", self.id, plain_text.len());
-                    self.touch();
-                    self.post_event(LinkEvent::Data(Box::new(LinkPayload::new_from_slice(plain_text))));
-
-                    let proof = if self.proves_messages {
-                        Some(self.message_proof(packet.hash()))
-                    } else {
-                        None
-                    };
-
-                    return LinkHandleResult::MessageReceived(proof);
-                } else {
-                    log::error!("link({}): can't decrypt packet", self.id);
-                }
-            }
-            PacketContext::KeepAlive => {
-                if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFF {
-                    self.touch();
-                    log::trace!("link({}): keep-alive request", self.id);
-                    return LinkHandleResult::KeepAlive;
-                }
-                if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFE {
-                    log::trace!("link({}): keep-alive response", self.id);
-                    self.touch();
-                    return LinkHandleResult::None;
-                }
-            }
-            PacketContext::LinkRTT if !out_link => {
-                let mut buffer = [0u8; PACKET_MDU];
-                if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
-                    if let Ok(rtt) = rmp::decode::read_f64(&mut &plain_text[..]) {
-                        self.rtt = Duration::from_secs_f64(rtt);
-                    } else {
-                        log::error!("link({}): failed to decode rtt", self.id);
-                    }
-                } else {
-                    log::error!("link({}): can't decrypt rtt packet", self.id);
-                }
-            }
-            PacketContext::LinkClose => {
-                let mut buffer = [0u8; PACKET_MDU];
-                if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
-                    match plain_text[..].try_into() {
-                        Err(err) => {
-                            log::error!("link({}): invalid decode link close payload: {err}",
-                                self.id)
-                        }
-                        Ok(dest_bytes) => {
-                            let link_id = LinkId::new(dest_bytes);
-                            if self.id == link_id {
-                                self.close();
-                            }
-                        }
-                    }
-                } else {
-                    log::error!("link({}): can't decrypt link close packet", self.id);
-                }
-            }
-            _ => {}
-        }
-
-        LinkHandleResult::None
-    }
-
-    pub fn handle_packet(&mut self, packet: &Packet, out_link: bool) -> LinkHandleResult {
-        if packet.destination != self.id {
-            return LinkHandleResult::None;
-        }
-
-        match packet.header.packet_type {
-            PacketType::Data => self.handle_data_packet(packet, out_link),
-            PacketType::Proof => self.handle_proof_packet(packet),
-            _ => LinkHandleResult::None,
-        }
-    }
-
-    fn handle_proof_packet(&mut self, packet: &Packet) -> LinkHandleResult {
-        if self.status == LinkStatus::Pending
-            && packet.context == PacketContext::LinkRequestProof
-        {
-            if let Ok(identity) = validate_proof_packet(&self.destination, &self.id, packet)
-            {
-                log::debug!("link({}): has been proved", self.id);
-
-                self.handshake(identity);
-
-                self.status = LinkStatus::Active;
-                self.rtt = self.request_time.elapsed();
-
-                log::debug!("link({}): activated", self.id);
-
-                self.post_event(LinkEvent::Activated);
-
-                return LinkHandleResult::Activated;
-            } else {
-                log::warn!("link({}): proof is not valid", self.id);
-            }
-        }
-
-        if self.status == LinkStatus::Active && packet.context == PacketContext::None {
-            if let Ok(hash) = validate_message_proof(
-                &self.destination,
-                packet.data.as_slice()
-            ) {
-                self.post_event(LinkEvent::Proof(hash));
-            }
-        }
-
-        LinkHandleResult::None
     }
 
     pub fn data_packet(&self, data: &[u8]) -> Result<Packet, RnsError> {
@@ -512,30 +356,12 @@ impl Link {
             .derive_key(&self.peer_identity.public_key, Some(self.id.as_slice()));
     }
 
-    fn post_event(&self, event: LinkEvent) {
-        let _ = self.event_tx.send(LinkEventData {
+    fn post_event<E: LinkEventSink>(&self, event_tx: &E, event: LinkEvent) {
+        event_tx.send(LinkEventData {
             id: self.id,
             address_hash: self.destination.address_hash,
             event,
         });
-    }
-
-    pub(crate) fn teardown(&mut self) -> Result<Option<Packet>, RnsError> {
-        let packet = if self.status != LinkStatus::Pending && self.status != LinkStatus::Closed {
-            let mut packet = self.data_packet(self.id.as_slice())?;
-            packet.context = PacketContext::LinkClose;
-            Some(packet)
-        } else {
-            None
-        };
-        self.close();
-        Ok(packet)
-    }
-
-    pub(crate) fn close(&mut self) {
-        self.status = LinkStatus::Closed;
-        self.post_event(LinkEvent::Closed);
-        log::warn!("link: close {}", self.id);
     }
 
     pub fn stale(&mut self) {
@@ -562,12 +388,207 @@ impl Link {
         self.status
     }
 
+    pub fn set_status(&mut self, status: LinkStatus) {
+        self.status = status
+    }
+
     pub fn id(&self) -> &LinkId {
         &self.id
     }
 
+    pub fn priv_identity(&self) -> &PrivateIdentity {
+        &self.priv_identity
+    }
+
     pub fn rtt(&self) -> &Duration {
         &self.rtt
+    }
+
+    fn handle_data_packet<E: LinkEventSink>(
+        &mut self,
+        event_tx: &E,
+        packet: &Packet,
+        out_link: bool
+    ) -> LinkHandleResult {
+        if self.status != LinkStatus::Active {
+            log::warn!("link({}): handling data packet in inactive state", self.id);
+        }
+
+        match packet.context {
+            PacketContext::None => {
+                let mut buffer = [0u8; PACKET_MDU];
+                if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
+                    log::trace!("link({}): data {}B", self.id, plain_text.len());
+                    self.touch();
+                    self.post_event(event_tx,
+                        LinkEvent::Data(Box::new(LinkPayload::new_from_slice(plain_text))));
+
+                    let proof = if self.proves_messages {
+                        Some(self.message_proof(packet.hash()))
+                    } else {
+                        None
+                    };
+
+                    return LinkHandleResult::MessageReceived(proof);
+                } else {
+                    log::error!("link({}): can't decrypt packet", self.id);
+                }
+            }
+            PacketContext::KeepAlive => {
+                if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFF {
+                    self.touch();
+                    log::trace!("link({}): keep-alive request", self.id);
+                    return LinkHandleResult::KeepAlive;
+                }
+                if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFE {
+                    log::trace!("link({}): keep-alive response", self.id);
+                    self.touch();
+                    return LinkHandleResult::None;
+                }
+            }
+            PacketContext::LinkRTT if !out_link => {
+                let mut buffer = [0u8; PACKET_MDU];
+                if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
+                    if let Ok(rtt) = rmp::decode::read_f64(&mut &plain_text[..]) {
+                        self.rtt = Duration::from_secs_f64(rtt);
+                    } else {
+                        log::error!("link({}): failed to decode rtt", self.id);
+                    }
+                } else {
+                    log::error!("link({}): can't decrypt rtt packet", self.id);
+                }
+            }
+            PacketContext::LinkClose => {
+                let mut buffer = [0u8; PACKET_MDU];
+                if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
+                    match plain_text[..].try_into() {
+                        Err(err) => {
+                            log::error!("link({}): invalid decode link close payload: {err}",
+                                self.id)
+                        }
+                        Ok(dest_bytes) => {
+                            let link_id = LinkId::new(dest_bytes);
+                            if self.id == link_id {
+                                self.close(event_tx);
+                            }
+                        }
+                    }
+                } else {
+                    log::error!("link({}): can't decrypt link close packet", self.id);
+                }
+            }
+            _ => {}
+        }
+
+        LinkHandleResult::None
+    }
+
+    fn handle_proof_packet<E: LinkEventSink>(
+        &mut self,
+        event_tx: &E,
+        packet: &Packet
+    ) -> LinkHandleResult {
+        if self.status == LinkStatus::Pending
+            && packet.context == PacketContext::LinkRequestProof
+        {
+            if let Ok(identity) = validate_proof_packet(&self.destination, &self.id, packet) {
+                log::debug!("link({}): has been proved", self.id);
+
+                self.handshake(identity);
+
+                self.status = LinkStatus::Active;
+                self.rtt = self.request_time.elapsed();
+
+                log::debug!("link({}): activated", self.id);
+
+                self.post_event(event_tx, LinkEvent::Activated);
+
+                return LinkHandleResult::Activated;
+            } else {
+                log::warn!("link({}): proof is not valid", self.id);
+            }
+        }
+
+        if self.status == LinkStatus::Active && packet.context == PacketContext::None
+            && let Ok(hash) = validate_message_proof(&self.destination, packet.data.as_slice())
+        {
+            self.post_event(event_tx, LinkEvent::Proof(hash));
+        }
+
+        LinkHandleResult::None
+    }
+}
+
+/// These methods are intended for use by Transport implementations
+pub trait LinkExt<E: LinkEventSink> {
+    fn prove(&mut self, event_tx: &E) -> Packet;
+    fn handle_packet(&mut self, event_tx: &E, packet: &Packet, out_link: bool) -> LinkHandleResult;
+    fn teardown(&mut self, event_tx: &E) -> Result<Option<Packet>, RnsError>;
+    fn close(&mut self, event_tx: &E);
+}
+
+impl <E: LinkEventSink> LinkExt<E> for Link {
+    fn prove(&mut self, event_tx: &E) -> Packet {
+        log::debug!("link({}): prove", self.id);
+
+        if self.status != LinkStatus::Active {
+            self.set_status(LinkStatus::Active);
+            self.post_event(event_tx, LinkEvent::Activated);
+        }
+
+        let mut packet_data = PacketDataBuffer::new();
+
+        packet_data.safe_write(self.id.as_slice());
+        packet_data.safe_write(self.priv_identity.as_identity().public_key.as_bytes());
+        packet_data.safe_write(self.priv_identity.as_identity().verifying_key.as_bytes());
+
+        let signature = self.priv_identity.sign(packet_data.as_slice());
+
+        packet_data.reset();
+        packet_data.safe_write(&signature.to_bytes()[..]);
+        packet_data.safe_write(self.priv_identity.as_identity().public_key.as_bytes());
+
+        Packet {
+            header: Header {
+                packet_type: PacketType::Proof,
+                ..Default::default()
+            },
+            ifac: None,
+            destination: self.id,
+            transport: None,
+            context: PacketContext::LinkRequestProof,
+            data: packet_data,
+        }
+    }
+
+    fn handle_packet(&mut self, event_tx: &E, packet: &Packet, out_link: bool) -> LinkHandleResult {
+        if packet.destination != self.id {
+            return LinkHandleResult::None;
+        }
+
+        match packet.header.packet_type {
+            PacketType::Data => self.handle_data_packet(event_tx, packet, out_link),
+            PacketType::Proof => self.handle_proof_packet(event_tx, packet),
+            _ => LinkHandleResult::None,
+        }
+    }
+
+    fn teardown(&mut self, event_tx: &E) -> Result<Option<Packet>, RnsError> {
+        let packet = if self.status != LinkStatus::Pending && self.status != LinkStatus::Closed {
+            let mut packet = self.data_packet(self.id.as_slice())?;
+            packet.context = PacketContext::LinkClose;
+            Some(packet)
+        } else {
+            None
+        };
+        self.close(event_tx);
+        Ok(packet)
+    }
+
+    fn close(&mut self, event_tx: &E) {
+        self.status = LinkStatus::Closed;
+        self.post_event(event_tx, LinkEvent::Closed);
+        log::warn!("link: close {}", self.id);
     }
 }
 
