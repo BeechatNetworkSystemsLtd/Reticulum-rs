@@ -20,20 +20,11 @@ constrained deployments with maximum performance and minimal dependencies.
 [dependencies]
 reticulum-core = { version = "*", path = "reticulum-core" }
 
-# Protobuf and gRPC
-tonic = "0.13.0"
-prost = "0.13.5"
-
-# Crypto
-
-# Hash
-
 # Random Number generator
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 
 # Async IO
 tokio = { version = "1.44.2", features = ["full"] }
-tokio-stream = "0.1.17"
 tokio-util = "0.7.15"
 
 rmp = "0.8.14"
@@ -79,20 +70,8 @@ name = "link_client"
 path = "examples/link_client.rs"
 
 [[example]]
-name = "kaonic_client"
-path = "examples/kaonic_client.rs"
-
-[[example]]
 name = "testnet_client"
 path = "examples/testnet_client.rs"
-
-[[example]]
-name = "kaonic_tcp_mesh"
-path = "examples/kaonic_tcp_mesh.rs"
-
-[[example]]
-name = "kaonic_mesh"
-path = "examples/kaonic_mesh.rs"
 
 [[example]]
 name = "multihop"
