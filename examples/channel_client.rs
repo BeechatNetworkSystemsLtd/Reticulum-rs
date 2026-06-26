@@ -1,12 +1,8 @@
-use rand_core::OsRng;
-
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 
 use reticulum::channel::Channel;
-use reticulum::destination::DestinationName;
-use reticulum::identity::PrivateIdentity;
 use reticulum::iface::tcp_client::TcpClient;
 use reticulum::transport::{Transport, TransportConfig};
 
@@ -20,9 +16,9 @@ async fn main() {
         env_logger::Env::default().default_filter_or("trace")
     ).init();
 
-    let mut transport = Transport::new(TransportConfig::default());
+    let transport = Transport::new(TransportConfig::default());
 
-    let client_addr = transport
+    transport
         .iface_manager()
         .lock()
         .await
@@ -48,10 +44,10 @@ async fn main() {
         log::info!("channel created");
 
         let message = ExampleMessage::new_text("foo");
-        let mut watch_delivery = None;
-        let mut packet_hash = None;
-
         loop {
+            let watch_delivery;
+            let packet_hash;
+
             match channel.send(&message).await {
                 Ok(hash) => {
                     watch_delivery = channel.watch_message_delivery(hash).await;
@@ -59,7 +55,7 @@ async fn main() {
                         "message {} successfully sent over channel", 
                         hash
                     );
-                    packet_hash = Some(hash);
+                    packet_hash = hash;
                 },
                 Err(e) => {
                     log::info!("error sending message: {:?}", e);
@@ -70,7 +66,7 @@ async fn main() {
 
             if let Some(mut watch) = watch_delivery {
                 if watch.recv().await.unwrap() {
-                    log::info!("message {} delivered!", packet_hash.unwrap());
+                    log::info!("message {} delivered!", packet_hash);
                 }
             }
 
