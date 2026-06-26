@@ -49,7 +49,7 @@ async fn main() {
             Ok(announce) => {
                 let len = links.len();
                 let destination = announce.destination.lock().await;
-                if links.contains_key(&destination.desc.address_hash) {
+                if let std::collections::hash_map::Entry::Occupied(mut e) = links.entry(destination.desc.address_hash) {
                     let link = transport.lock().await.link(destination.desc).await;
                     let link = Arc::new(
                         tokio::sync::Mutex::new(
@@ -58,7 +58,7 @@ async fn main() {
                                 .unwrap()
                         )
                     );
-                    links.insert(destination.desc.address_hash, link.clone());
+                    e.insert(link.clone());
                 };
                 log::trace!("{} to {} links", len, links.len());
             },

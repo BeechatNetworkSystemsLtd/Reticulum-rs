@@ -1119,19 +1119,17 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                     if link.elapsed() > timer_config.out_link_restart {
                         link.restart();
                     }
-                } else {
-                    if link.elapsed() > timer_config.out_link_stale + timer_config.out_link_close {
-                        if let Some(packet) = link.teardown().unwrap_or_else(|err| {
-                            log::error!(
-                                "tp({}): teardown stale out-link error: {err:?}",
-                                handler.config.name
-                            );
-                            None
-                        }) {
-                            handler.send_packet(packet).await
-                        }
-                        links_to_remove.push(*link_entry.0);
+                } else if link.elapsed() > timer_config.out_link_stale + timer_config.out_link_close {
+                    if let Some(packet) = link.teardown().unwrap_or_else(|err| {
+                        log::error!(
+                            "tp({}): teardown stale out-link error: {err:?}",
+                            handler.config.name
+                        );
+                        None
+                    }) {
+                        handler.send_packet(packet).await
                     }
+                    links_to_remove.push(*link_entry.0);
                 }
             }
             LinkStatus::Pending if link.elapsed() > timer_config.out_link_repeat => {
