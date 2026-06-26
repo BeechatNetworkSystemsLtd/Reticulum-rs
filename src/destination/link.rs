@@ -418,7 +418,7 @@ impl Link {
 
         if self.status == LinkStatus::Active && packet.context == PacketContext::None {
             if let Ok(hash) = validate_message_proof(
-                &self.destination,
+                &self.peer_identity,
                 packet.data.as_slice()
             ) {
                 self.post_event(LinkEvent::Proof(hash));
@@ -667,8 +667,8 @@ fn validate_proof_packet(
 }
 
 fn validate_message_proof(
-    destination: &DestinationDesc,
-    data: &[u8],
+    identity: &Identity,
+    data: &[u8]
 ) -> Result<Hash, RnsError> {
     if data.len() <= HASH_SIZE {
         return Err(RnsError::PacketError);
@@ -682,7 +682,7 @@ fn validate_message_proof(
 
     let hash_slice = &data[..HASH_SIZE];
 
-    if destination.identity.verifying_key.verify(hash_slice, &signature).is_ok() {
+    if identity.verifying_key.verify(hash_slice, &signature).is_ok() {
         Ok(Hash::new(hash_slice.try_into().unwrap()))
     } else {
         Err(RnsError::IncorrectSignature)
