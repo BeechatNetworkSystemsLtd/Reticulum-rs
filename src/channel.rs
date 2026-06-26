@@ -747,8 +747,6 @@ impl<M: Message> Channel<M> {
         link: Arc<Mutex<Link>>,
         transport: &Arc<Mutex<Transport>>
     ) -> Result<Self, RnsError> {
-        let out_link_events = transport.lock().await.out_link_events();
-
         let (me_tx, me_rx) = mpsc::channel(16);
 
         let outbound = Outbound::new(
@@ -760,11 +758,13 @@ impl<M: Message> Channel<M> {
         let link_id = outbound.link_id();
         let cancel = outbound.cancel();
 
+        let link_events = transport.lock().await.events_for_link(link_id).await;
+
         let outbound = Arc::new(Mutex::new(outbound));
 
         spawn_watch_outbound(
             Arc::clone(&outbound),
-            out_link_events.resubscribe(),
+            link_events.resubscribe(),
             me_rx
         ).await;
 
@@ -928,7 +928,7 @@ mod mock {
         }
 
         // mocked methods
-        pub fn out_link_events(&self) -> broadcast::Receiver<LinkEventData> {
+        pub async fn events_for_link(&self, _: LinkId) -> broadcast::Receiver<LinkEventData> {
             self.out_tx.subscribe()
         }
 
