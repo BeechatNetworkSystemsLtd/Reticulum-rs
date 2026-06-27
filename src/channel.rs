@@ -384,7 +384,7 @@ impl<M: Message> Inbound<M> {
         while let Some(message) = self.on_hold.remove(&self.sequence) {
             let result = self.incoming.send(message);
 
-            if let Err(_) = result {
+            if result.is_err() {
                 log::warn!(
                     "channel({}): received a message that will not be processed (no subscribers)",
                     self.link_id,
@@ -741,11 +741,14 @@ pub struct Channel<M: Message> {
 impl<M: Message> Channel<M> {
     /// Consume `link` and wrap it in a new `Channel`.
     ///
+    /// If successful, returns the new `Channel` and a receiver for
+    /// its incomigng messages.
+    ///
     /// Fails if there is already a `Channel` wrapping `link`.
     pub async fn new(
         link: Arc<Mutex<Link>>,
         transport: &Arc<Mutex<Transport>>
-    ) -> Result<Self, RnsError> {
+    ) -> Result<(Self, broadcast::Receiver<M>), RnsError> {
         let (me_tx, me_rx) = mpsc::channel(16);
 
         let outbound = Outbound::new(
@@ -770,8 +773,11 @@ impl<M: Message> Channel<M> {
         let rx = link.lock().await.bind_to_channel()?;
 
         let incoming = spawn_receiver(rx, link_id, cancel).await;
+        let incoming_rx = incoming.subscribe();
 
-        Ok(Self { link, outbound, incoming })
+        let channel = Self { link, outbound, incoming };
+
+        Ok((channel, incoming_rx))
     }
 
     /// Send a message over the channel.
@@ -805,7 +811,7 @@ impl<M: Message> Channel<M> {
         self.outbound.lock().await.is_ready_to_send().await
     }
 
-    /// Subscribe to the channel's incoming messages.
+    /// Create an additional receiver for the channel's incoming messages.
     pub fn subscribe(&self) -> broadcast::Receiver<M> {
         self.incoming.subscribe()
     }
@@ -1015,12 +1021,12 @@ mod tests {
     async fn test_message_delivery() {
         let fixture = Fixture::new();
 
-        let channel_a = Channel::<TestMessage>::new(
+        let (channel_a, _) = Channel::<TestMessage>::new(
             fixture.link_a.clone(),
             &fixture.transport_a
         ).await.unwrap();
 
-        let channel_b = Channel::<TestMessage>::new(
+        let (_channel_b, mut incoming_b) = Channel::<TestMessage>::new(
             fixture.link_b.clone(),
             &fixture.transport_b
         ).await.unwrap();
@@ -1041,8 +1047,6 @@ mod tests {
             .watch_message_delivery(packet_hash)
             .await
             .expect("message not found in channel a");
-
-        let mut incoming_b = channel_b.subscribe();
 
         fixture.link_b.lock().await.tx.send(packet.payload()).unwrap();
 
@@ -1069,7 +1073,7 @@ mod tests {
     async fn test_message_failure() {
         let fixture = Fixture::new();
 
-        let channel_a = Channel::<TestMessage>::new(
+        let (channel_a, _) = Channel::<TestMessage>::new(
             fixture.link_a.clone(),
             &fixture.transport_a
         ).await.unwrap();
@@ -1101,7 +1105,7 @@ mod tests {
         let fixture = Fixture::new();
         fixture.link_a.lock().await.status = LinkStatus::Pending;
 
-        let channel_a = Channel::<TestMessage>::new(
+        let (channel_a, _) = Channel::<TestMessage>::new(
             fixture.link_a.clone(),
             &fixture.transport_a
         ).await.unwrap();
@@ -1133,17 +1137,15 @@ mod tests {
     async fn test_messages_ordering() {
         let fixture = Fixture::new();
 
-        let channel_a = Channel::<TestMessage>::new(
+        let (channel_a, _) = Channel::<TestMessage>::new(
             fixture.link_a.clone(),
             &fixture.transport_a
         ).await.unwrap();
 
-        let channel_b = Channel::<TestMessage>::new(
+        let (_channel_b, mut incoming_b) = Channel::<TestMessage>::new(
             fixture.link_b.clone(),
             &fixture.transport_b
         ).await.unwrap();
-
-        let mut incoming_b = channel_b.subscribe();
 
         channel_a.send(&TestMessage::Short(1)).await.unwrap();
 
@@ -1190,17 +1192,15 @@ mod tests {
     async fn test_missing_message() {
         let fixture = Fixture::new();
 
-        let channel_a = Channel::<TestMessage>::new(
+        let (channel_a, _) = Channel::<TestMessage>::new(
             fixture.link_a.clone(),
             &fixture.transport_a
         ).await.unwrap();
 
-        let channel_b = Channel::<TestMessage>::new(
+        let (_channel_b, incoming_b) = Channel::<TestMessage>::new(
             fixture.link_b.clone(),
             &fixture.transport_b
         ).await.unwrap();
-
-        let incoming_b = channel_b.subscribe();
 
         channel_a.send(&TestMessage::Long(50)).await.unwrap();
         channel_a.send(&TestMessage::Long(50)).await.unwrap();
