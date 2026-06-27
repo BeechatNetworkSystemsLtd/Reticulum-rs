@@ -140,6 +140,7 @@
 extern crate alloc;
 
 pub mod buffer;
+pub mod channel;
 pub mod crypt;
 pub mod destination;
 pub mod error;

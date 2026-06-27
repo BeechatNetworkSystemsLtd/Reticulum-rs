@@ -93,10 +93,8 @@ impl LinkTable {
         for (link_id, entry) in &self.0 {
             if entry.validated {
                 // TODO remove active timed out links
-            } else {
-                if entry.proof_timeout <= now {
-                    stale.push(*link_id);
-                }
+            } else if entry.proof_timeout <= now {
+                stale.push(*link_id);
             }
         }
 

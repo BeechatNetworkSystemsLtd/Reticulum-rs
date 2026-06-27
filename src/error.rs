@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum RnsError {
     OutOfMemory,
     InvalidArgument,
@@ -8,4 +8,8 @@ pub enum RnsError {
     PacketError,
     ConnectionError,
     LinkClosed,
+    ChannelError,
+    ChannelLinkNotReady,
+    ChannelMessageTooBig,
+    ChannelUnknownMessageType,
 }

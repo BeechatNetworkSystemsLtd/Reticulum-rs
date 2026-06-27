@@ -39,7 +39,7 @@ impl LinkStatus {
 
 pub type LinkId = AddressHash;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LinkPayload {
     buffer: [u8; PACKET_MDU],
     len: usize,
@@ -114,7 +114,7 @@ pub enum LinkHandleResult {
     MessageReceived(Option<Packet>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum LinkEvent {
     Activated,
     // LinkPayload >2000 bytes so we box it
@@ -123,7 +123,7 @@ pub enum LinkEvent {
     Closed,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LinkEventData {
     pub id: LinkId,
     pub address_hash: AddressHash,
@@ -141,6 +141,7 @@ pub struct Link {
     rtt: Duration,
     event_tx: tokio::sync::broadcast::Sender<LinkEventData>,
     proves_messages: bool,
+    channel_tx: Option<tokio::sync::broadcast::Sender<LinkPayload>>,
 }
 
 impl Link {
@@ -159,11 +160,31 @@ impl Link {
             rtt: Duration::from_secs(0),
             event_tx,
             proves_messages: false,
+            channel_tx: None,
         }
     }
 
     pub fn prove_messages(&mut self, setting: bool) {
         self.proves_messages = setting;
+    }
+
+    #[allow(unused)]  // This method is mocked out in the unit tests, so clippy
+                      // will complain about it being unused in the test build.
+    pub(crate) fn bind_to_channel(
+        &mut self
+    ) -> Result<tokio::sync::broadcast::Receiver<LinkPayload>, RnsError> {
+        if self.channel_tx.is_some() {
+            log::error!("link({}) cannot be bound to another channel", self.id());
+            return Err(RnsError::ChannelError);
+        }
+
+        let (tx, rx) = tokio::sync::broadcast::channel(16);
+        self.channel_tx = Some(tx);
+        self.prove_messages(true);
+
+        log::trace!("link({}) bound to channel", self.id());
+
+        Ok(rx)
     }
 
     pub fn new_from_request(
@@ -195,6 +216,7 @@ impl Link {
             rtt: Duration::from_secs(0),
             event_tx,
             proves_messages: false,
+            channel_tx: None,
         };
 
         link.handshake(peer_identity);
@@ -287,7 +309,7 @@ impl Link {
                 } else {
                     log::error!("link({}): can't decrypt packet", self.id);
                 }
-            }
+            },
             PacketContext::KeepAlive => {
                 if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFF {
                     self.touch();
@@ -299,7 +321,7 @@ impl Link {
                     self.touch();
                     return LinkHandleResult::None;
                 }
-            }
+            },
             PacketContext::LinkRTT if !out_link => {
                 let mut buffer = [0u8; PACKET_MDU];
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
@@ -330,7 +352,29 @@ impl Link {
                 } else {
                     log::error!("link({}): can't decrypt link close packet", self.id);
                 }
-            }
+            },
+            PacketContext::Channel => {
+                if let Some(ref channel_tx) = self.channel_tx {
+                    let mut buffer = [0u8; PACKET_MDU];
+                    if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer) {
+                        log::trace!("link({}): data over channel {}B", self.id, plain_text.len());
+                        self.request_time = Instant::now();
+
+                        channel_tx.send(LinkPayload::new_from_slice(plain_text)).ok();
+
+                        let payload = LinkPayload::new_from_slice(plain_text);
+                        self.post_event(LinkEvent::Data(Box::new(payload)));
+
+                        let proof = Some(self.message_proof(packet.hash()));
+
+                        return LinkHandleResult::MessageReceived(proof);
+                    } else {
+                        log::error!("link({}): can't decrypt channel packet", self.id);
+                    }
+                } else {
+                    log::error!("link({}): received channel packet but have no channel", self.id);
+                }
+            },
             _ => {}
         }
 
@@ -374,7 +418,7 @@ impl Link {
 
         if self.status == LinkStatus::Active && packet.context == PacketContext::None {
             if let Ok(hash) = validate_message_proof(
-                &self.destination,
+                &self.peer_identity,
                 packet.data.as_slice()
             ) {
                 self.post_event(LinkEvent::Proof(hash));
@@ -620,8 +664,8 @@ fn validate_proof_packet(
 }
 
 fn validate_message_proof(
-    destination: &DestinationDesc,
-    data: &[u8],
+    identity: &Identity,
+    data: &[u8]
 ) -> Result<Hash, RnsError> {
     if data.len() <= HASH_SIZE {
         return Err(RnsError::PacketError);
@@ -635,7 +679,7 @@ fn validate_message_proof(
 
     let hash_slice = &data[..HASH_SIZE];
 
-    if destination.identity.verifying_key.verify(hash_slice, &signature).is_ok() {
+    if identity.verifying_key.verify(hash_slice, &signature).is_ok() {
         Ok(Hash::new(hash_slice.try_into().unwrap()))
     } else {
         Err(RnsError::IncorrectSignature)
