@@ -38,7 +38,7 @@ async fn main() {
             return;
         };
 
-        let channel = Channel::<ExampleMessage>::new(link, &arc_transport)
+        let (channel, _) = Channel::<ExampleMessage>::new(link, &arc_transport)
             .await
             .unwrap();
         log::info!("channel created");

@@ -51,14 +51,11 @@ async fn main() {
                 let destination = announce.destination.lock().await;
                 if let std::collections::hash_map::Entry::Occupied(mut e) = links.entry(destination.desc.address_hash) {
                     let link = transport.lock().await.link(destination.desc).await;
-                    let link = Arc::new(
-                        tokio::sync::Mutex::new(
-                            Channel::<ExampleMessage>::new(link, &transport)
-                                .await
-                                .unwrap()
-                        )
-                    );
-                    e.insert(link.clone());
+
+                    let (channel, _) = Channel::<ExampleMessage>::new(link, &transport).await.unwrap();
+                    let channel = Arc::new(tokio::sync::Mutex::new(channel));
+
+                    e.insert(channel.clone());
                 };
                 log::trace!("{} to {} links", len, links.len());
             },
@@ -94,10 +91,9 @@ async fn main() {
             if let LinkEvent::Activated = link_event.event {
                 let maybe_link = transport.lock().await.find_in_link(&id).await;
                 if let Some(link) = maybe_link {
-                    let channel = Channel::<ExampleMessage>::new(link, &transport)
+                    let (channel, mut incoming) = Channel::<ExampleMessage>::new(link, &transport)
                         .await
                         .unwrap();
-                    let mut incoming = channel.subscribe();
                     in_links.push(channel);
                     log::info!("in-link {} activated, wrapped", id);
                     tokio::spawn(async move {
