@@ -384,11 +384,10 @@ impl<M: Message> Inbound<M> {
         while let Some(message) = self.on_hold.remove(&self.sequence) {
             let result = self.incoming.send(message);
 
-            if let Err(e) = result {
-                log::error!(
-                    "channel({}): could not propagate incoming message to client: {}",
+            if let Err(_) = result {
+                log::warn!(
+                    "channel({}): received a message that will not be processed (no subscribers)",
                     self.link_id,
-                    e
                 );
             }
 
