@@ -1,0 +1,22 @@
+[package]
+name = "reticulum-daemon"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+default-run = "rs-rnsd"
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+env_logger = "0.10"
+dirs = "6.0.0"
+log = { version = "0.4.27", features = ["serde"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+regex = "1.12.2"
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = { version = "1.44.2", features = ["full"] }
+toml = "0.9.11"
+reticulum = { path = ".." }
+
+[[bin]]
+name = "rs-rnsd"
+path = "src/main.rs"
