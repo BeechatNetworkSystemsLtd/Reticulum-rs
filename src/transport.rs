@@ -1336,6 +1336,35 @@ async fn manage_transport(
                             continue;
                         }
 
+                        // Only the designated next hop processes in-transit packets:
+                        // nodes that merely overhear them on shared-medium (radio)
+                        // interfaces must ignore them, otherwise forwarded packets
+                        // circulate (e.g. LinkRequest ping-pong between originator and
+                        // relay).
+                        //
+                        // A node accepts an in-transit packet when the transport field
+                        // designates it as the next hop. For relay next hops this is the
+                        // node's own identity hash; for the final hop to a non-relay
+                        // destination host (whose announce carried no transport id) the
+                        // path table records the destination address itself, so we also
+                        // accept when it matches a locally hosted destination.
+                        if let Some(transport) = packet.transport {
+                            if packet.header.destination_type != DestinationType::Link
+                                && packet.header.packet_type != PacketType::Announce
+                                && packet.header.packet_type != PacketType::Proof
+                                && transport != *handler.config.identity.address_hash()
+                                && !handler.has_destination(&transport)
+                            {
+                                log::trace!(
+                                    "tp({}): ignoring in-transit packet not addressed to this node: dst={}, type={:?}",
+                                    handler.config.name,
+                                    packet.destination,
+                                    packet.header.packet_type
+                                );
+                                continue;
+                            }
+                        }
+
                         match packet.header.packet_type {
                             PacketType::Announce => handle_announce(
                                 &packet,
