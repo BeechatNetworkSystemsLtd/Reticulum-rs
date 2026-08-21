@@ -12,7 +12,6 @@ async fn main() {
     let transport = Transport::new(TransportConfig::new(
         "server",
         &PrivateIdentity::new_from_rand(OsRng),
-        true,
     ));
 
     let _ = transport.iface_manager().lock().await.spawn(

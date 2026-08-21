@@ -51,10 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("Reticulum daemon starting");
 
     let identity = PrivateIdentity::new_from_rand(OsRng);
-    let transport = TransportConfig::new(
-            "rns-daemon",
-            &identity,
-            config.reticulum.enable_transport)
+    let transport = TransportConfig::new("rns-daemon", &identity)
         .set_retransmit(config.reticulum.enable_transport)
         .build();
 
