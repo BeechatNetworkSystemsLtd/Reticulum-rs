@@ -30,7 +30,6 @@ async fn build_transport(name: &str, server_addr: &str, client_addr: &[&str]) ->
     let transport = Transport::new(TransportConfig::new(
         name,
         &PrivateIdentity::new_from_rand(OsRng),
-        true,
     ));
 
     transport.iface_manager().lock().await.spawn(

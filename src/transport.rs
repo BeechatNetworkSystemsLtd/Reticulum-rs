@@ -87,7 +87,6 @@ impl Default for TimerConfig {
 pub struct TransportConfig {
     name: String,
     identity: PrivateIdentity,
-    broadcast: bool,
     retransmit: bool,
 
     /// If `false`, `Transport` will replace known routes to distant destinations
@@ -183,11 +182,10 @@ pub struct Transport {
 }
 
 impl TransportConfig {
-    pub fn new<T: Into<String>>(name: T, identity: &PrivateIdentity, broadcast: bool) -> Self {
+    pub fn new<T: Into<String>>(name: T, identity: &PrivateIdentity) -> Self {
         Self {
             name: name.into(),
             identity: identity.clone(),
-            broadcast,
             retransmit: false,
             reroute_eager: false,
             restart_outlinks: false,
@@ -198,11 +196,6 @@ impl TransportConfig {
 
     pub fn set_retransmit(mut self, retransmit: bool) -> Self {
         self.retransmit = retransmit;
-        self
-    }
-
-    pub fn set_broadcast(mut self, broadcast: bool) -> Self {
-        self.broadcast = broadcast;
         self
     }
 
@@ -236,7 +229,6 @@ impl Default for TransportConfig {
         Self {
             name: "tp".into(),
             identity: PrivateIdentity::new_from_rand(OsRng),
-            broadcast: false,
             retransmit: false,
             reroute_eager: false,
             restart_outlinks: false,
@@ -1344,10 +1336,33 @@ async fn manage_transport(
                             continue;
                         }
 
-                        if handler.config.broadcast && packet.header.packet_type != PacketType::Announce {
-                            // TODO: remove seperate handling for announces in handle_announce.
-                            // Send broadcast message expect current iface address
-                            handler.send(TxMessage { tx_type: TxMessageType::Broadcast(Some(message.address)), packet }).await;
+                        // Only the designated next hop processes in-transit packets:
+                        // nodes that merely overhear them on shared-medium (radio)
+                        // interfaces must ignore them, otherwise forwarded packets
+                        // circulate (e.g. LinkRequest ping-pong between originator and
+                        // relay).
+                        //
+                        // A node accepts an in-transit packet when the transport field
+                        // designates it as the next hop. For relay next hops this is the
+                        // node's own identity hash; for the final hop to a non-relay
+                        // destination host (whose announce carried no transport id) the
+                        // path table records the destination address itself, so we also
+                        // accept when it matches a locally hosted destination.
+                        if let Some(transport) = packet.transport {
+                            if packet.header.destination_type != DestinationType::Link
+                                && packet.header.packet_type != PacketType::Announce
+                                && packet.header.packet_type != PacketType::Proof
+                                && transport != *handler.config.identity.address_hash()
+                                && !handler.has_destination(&transport)
+                            {
+                                log::trace!(
+                                    "tp({}): ignoring in-transit packet not addressed to this node: dst={}, type={:?}",
+                                    handler.config.name,
+                                    packet.destination,
+                                    packet.header.packet_type
+                                );
+                                continue;
+                            }
                         }
 
                         match packet.header.packet_type {

@@ -41,11 +41,7 @@ async fn build_transport(name: &str, bind_addr: &str, forward_addr: &str)
     -> (Transport, PrivateIdentity)
 {
     let id = PrivateIdentity::new_from_rand(OsRng);
-    let transport = Transport::new(TransportConfig::new(
-        name,
-        &id,
-        true,
-    ));
+    let transport = Transport::new(TransportConfig::new(name, &id));
 
     transport.iface_manager().lock().await.spawn(
         UdpInterface::new(bind_addr, Some(forward_addr), false),

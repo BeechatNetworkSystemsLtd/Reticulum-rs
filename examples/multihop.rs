@@ -52,7 +52,7 @@ async fn main() {
 
     log::info!("Destination on last hop will be {}", last_hop_destination.desc);
 
-    let mut transport = TransportConfig::new("server", &identity, false)
+    let mut transport = TransportConfig::new("server", &identity)
         .set_retransmit(true)
         .build();
 

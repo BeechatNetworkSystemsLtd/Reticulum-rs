@@ -27,7 +27,7 @@ async fn build_transport_full(
     client_addr: &[&str],
     retransmit: bool
 ) -> Transport {
-    let transport = TransportConfig::new(name, &PrivateIdentity::new_from_rand(OsRng), true)
+    let transport = TransportConfig::new(name, &PrivateIdentity::new_from_rand(OsRng))
         .set_retransmit(retransmit)
         .build();
 
