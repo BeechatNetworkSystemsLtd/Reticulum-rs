@@ -3,11 +3,14 @@ use std::time::Duration;
 
 use rand_core::OsRng;
 use reticulum::{
-    destination::{link::LinkEvent, DestinationName},
+    destination::{
+        link::{LinkEvent, LinkEventData, LinkId},
+        DestinationName,
+    },
     hash::AddressHash,
     identity::PrivateIdentity,
     iface::{tcp_client::TcpClient, tcp_server::TcpServer},
-    transport::{AnnounceEvent, Transport, TransportConfig},
+    transport::{AnnounceEvent, TimerConfig, Transport, TransportConfig},
 };
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::time;
@@ -28,9 +31,17 @@ fn free_local_addr() -> String {
         .to_string()
 }
 
-async fn build_transport(name: &str, server_addr: &str, client_addr: &[&str]) -> Transport {
+async fn build_transport(
+    name: &str,
+    server_addr: &str,
+    client_addr: &[&str],
+    timer_config: TimerConfig,
+) -> Transport {
+    // stale links are restarted, links of the healthy mesh tests never go stale
     let transport = TransportConfig::new(name, &PrivateIdentity::new_from_rand(OsRng))
         .set_retransmit(true)
+        .set_restart_outlinks(true)
+        .set_timer_config(timer_config)
         .build();
 
     transport.iface_manager().lock().await.spawn(
@@ -51,7 +62,7 @@ async fn build_transport(name: &str, server_addr: &str, client_addr: &[&str]) ->
 
 /// Builds `n` nodes, and for each edge `(u, v)` with `u < v` connects node `v` to
 /// the server of node `u`, so that each node has one TCP interface per neighbour.
-async fn mesh(n: usize, edges: &[(usize, usize)]) -> Vec<Transport> {
+async fn mesh(n: usize, edges: &[(usize, usize)], timer_config: TimerConfig) -> Vec<Transport> {
     let server_addr: Vec<_> = (0..n).map(|_| free_local_addr()).collect();
 
     let mut transports = Vec::with_capacity(n);
@@ -61,7 +72,9 @@ async fn mesh(n: usize, edges: &[(usize, usize)]) -> Vec<Transport> {
             .filter(|&&(_, to)| to == v)
             .map(|&(from, _)| server_addr[from].as_str())
             .collect();
-        transports.push(build_transport(&v.to_string(), &server_addr[v], &client_addr).await);
+        transports.push(
+            build_transport(&v.to_string(), &server_addr[v], &client_addr, timer_config).await,
+        );
     }
 
     // wait for the TCP connections to come up
@@ -103,11 +116,70 @@ async fn recv_announce(
     }
 }
 
+async fn wait_activated(events: &mut broadcast::Receiver<LinkEventData>, link_id: LinkId) {
+    loop {
+        match events.recv().await {
+            Ok(event) if event.id == link_id && matches!(event.event, LinkEvent::Activated) => {
+                break
+            }
+            Ok(_) | Err(RecvError::Lagged(_)) => continue,
+            Err(RecvError::Closed) => panic!("link event channel closed"),
+        }
+    }
+}
+
+/// Waits for data received over any link and checks it is `data`.
+async fn wait_data(events: &mut broadcast::Receiver<LinkEventData>, data: &[u8]) {
+    loop {
+        match events.recv().await {
+            Ok(event) => {
+                if let LinkEvent::Data(payload) = event.event {
+                    assert_eq!(payload.as_slice(), data);
+                    break;
+                }
+            }
+            Err(RecvError::Lagged(_)) => continue,
+            Err(RecvError::Closed) => panic!("link event channel closed"),
+        }
+    }
+}
+
+/// Announces a new destination on `destination_node`, waits for the announce on
+/// `link_node` and links to it. Returns the destination address and the link id.
+async fn link_after_announce(
+    link_node: &Transport,
+    destination_node: &mut Transport,
+) -> (AddressHash, LinkId) {
+    let mut announces = link_node.recv_announces().await;
+    let mut out_link_events = link_node.out_link_events();
+
+    let destination = destination_node
+        .add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "mesh"))
+        .await;
+    let address = destination.lock().await.desc.address_hash;
+
+    destination_node.send_announce(&destination, None).await;
+
+    let event = time::timeout(Duration::from_secs(10), recv_announce(&mut announces, address))
+        .await
+        .expect("announce not received");
+    let desc = event.destination.lock().await.desc;
+
+    let link = link_node.link(desc).await;
+    let link_id = *link.lock().await.id();
+
+    time::timeout(Duration::from_secs(10), wait_activated(&mut out_link_events, link_id))
+        .await
+        .expect("link not activated");
+
+    (address, link_id)
+}
+
 #[tokio::test]
 async fn announce_reaches_all_nodes() {
     setup();
 
-    let mut transports = mesh(9, &grid()).await;
+    let mut transports = mesh(9, &grid(), TimerConfig::default()).await;
 
     let mut announces = Vec::new();
     for transport in &transports[1..] {
@@ -132,57 +204,25 @@ async fn announce_reaches_all_nodes() {
 async fn link_across_mesh() {
     setup();
 
-    let mut transports = mesh(9, &grid()).await;
+    let mut transports = mesh(9, &grid(), TimerConfig::default()).await;
+    let mut node_8 = transports.pop().unwrap();
+    let node_0 = &transports[0];
 
-    let mut announces = transports[0].recv_announces().await;
-    let mut out_link_events = transports[0].out_link_events();
-    let mut in_link_events = transports[8].in_link_events();
+    let mut out_link_events = node_0.out_link_events();
+    let mut in_link_events = node_8.in_link_events();
 
-    let destination = transports[8]
-        .add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "mesh"))
-        .await;
-    let address = destination.lock().await.desc.address_hash;
+    let (address, _) = link_after_announce(node_0, &mut node_8).await;
 
-    transports[8].send_announce(&destination, None).await;
+    node_0.send_to_out_links(&address, b"hello mesh").await;
 
-    let event = time::timeout(Duration::from_secs(10), recv_announce(&mut announces, address))
+    time::timeout(Duration::from_secs(10), wait_data(&mut in_link_events, b"hello mesh"))
         .await
-        .expect("announce of node 8 not received by node 0");
-    let desc = event.destination.lock().await.desc;
+        .expect("link data not received by node 8");
 
-    let link = transports[0].link(desc).await;
-    let link_id = *link.lock().await.id();
+    node_8.send_to_in_links(&address, b"hello back").await;
 
-    time::timeout(Duration::from_secs(10), async {
-        loop {
-            match out_link_events.recv().await {
-                Ok(event) if event.id == link_id && matches!(event.event, LinkEvent::Activated) => {
-                    break
-                }
-                Ok(_) | Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => panic!("out link event channel closed"),
-            }
-        }
-    })
-    .await
-    .expect("link from node 0 to node 8 not activated");
-
-    transports[0].send_to_out_links(&address, b"hello mesh").await;
-
-    time::timeout(Duration::from_secs(10), async {
-        loop {
-            match in_link_events.recv().await {
-                Ok(event) => {
-                    if let LinkEvent::Data(payload) = event.event {
-                        assert_eq!(payload.as_slice(), b"hello mesh");
-                        break;
-                    }
-                }
-                Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => panic!("in link event channel closed"),
-            }
-        }
-    })
-    .await
-    .expect("link data not received by node 8");
+    time::timeout(Duration::from_secs(10), wait_data(&mut out_link_events, b"hello back"))
+        .await
+        .expect("link reply not received by node 0");
 }
+

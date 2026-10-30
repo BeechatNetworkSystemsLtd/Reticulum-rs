@@ -103,14 +103,8 @@ impl PathTable {
         true
     }
 
-    pub fn handle_inbound_packet(
-        &self,
-        original_packet: &Packet,
-        lookup: Option<AddressHash>,
-    ) -> (Packet, Option<AddressHash>) {
-        let lookup = lookup.unwrap_or(original_packet.destination);
-
-        let entry = match self.map.get(&lookup) {
+    pub fn handle_inbound_packet(&self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
+        let entry = match self.map.get(&original_packet.destination) {
             Some(entry) => entry,
             None => return (*original_packet, None),
         };

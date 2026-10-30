@@ -761,6 +761,7 @@ impl TransportHandler {
 
 async fn handle_proof<'a>(
     packet: &Packet,
+    iface: AddressHash,
     mut handler: MutexGuard<'a, TransportHandler>
 ) {
     log::trace!(
@@ -796,7 +797,12 @@ async fn handle_proof<'a>(
         );
     }
 
-    let maybe_packet = handler.link_table.handle_proof(packet);
+    // other proofs on a link (message proofs) are transported in both directions
+    let maybe_packet = if packet.context == PacketContext::LinkRequestProof {
+        handler.link_table.handle_proof(packet)
+    } else {
+        handler.link_table.handle_link_packet(packet, iface)
+    };
 
     if let Some((packet, iface)) = maybe_packet {
         handler
@@ -811,9 +817,8 @@ async fn handle_proof<'a>(
 async fn send_to_next_hop<'a>(
     packet: &Packet,
     handler: &MutexGuard<'a, TransportHandler>,
-    lookup: Option<AddressHash>,
 ) -> bool {
-    let (packet, maybe_iface) = handler.path_table.handle_inbound_packet(packet, lookup);
+    let (packet, maybe_iface) = handler.path_table.handle_inbound_packet(packet);
 
     if let Some(iface) = maybe_iface {
         handler
@@ -827,30 +832,11 @@ async fn send_to_next_hop<'a>(
     maybe_iface.is_some()
 }
 
-async fn handle_keepalive_response<'a>(
+async fn handle_data<'a>(
     packet: &Packet,
-    handler: &MutexGuard<'a, TransportHandler>,
-) -> bool {
-    if packet.context == PacketContext::KeepAlive
-        && packet.data.as_slice()[0] == KEEP_ALIVE_RESPONSE
-    {
-        let lookup = handler.link_table.handle_keepalive(packet);
-
-        if let Some((propagated, iface)) = lookup {
-            handler.send(TxMessage {
-                tx_type: TxMessageType::Direct(iface),
-                packet: propagated,
-            })
-            .await;
-        }
-
-        return true;
-    }
-
-    false
-}
-
-async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandler>) {
+    iface: AddressHash,
+    handler: MutexGuard<'a, TransportHandler>,
+) {
     let mut data_handled = false;
 
     if packet.header.destination_type == DestinationType::Link {
@@ -900,25 +886,20 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
             }
         }
 
-        if !local_out_link_handled && handle_keepalive_response(packet, &handler).await {
-            return;
-        }
-
         if !local_out_link_handled {
-            let lookup = handler.link_table.original_destination(&packet.destination);
-            if lookup.is_some() {
-                let sent = send_to_next_hop(packet, &handler, lookup).await;
-
+            if let Some((packet, out_iface)) = handler.link_table.handle_link_packet(packet, iface) {
                 log::trace!(
-                    "tp({}): {} packet to remote link {}",
+                    "tp({}): forwarded packet to remote link {}",
                     handler.config.name,
-                    if sent {
-                        "forwarded"
-                    } else {
-                        "could not forward"
-                    },
                     packet.destination
                 );
+
+                handler
+                    .send(TxMessage {
+                        tx_type: TxMessageType::Direct(out_iface),
+                        packet,
+                    })
+                    .await;
             }
         }
     }
@@ -936,7 +917,7 @@ async fn handle_data<'a>(packet: &Packet, handler: MutexGuard<'a, TransportHandl
                 data: packet.data,
             }).ok();
         } else {
-            data_handled = send_to_next_hop(packet, &handler, None).await;
+            data_handled = send_to_next_hop(packet, &handler).await;
         }
     }
 
@@ -1239,26 +1220,10 @@ async fn handle_link_request_as_destination<'a>(
     }
 }
 
-async fn handle_link_request_as_intermediate<'a>(
-    received_from: AddressHash,
-    next_hop: AddressHash,
-    packet: &Packet,
-    mut handler: MutexGuard<'a, TransportHandler>,
-) {
-    handler.link_table.add(
-        packet,
-        packet.destination,
-        received_from,
-        next_hop,
-    );
-
-    send_to_next_hop(packet, &handler, None).await;
-}
-
 async fn handle_link_request<'a>(
     packet: &Packet,
     iface: AddressHash,
-    handler: MutexGuard<'a, TransportHandler>
+    mut handler: MutexGuard<'a, TransportHandler>
 ) {
     if let Some(destination) = handler
         .single_in_destinations
@@ -1270,17 +1235,22 @@ async fn handle_link_request<'a>(
             handler.config.name,
             packet.destination
         );
-
         handle_link_request_as_destination(destination, packet, handler).await;
     } else if let Some(entry) = handler.path_table.next_hop_full(&packet.destination) {
+        // handle link request as intermediate
         log::trace!(
             "tp({}): handle link request for remote destination {}",
             handler.config.name,
             packet.destination
         );
-
-        let (next_hop, _) = entry;
-        handle_link_request_as_intermediate(iface, next_hop, packet, handler).await;
+        let (next_hop, next_hop_iface) = entry;
+        handler.link_table.add(
+            packet,
+            iface,
+            next_hop,
+            next_hop_iface,
+        );
+        send_to_next_hop(packet, &handler).await;
     } else {
         log::trace!(
             "tp({}): dropping link request to unknown destination {}",
@@ -1508,8 +1478,16 @@ async fn manage_transport(
                                 message.address,
                                 handler
                             ).await,
-                            PacketType::Proof => handle_proof(&packet, handler).await,
-                            PacketType::Data => handle_data(&packet, handler).await,
+                            PacketType::Proof => handle_proof(
+                                &packet,
+                                message.address,
+                                handler
+                            ).await,
+                            PacketType::Data => handle_data(
+                                &packet,
+                                message.address,
+                                handler
+                            ).await,
                         }
                     }
                 };
@@ -1758,7 +1736,7 @@ mod tests {
         let sender = GroupInputDestination::new(group_identity(key), name);
         let packet = sender.data_packet(OsRng, b"hello group").unwrap();
 
-        handle_data(&packet, handler.lock().await).await;
+        handle_data(&packet, AddressHash::new_empty(), handler.lock().await).await;
 
         let data = received_data.try_recv().expect("delivered group data");
         assert_eq!(data.destination, address);
@@ -1768,7 +1746,7 @@ mod tests {
         let mut transported = sender.data_packet(OsRng, b"transported").unwrap();
         transported.header.hops = 1;
 
-        handle_data(&transported, handler.lock().await).await;
+        handle_data(&transported, AddressHash::new_empty(), handler.lock().await).await;
         assert!(received_data.try_recv().is_err());
 
         // Packets encrypted with another key are not delivered
@@ -1776,7 +1754,7 @@ mod tests {
             GroupInputDestination::new(group_identity(GroupKey::new_rand(OsRng)), name);
         let packet = other_sender.data_packet(OsRng, b"wrong key").unwrap();
 
-        handle_data(&packet, handler.lock().await).await;
+        handle_data(&packet, AddressHash::new_empty(), handler.lock().await).await;
         assert!(received_data.try_recv().is_err());
     }
 }

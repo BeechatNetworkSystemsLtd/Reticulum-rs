@@ -1,15 +1,25 @@
 use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
 
+use reticulum_core::packet::PacketType;
+
 use crate::destination::link::LinkId;
 use crate::hash::AddressHash;
 use crate::packet::{Header, HeaderType, IfacFlag, Packet};
 
 pub struct LinkEntry {
     pub proof_timeout: Instant,
-    pub next_hop: AddressHash,
+    /// The transport identity of the next node.
+    pub next_hop_id: AddressHash,
+    /// Interface the link request was sent on, towards the destination
+    pub next_hop_iface: AddressHash,
+    /// Interface the link request was received on, towards the initiator
     pub received_from: AddressHash,
-    pub original_destination: AddressHash,
+    /// Hops of the link request when received, and so of all link packets received from
+    /// the initiator
+    pub taken_hops: u8,
+    /// Hops of the link proof when received, and so of all link packets received from
+    /// the destination
     pub remaining_hops: u8,
     pub validated: bool,
 }
@@ -24,7 +34,7 @@ fn send_backwards(packet: &Packet, entry: &LinkEntry) -> (Packet, AddressHash) {
         },
         ifac: None,
         destination: packet.destination,
-        transport: Some(entry.next_hop),
+        transport: Some(entry.next_hop_id),
         context: packet.context,
         data: packet.data,
     };
@@ -42,10 +52,11 @@ impl LinkTable {
     pub fn add(
         &mut self,
         link_request: &Packet,
-        destination: AddressHash,
         received_from: AddressHash,
-        next_hop: AddressHash,
+        next_hop_id: AddressHash,
+        next_hop_iface: AddressHash,
     ) {
+        debug_assert_eq!(link_request.header.packet_type, PacketType::LinkRequest);
         let link_id = LinkId::from(link_request);
 
         if self.0.contains_key(&link_id) {
@@ -56,9 +67,10 @@ impl LinkTable {
 
         let entry = LinkEntry {
             proof_timeout: now + Duration::from_secs(600), // TODO
-            next_hop,
+            next_hop_id,
+            next_hop_iface,
             received_from,
-            original_destination: destination,
+            taken_hops: link_request.header.hops,
             remaining_hops: 0,
             validated: false
         };
@@ -66,12 +78,35 @@ impl LinkTable {
         self.0.insert(link_id, entry);
     }
 
-    pub fn original_destination(&self, link_id: &LinkId) -> Option<AddressHash> {
-        self.0.get(link_id).filter(|e| e.validated).map(|e| e.original_destination)
-    }
+    /// Returns the packet of a validated link to transport and the interface to send
+    /// it on. The hops of the packet must be those expected from the direction it came
+    /// from, so that copies overheard on a shared interface are not transported again.
+    pub fn handle_link_packet(
+        &self,
+        packet: &Packet,
+        iface: AddressHash,
+    ) -> Option<(Packet, AddressHash)> {
+        let entry = self.0.get(&packet.destination).filter(|entry| entry.validated)?;
+        let hops = packet.header.hops;
 
-    pub fn handle_keepalive(&self, packet: &Packet) -> Option<(Packet, AddressHash)> {
-        self.0.get(&packet.destination).map(|entry| send_backwards(packet, entry))
+        let out_iface = if entry.next_hop_iface == entry.received_from {
+            // both directions share one interface: repeat on it
+            (hops == entry.remaining_hops || hops == entry.taken_hops).then_some(entry.next_hop_iface)
+        } else if iface == entry.next_hop_iface {
+            // from the destination: send towards the initiator
+            (hops == entry.remaining_hops).then_some(entry.received_from)
+        } else if iface == entry.received_from {
+            // from the initiator: send towards the destination
+            (hops == entry.taken_hops).then_some(entry.next_hop_iface)
+        } else {
+            // received on an interface that is not part of this link: drop
+            None
+        }?;
+
+        let mut transported = *packet;
+        transported.header.hops += 1;
+
+        Some((transported, out_iface))
     }
 
     pub fn handle_proof(&mut self, proof: &Packet) -> Option<(Packet, AddressHash)> {
