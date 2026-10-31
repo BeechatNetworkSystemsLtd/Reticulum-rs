@@ -1,5 +1,5 @@
 use std::sync::{Arc, Once};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::time::Duration;
 
 use rand_core::OsRng;
@@ -19,6 +19,10 @@ use tokio::time;
 
 static INIT: Once = Once::new();
 
+/// Below the ephemeral port range, so that the ports of the servers do not collide
+/// with connections of tests running in parallel
+static NEXT_PORT: AtomicU16 = AtomicU16::new(20000);
+
 fn setup() {
     INIT.call_once(|| {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init()
@@ -26,11 +30,7 @@ fn setup() {
 }
 
 fn free_local_addr() -> String {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .to_string()
+    format!("127.0.0.1:{}", NEXT_PORT.fetch_add(1, Ordering::Relaxed))
 }
 
 async fn build_transport(
@@ -38,11 +38,11 @@ async fn build_transport(
     server_addr: &str,
     client_addr: &[&str],
     timer_config: TimerConfig,
+    restart_outlinks: bool,
 ) -> Transport {
-    // stale links are restarted, links of the healthy mesh tests never go stale
     let transport = TransportConfig::new(name, &PrivateIdentity::new_from_rand(OsRng))
         .set_retransmit(true)
-        .set_restart_outlinks(true)
+        .set_restart_outlinks(restart_outlinks)
         .set_timer_config(timer_config)
         .build();
 
@@ -64,7 +64,12 @@ async fn build_transport(
 
 /// Builds `n` nodes, and for each edge `(u, v)` with `u < v` connects node `v` to
 /// the server of node `u`, so that each node has one TCP interface per neighbour.
-async fn mesh(n: usize, edges: &[(usize, usize)], timer_config: TimerConfig) -> Vec<Transport> {
+async fn mesh(
+    n: usize,
+    edges: &[(usize, usize)],
+    timer_config: TimerConfig,
+    restart_outlinks: bool,
+) -> Vec<Transport> {
     let server_addr: Vec<_> = (0..n).map(|_| free_local_addr()).collect();
 
     let mut transports = Vec::with_capacity(n);
@@ -75,7 +80,14 @@ async fn mesh(n: usize, edges: &[(usize, usize)], timer_config: TimerConfig) -> 
             .map(|&(from, _)| server_addr[from].as_str())
             .collect();
         transports.push(
-            build_transport(&v.to_string(), &server_addr[v], &client_addr, timer_config).await,
+            build_transport(
+                &v.to_string(),
+                &server_addr[v],
+                &client_addr,
+                timer_config,
+                restart_outlinks,
+            )
+            .await,
         );
     }
 
@@ -124,6 +136,16 @@ async fn wait_activated(events: &mut broadcast::Receiver<LinkEventData>, link_id
             Ok(event) if event.id == link_id && matches!(event.event, LinkEvent::Activated) => {
                 break
             }
+            Ok(_) | Err(RecvError::Lagged(_)) => continue,
+            Err(RecvError::Closed) => panic!("link event channel closed"),
+        }
+    }
+}
+
+async fn wait_closed(events: &mut broadcast::Receiver<LinkEventData>, link_id: LinkId) {
+    loop {
+        match events.recv().await {
+            Ok(event) if event.id == link_id && matches!(event.event, LinkEvent::Closed) => break,
             Ok(_) | Err(RecvError::Lagged(_)) => continue,
             Err(RecvError::Closed) => panic!("link event channel closed"),
         }
@@ -181,7 +203,7 @@ async fn link_after_announce(
 async fn announce_reaches_all_nodes() {
     setup();
 
-    let mut transports = mesh(9, &grid(), TimerConfig::default()).await;
+    let mut transports = mesh(9, &grid(), TimerConfig::default(), true).await;
 
     let mut announces = Vec::new();
     for transport in &transports[1..] {
@@ -206,7 +228,7 @@ async fn announce_reaches_all_nodes() {
 async fn link_across_mesh() {
     setup();
 
-    let mut transports = mesh(9, &grid(), TimerConfig::default()).await;
+    let mut transports = mesh(9, &grid(), TimerConfig::default(), true).await;
     let mut node_8 = transports.pop().unwrap();
     let node_0 = &transports[0];
 
@@ -245,13 +267,14 @@ fn fast_timers() -> TimerConfig {
 }
 
 /// Links node 0 to node 8, drops a relay on the path of the link and checks that the
-/// link is restarted over the remaining nodes after node 8 announces again. With
+/// link recovers over the remaining nodes after node 8 announces again. With
 /// `close_interfaces` the TCP connections of the relay are closed, otherwise they stay
-/// open but the relay no longer routes (a hung node).
-async fn link_recovers_after_relay_drop(close_interfaces: bool) {
+/// open but the relay no longer routes (a hung node). With `restart_outlinks` the link
+/// is restarted with the same id, otherwise it closes and node 0 links again.
+async fn link_recovers_after_relay_drop(close_interfaces: bool, restart_outlinks: bool) {
     setup();
 
-    let mut transports = mesh(9, &grid(), fast_timers()).await;
+    let mut transports = mesh(9, &grid(), fast_timers(), restart_outlinks).await;
     let mut node_8 = transports.pop().unwrap();
     let node_0 = transports.remove(0);
     // relays: nodes 1 to 7
@@ -330,23 +353,46 @@ async fn link_recovers_after_relay_drop(close_interfaces: bool) {
     time::sleep(Duration::from_secs(1)).await;
     node_8.send_announce(&destination, None).await;
 
-    time::timeout(Duration::from_secs(20), wait_activated(&mut out_link_events, link_id))
+    let new_link_id = if restart_outlinks {
+        link_id
+    } else {
+        // until the link is closed, `link` returns the existing one
+        time::timeout(Duration::from_secs(20), wait_closed(&mut out_link_events, link_id))
+            .await
+            .expect("link from node 0 to node 8 not closed");
+
+        let new_link_id = *node_0.link(desc).await.lock().await.id();
+        assert_ne!(new_link_id, link_id);
+        new_link_id
+    };
+
+    time::timeout(Duration::from_secs(20), wait_activated(&mut out_link_events, new_link_id))
         .await
-        .expect("link from node 0 to node 8 not restarted");
+        .expect("link from node 0 to node 8 not recovered");
 
     node_0.send_to_out_links(&address, b"hello again").await;
 
     time::timeout(Duration::from_secs(10), wait_data(&mut in_link_events, b"hello again"))
         .await
-        .expect("link data not received by node 8 after restart");
+        .expect("link data not received by node 8 after recovery");
 }
 
 #[tokio::test]
 async fn link_recovers_after_hung_relay() {
-    link_recovers_after_relay_drop(false).await;
+    link_recovers_after_relay_drop(false, true).await;
 }
 
 #[tokio::test]
 async fn link_recovers_after_closed_relay() {
-    link_recovers_after_relay_drop(true).await;
+    link_recovers_after_relay_drop(true, true).await;
+}
+
+#[tokio::test]
+async fn link_reopened_after_hung_relay() {
+    link_recovers_after_relay_drop(false, false).await;
+}
+
+#[tokio::test]
+async fn link_reopened_after_closed_relay() {
+    link_recovers_after_relay_drop(true, false).await;
 }
