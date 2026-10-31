@@ -74,8 +74,8 @@ fn main() -> ! {
             let din_num: u32 = unsafe { core::ptr::read_volatile(0x6008_1028 as *const u32) };
             let dout_mode: u32 = unsafe { core::ptr::read_volatile(0x6008_102C as *const u32) };
             let w0: u32 = unsafe { core::ptr::read_volatile(0x6008_1058 as *const u32) };
-            esp_println::println!("POST-INIT SPI: user={:x} doutdin={} ctrl={:x} misc={:x} din={:x}/{:x} dout={:x} w0={:x}",
-                user2, user2 & 1, ctrl2, misc, din_mode, din_num, dout_mode, w0);
+            esp_println::println!("POST-INIT SPI: user={:x} doutdin={} ctrl={:x} dlen={:x} misc={:x} din={:x}/{:x} dout={:x} w0={:x}",
+                user2, user2 & 1, ctrl2, dlen2, misc, din_mode, din_num, dout_mode, w0);
         }
         Err(_e) => esp_println::println!("radio: init failed at step, continuing"),
     }

@@ -30,7 +30,7 @@ jobs:
           toolchain: 1.95
           components: clippy
       - name: install build dependencies
-        run: apt-get update && apt-get install -y protobuf-compiler
+        run: apt-get update && apt-get install -y protobuf-compiler libdbus-1-dev pkg-config
       - name: clippy
         run: |
           cargo clippy --workspace --all-targets
@@ -74,7 +74,7 @@ jobs:
         with:
           cache-all-crates: "true"
       - name: install dependencies
-        run: apt-get update && apt-get install -y git protobuf-compiler python3
+        run: sudo apt-get update && sudo apt-get install -y git protobuf-compiler python3
       - name: checkout Reticulum
         run: |
           git clone https://github.com/markqvist/Reticulum.git "$RETICULUM_TEST_PYTHON_DIR"

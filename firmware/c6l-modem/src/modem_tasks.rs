@@ -108,6 +108,8 @@ pub struct SendHal(pub ModemHal);
 unsafe impl Send for SendHal {}
 
 
+// shortcut: hardware-CS experiment kept for the next bringup session
+#[allow(dead_code)]
 /// A SpiDevice that relies on the SPI peripheral's hardware chip-select.
 /// The ESP32-C6's GPSPI2 controls CS timing precisely, which the
 /// software-CS path (ExclusiveDevice) cannot match for multi-byte
@@ -292,7 +294,7 @@ pub struct SendUsbRx(pub esp_hal::usb_serial_jtag::UsbSerialJtagRx<'static, esp_
 unsafe impl Send for SendUsbRx {}
 
 #[embassy_executor::task]
-pub async fn modem_task(hal: SendHal, task_spawner: embassy_executor::SendSpawner) {
+pub async fn modem_task(hal: SendHal, _task_spawner: embassy_executor::SendSpawner) {
     esp_println::println!("modem: actor up");
     let SendHal(ModemHal {
         usb_rx,
@@ -368,8 +370,7 @@ pub async fn modem_task(hal: SendHal, task_spawner: embassy_executor::SendSpawne
         if loop_n % 40 == 0 {
             let irq_st = radio.irq_status().unwrap_or(0);
             let rssi = radio.current_rssi().unwrap_or(0);
-            let pin = irq.is_high();
-            use alloc::format; let st = radio.get_status().unwrap_or(0); let mode = (st >> 4) & 0x7; // RadioLib: mode at bits [6:4]
+            let st = radio.get_status().unwrap_or(0); let mode = (st >> 4) & 0x7; // RadioLib: mode at bits [6:4]
         // Raw SPI probe: send GetIrqStatus opcode + 3 NOPs via transfer_in_place
         
         

@@ -85,71 +85,6 @@ impl Default for RadioConfig {
 }
 
 
-/// Raw GPSPI2 register-level SPI transfer. Bypasses the esp-hal SPI
-/// driver entirely — used to diagnose SPI communication with the SX1262.
-/// GPSPI2 base = 0x6008_1000 on ESP32-C6.
-pub mod raw_spi {
-    const GPSPI2_BASE: usize = 0x6008_1000;
-    const REG_CMD: usize = GPSPI2_BASE + 0x00;
-    const REG_USER: usize = GPSPI2_BASE + 0x18;
-    const REG_USER1: usize = GPSPI2_BASE + 0x1C;
-    const REG_USER2: usize = GPSPI2_BASE + 0x20;
-    const REG_MS_DLEN: usize = GPSPI2_BASE + 0x28;
-    const REG_W0: usize = GPSPI2_BASE + 0x58;
-
-    /// Do a full-duplex transfer of `buf.len()` bytes. Returns received data.
-    /// CS must be handled by the caller.
-    pub fn transfer(buf: &mut [u8]) {
-        unsafe {
-            // Configure USER: enable MOSI and MISO, no command/addr/dummy phase
-            // Bit 27: usr_mosi, Bit 28: usr_miso
-            let user = core::ptr::read_volatile(REG_USER as *const u32);
-            core::ptr::write_volatile(
-                REG_USER as *mut u32,
-                (user | (1 << 27) | (1 << 28)) & !((1 << 31) | (1 << 30) | (1 << 29) | (1 << 24) | (1 << 23)),
-            );
-            // USER1: set MOSI bit length (bits 17:0 = mosi_bitlen - 1)
-            let bits = (buf.len() * 8 - 1) as u32;
-            core::ptr::write_volatile(REG_USER1 as *mut u32, (bits << 0) | 0x7FF << 18); // MISO follows MOSI
-            // USER2: no command phase
-            core::ptr::write_volatile(REG_USER2 as *mut u32, 0);
-            // MS_DLEN: data bit length
-            core::ptr::write_volatile(REG_MS_DLEN as *mut u32, bits);
-
-            // Load TX data into W0..W15 (little-endian word packing)
-            for (i, chunk) in buf.chunks(4).enumerate() {
-                if i >= 16 { break; }
-                let mut word: u32 = 0;
-                for (j, &b) in chunk.iter().enumerate() {
-                    word |= (b as u32) << (j * 8);
-                }
-                core::ptr::write_volatile((REG_W0 + i * 4) as *mut u32, word);
-            }
-
-            // Start transfer
-            core::ptr::write_volatile(REG_CMD as *mut u32, 1);
-
-            // Wait for completion (CMD bit 0 clears when done)
-            let mut timeout = 0u32;
-            while core::ptr::read_volatile(REG_CMD as *const u32) & 1 != 0 {
-                timeout += 1;
-                if timeout > 1_000_000 {
-                    break; // timeout
-                }
-            }
-
-            // Read RX data from W0..W15
-            for (i, chunk) in buf.chunks_mut(4).enumerate() {
-                if i >= 16 { break; }
-                let word = core::ptr::read_volatile((REG_W0 + i * 4) as *const u32);
-                for (j, b) in chunk.iter_mut().enumerate() {
-                    *b = ((word >> (j * 8)) & 0xFF) as u8;
-                }
-            }
-        }
-    }
-}
-
 pub struct Sx1262<BUS, BUSY>
 where
     BUS: embedded_hal::spi::SpiDevice,
@@ -179,6 +114,7 @@ where
     /// esp-hal 1.1.2's ESP32-C6 GPIO driver returns inverted/garbage levels
     /// for some pins (observed: GPIO19 reads `high` while the pad is
     /// physically low). Reading GPIO_IN_REG directly works reliably.
+    #[allow(dead_code)] // shortcut: raw-SPI bringup diagnostic
     #[inline]
     fn busy_raw(&mut self) -> bool {
         self.busy.is_high().unwrap_or(true)
@@ -277,6 +213,8 @@ where
     /// all GPIO pins simultaneously — this discharges the 3.3V rail's
     /// bulk capacitors enough to trigger the radio's power-on reset.
     /// (No RST pin on this board; USB hub "power cycling" doesn't cut VBUS.)
+    // shortcut: raw-SPI bringup diagnostics, not in the serving path
+    #[allow(dead_code)]
     pub fn force_brownout_reset(&mut self) {
         // 1. Configure all safe GPIOs as outputs driving LOW
         //    (this creates a load on the 3.3V rail through pull-ups and
@@ -304,6 +242,8 @@ where
 
     /// Full init via GPIO bit-banging (bypasses the SPI peripheral entirely).
     /// Tests whether the SX1262 responds correctly to manual SPI.
+    // shortcut: bringup diagnostic kept for the next hardware session, not in the serving path
+    #[allow(dead_code)]
     pub fn init_bitbang(&mut self, delay: &esp_hal::delay::Delay) -> Result<(), RadioError> {
         // Claim SPI pins for GPIO control
         crate::raw_spi::bitbang_claim_pins();
@@ -557,6 +497,7 @@ where
 
     /// Read the SX1262 status byte: bits 6:4 = chip mode, bits 3:1 = command status.
     /// Chip modes: 2=STBY_RC, 3=STBY_XOSC, 4=FS, 5=RX, 6=TX
+    #[allow(dead_code)]
     /// Read back a register (diagnostic: verify bidirectional SPI)
     pub fn read_reg(&mut self, reg: u16) -> Result<u8, RadioError> {
         self.wait_ready()?;
@@ -571,6 +512,8 @@ where
     }
 
 
+    // shortcut: raw-SPI bringup diagnostics, not in the serving path
+    #[allow(dead_code)]
     /// GetStatus without BUSY wait — for pre-init diagnostics.
     pub fn get_status_noinit(&mut self) -> u8 {
         let mut buf = [0xC0u8];
@@ -580,23 +523,25 @@ where
         buf[0]
     }
 
+    #[allow(dead_code)]
     /// GetStatus via RAW SPI (bypassing HAL) with manual CS control.
     pub fn get_status_raw(&mut self) -> u8 {
         // CS LOW (GPIO23)
         unsafe { core::ptr::write_volatile(0x6009_100C as *mut u32, 1 << 23) };
         let mut buf = [0xC0u8];
-        crate::sx1262::raw_spi::transfer(&mut buf);
+        let _ = crate::raw_spi::transfer(&mut buf);
         // CS HIGH
         unsafe { core::ptr::write_volatile(0x6009_1008 as *mut u32, 1 << 23) };
         buf[0]
     }
 
+    #[allow(dead_code)]
     /// SetStandby via RAW SPI with manual CS.
     pub fn set_standby_raw(&mut self) -> u8 {
         // CS LOW
         unsafe { core::ptr::write_volatile(0x6009_100C as *mut u32, 1 << 23) };
         let mut buf = [0x80u8, 0x00]; // SetStandby(STBY_RC)
-        crate::sx1262::raw_spi::transfer(&mut buf);
+        let _ = crate::raw_spi::transfer(&mut buf);
         // CS HIGH
         unsafe { core::ptr::write_volatile(0x6009_1008 as *mut u32, 1 << 23) };
         // Now read status

@@ -1,3 +1,6 @@
+// shortcut: whole-module bringup diagnostic feeding init_bitbang; not in the serving path
+#![allow(dead_code)]
+
 //! Raw GPSPI2 register-level SPI driver for the ESP32-C6.
 //!
 //! Bypasses the esp-hal SPI driver's per-transfer configuration entirely.
