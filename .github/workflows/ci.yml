@@ -54,11 +54,15 @@ jobs:
       - name: install riscv target
         run: rustup target add riscv32imac-unknown-none-elf
       - name: build c6l modem firmware
-        run: cargo build --manifest-path firmware/c6l-modem/Cargo.toml --release
+        # must run inside firmware/c6l-modem: its .cargo/config.toml pins the
+        # riscv32imac build target and is only read from that directory
+        working-directory: firmware/c6l-modem
+        run: cargo build --release
       - name: modem-core no_std check
         run: cargo check -p rnode-modem-core --no-default-features --target riscv32imac-unknown-none-elf
 
   test:
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       RETICULUM_TEST_PYTHON_DIR: /opt/Reticulum
