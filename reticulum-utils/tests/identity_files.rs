@@ -164,6 +164,20 @@ fn private_identity_writes_are_owner_only_even_for_existing_files() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Location of a Python Reticulum checkout for interop tests.
+///
+/// `RETICULUM_TEST_PYTHON_DIR` (the same var CI sets in
+/// `.github/workflows/ci.yml`) overrides the default: a `Reticulum`
+/// checkout sitting next to this repository (`<workspace>/../Reticulum`).
+fn python_repo() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("RETICULUM_TEST_PYTHON_DIR") {
+        return std::path::PathBuf::from(path);
+    }
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("Reticulum")
+}
+
 fn rn_cmd(args: &[&str]) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_rn"))
         .args(args)
@@ -172,11 +186,12 @@ fn rn_cmd(args: &[&str]) -> std::process::Output {
 }
 
 fn python_rnid(home: &std::path::Path, args: &[&str]) -> std::process::Output {
+    let repo = python_repo();
     std::process::Command::new("python3")
-        .arg("/home/user/g/reticulum/Reticulum/RNS/Utilities/rnid.py")
+        .arg(repo.join("RNS/Utilities/rnid.py"))
         .args(args)
         .current_dir(home)
-        .env("PYTHONPATH", "/home/user/g/reticulum/Reticulum")
+        .env("PYTHONPATH", &repo)
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONPYCACHEPREFIX", home)
         .env("HOME", home)
@@ -358,7 +373,7 @@ fn sign_and_validate_agree_with_python_rnid() {
         .arg(&script)
         .arg(&id_path)
         .current_dir(&dir)
-        .env("PYTHONPATH", "/home/user/g/reticulum/Reticulum")
+        .env("PYTHONPATH", python_repo())
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONPYCACHEPREFIX", &dir)
         .env("HOME", &dir)
