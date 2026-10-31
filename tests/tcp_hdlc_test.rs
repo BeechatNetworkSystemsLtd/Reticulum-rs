@@ -54,8 +54,8 @@ async fn build_transport(name: &str, server_addr: &str, client_addr: &[&str]) ->
 async fn packet_overload() {
     setup();
 
-    let transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
-    let transport_b = build_transport("b", "127.0.0.1:8082", &["127.0.0.1:8081"]).await;
+    let transport_a = build_transport("a", "127.0.0.1:18081", &[]).await;
+    let transport_b = build_transport("b", "127.0.0.1:18082", &["127.0.0.1:18081"]).await;
 
     let stop = CancellationToken::new();
 
