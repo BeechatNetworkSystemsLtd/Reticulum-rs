@@ -417,16 +417,18 @@ impl TcpClient {
                 })
             };
 
+            // Only the losing task is awaited: select already polled the
+            // winner to completion, and re-polling its JoinHandle panics.
             tokio::select! {
                 _ = &mut rx_task => {
                     tx_task.abort();
+                    let _ = tx_task.await;
                 }
                 _ = &mut tx_task => {
                     rx_task.abort();
+                    let _ = rx_task.await;
                 }
             }
-            let _ = rx_task.await;
-            let _ = tx_task.await;
 
             stats.set_online(false);
             log::info!("tcp_client: disconnected from <{}>", addr);

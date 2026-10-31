@@ -61,7 +61,13 @@ fn wait_for(
     panic!("timed out waiting for actor update");
 }
 
-fn add_tcp_pair(server: &App, server_rx: &flume::Receiver<Update>, port: u16, client: &App) {
+fn add_tcp_pair(
+    server: &App,
+    server_rx: &flume::Receiver<Update>,
+    port: u16,
+    client: &App,
+    client_rx: &flume::Receiver<Update>,
+) {
     server.dispatch(Action::AddInterface {
         name: "tcp-server".into(),
         config: InterfaceConfig::TcpServer {
@@ -83,8 +89,15 @@ fn add_tcp_pair(server: &App, server_rx: &flume::Receiver<Update>, port: u16, cl
         ifac: None,
         enabled: true,
     });
-    // Give the client a moment to connect.
-    std::thread::sleep(Duration::from_millis(500));
+    // Wait for the client interface to be actually connected: announcing
+    // before the TCP link is up drops the announce (seen on slow runners).
+    // FullState is only emitted per actor message, so drive NetworkTick
+    // updates, which carry live interface stats.
+    client.dispatch(Action::StartNetworkTick { interval_ms: 100 });
+    wait_for(client_rx, 10, |u| {
+        matches!(&u, Update::NetworkTick(t) if t.interfaces.iter().any(|i| i.name == "tcp-client" && i.online))
+    });
+    client.dispatch(Action::StopNetworkTick);
 }
 
 fn default_fields(text: &str) -> LxmfMessageFields {
@@ -114,7 +127,7 @@ fn tcp_request_response_loopback() {
     let (server, server_rx) = start_actor("req-server");
     let (client, client_rx) = start_actor("req-client");
     let port = free_port();
-    add_tcp_pair(&server, &server_rx, port, &client);
+    add_tcp_pair(&server, &server_rx, port, &client, &client_rx);
 
     server.dispatch(Action::CreateDestination {
         app_name: "actor.test".into(),
@@ -330,7 +343,7 @@ fn lxmf_delivery_between_actors() {
     let (alice, alice_rx) = start_actor("lxmf-alice");
     let (bob, bob_rx) = start_actor("lxmf-bob");
     let port = free_port();
-    add_tcp_pair(&bob, &bob_rx, port, &alice);
+    add_tcp_pair(&bob, &bob_rx, port, &alice, &alice_rx);
 
     // Both announce their delivery destinations.
     alice.dispatch(Action::AnnounceLxmfDelivery);
@@ -401,7 +414,7 @@ fn propagation_sync_request_and_cancel() {
     let (node, node_rx) = start_actor("prop-node");
     let (client, client_rx) = start_actor("prop-client");
     let port = free_port();
-    add_tcp_pair(&node, &node_rx, port, &client);
+    add_tcp_pair(&node, &node_rx, port, &client, &client_rx);
 
     // The node becomes a propagation node.
     node.dispatch(Action::SetLxmfRouterConfig {
@@ -516,7 +529,7 @@ fn establish_call(
     let (caller, caller_rx) = start_actor(&format!("{tag}-caller"));
     let (callee, callee_rx) = start_actor_with_identity(&format!("{tag}-callee"), &callee_identity);
     let port = free_port();
-    add_tcp_pair(&callee, &callee_rx, port, &caller);
+    add_tcp_pair(&callee, &callee_rx, port, &caller, &caller_rx);
 
     if let Some(bridge) = caller_bridge {
         caller.set_audio_bridge(bridge);
@@ -612,7 +625,7 @@ fn resource_offer_accept_and_cancel() {
     let (sender, sender_rx) = start_actor("res-sender");
     let (receiver, receiver_rx) = start_actor("res-receiver");
     let port = free_port();
-    add_tcp_pair(&receiver, &receiver_rx, port, &sender);
+    add_tcp_pair(&receiver, &receiver_rx, port, &sender, &sender_rx);
 
     // The receiver accepts every inbound resource by default.
     receiver.dispatch(Action::SetResourceStrategy {
@@ -732,7 +745,7 @@ fn discovery_announce_listen_and_connect() {
     let (host, host_rx) = start_actor("disc-host");
     let (seeker, seeker_rx) = start_actor("disc-seeker");
     let port = free_port();
-    add_tcp_pair(&host, &host_rx, port, &seeker);
+    add_tcp_pair(&host, &host_rx, port, &seeker, &seeker_rx);
 
     // The seeker listens for discovered interfaces; the host announces the
     // TCP server it hosts.

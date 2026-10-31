@@ -45,6 +45,11 @@ jobs:
     runs-on: ubuntu-latest
     container: rust:1.95
     timeout-minutes: 15
+    # Workflow-level RUSTFLAGS replaces the target rustflags in
+    # firmware/c6l-modem/.cargo/config.toml, so the linker script must be
+    # repeated here or the firmware fails to link (-Tlinkall.x).
+    env:
+      RUSTFLAGS: "-D warnings -C link-arg=-Tlinkall.x"
     steps:
       - name: checkout
         uses: actions/checkout@v4
