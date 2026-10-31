@@ -1,7 +1,9 @@
-use std::sync::Once;
+use std::sync::{Arc, Once};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rand_core::OsRng;
+use reticulum::packet::PacketType;
 use reticulum::{
     destination::{
         link::{LinkEvent, LinkEventData, LinkId},
@@ -226,3 +228,125 @@ async fn link_across_mesh() {
         .expect("link reply not received by node 0");
 }
 
+/// Short link timers, so that a link over a dropped relay goes stale and is
+/// restarted quickly. The in-link of the destination is closed (after 4 s)
+/// before the out-link is restarted (after 8 s), otherwise the destination
+/// ignores the repeated link request.
+fn fast_timers() -> TimerConfig {
+    TimerConfig {
+        out_link_keep: Duration::from_secs(1),
+        out_link_stale: Duration::from_secs(3),
+        out_link_restart: Duration::from_secs(8),
+        out_link_repeat: Duration::from_secs(2),
+        in_link_stale: Duration::from_secs(3),
+        in_link_close: Duration::from_secs(1),
+        ..TimerConfig::default()
+    }
+}
+
+/// Links node 0 to node 8, drops a relay on the path of the link and checks that the
+/// link is restarted over the remaining nodes after node 8 announces again. With
+/// `close_interfaces` the TCP connections of the relay are closed, otherwise they stay
+/// open but the relay no longer routes (a hung node).
+async fn link_recovers_after_relay_drop(close_interfaces: bool) {
+    setup();
+
+    let mut transports = mesh(9, &grid(), fast_timers()).await;
+    let mut node_8 = transports.pop().unwrap();
+    let node_0 = transports.remove(0);
+    // relays: nodes 1 to 7
+    let mut relays: Vec<_> = transports.into_iter().map(Some).collect();
+
+    let mut announces = node_0.recv_announces().await;
+    let mut out_link_events = node_0.out_link_events();
+    let mut in_link_events = node_8.in_link_events();
+
+    let destination = node_8
+        .add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "mesh"))
+        .await;
+    let address = destination.lock().await.desc.address_hash;
+
+    node_8.send_announce(&destination, None).await;
+
+    let event = time::timeout(Duration::from_secs(10), recv_announce(&mut announces, address))
+        .await
+        .expect("announce of node 8 not received by node 0");
+    let desc = event.destination.lock().await.desc;
+
+    // the link request is sent on all interfaces of node 0, but over TCP the proof
+    // is only sent back over the relays of the path, so the neighbour of node 0
+    // that receives it is on the path
+    let neighbours = [1, 3];
+    let iface_rx: Vec<_> = neighbours
+        .iter()
+        .map(|&i| relays[i - 1].as_ref().unwrap().iface_rx())
+        .collect();
+
+    let link = node_0.link(desc).await;
+    let link_id = *link.lock().await.id();
+
+    let on_path: Vec<_> = iface_rx.into_iter().map(|rx| {
+        // watch for proofs
+        let mut iface_rx = rx;
+        let seen = Arc::new(AtomicBool::new(false));
+        let task_seen = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                match iface_rx.recv().await {
+                    Ok(message) => {
+                        if message.packet.header.packet_type == PacketType::Proof
+                            && message.packet.destination == link_id
+                        {
+                            task_seen.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+        seen
+    }).collect();
+
+    time::timeout(Duration::from_secs(10), wait_activated(&mut out_link_events, link_id))
+        .await
+        .expect("link from node 0 to node 8 not activated");
+
+    // exactly one neighbor is on the path
+    assert!(on_path.iter().filter(|seen| seen.load(Ordering::SeqCst)).count() == 1);
+    let dropped = neighbours[on_path
+        .iter()
+        .position(|seen| seen.load(Ordering::SeqCst))
+        .expect("no neighbour of node 0 on the path of the link")];
+    println!("dropping relay {}", dropped);
+
+    let relay = relays[dropped - 1].take().unwrap();
+    if close_interfaces {
+        relay.iface_manager().lock().await.shutdown();
+    }
+    drop(relay);
+
+    // announces are only accepted if emitted at a later second
+    time::sleep(Duration::from_secs(1)).await;
+    node_8.send_announce(&destination, None).await;
+
+    time::timeout(Duration::from_secs(20), wait_activated(&mut out_link_events, link_id))
+        .await
+        .expect("link from node 0 to node 8 not restarted");
+
+    node_0.send_to_out_links(&address, b"hello again").await;
+
+    time::timeout(Duration::from_secs(10), wait_data(&mut in_link_events, b"hello again"))
+        .await
+        .expect("link data not received by node 8 after restart");
+}
+
+#[tokio::test]
+async fn link_recovers_after_hung_relay() {
+    link_recovers_after_relay_drop(false).await;
+}
+
+#[tokio::test]
+async fn link_recovers_after_closed_relay() {
+    link_recovers_after_relay_drop(true).await;
+}

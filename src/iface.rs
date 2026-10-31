@@ -172,6 +172,11 @@ impl InterfaceManager {
         self.rx_recv.clone()
     }
 
+    /// Stops all interfaces, e.g. closes their TCP connections
+    pub fn shutdown(&self) {
+        self.cancel.cancel();
+    }
+
     pub fn cleanup(&mut self) {
         self.ifaces.retain(|iface| !iface.stop.is_cancelled());
     }

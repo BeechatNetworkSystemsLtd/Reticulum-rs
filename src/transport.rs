@@ -96,7 +96,8 @@ pub struct TransportConfig {
     /// So newer routes are preferred over older ones.
     reroute_eager: bool,
 
-    /// Attempt to reopen lost links once they have been closed.
+    /// Attempt to reopen stale links. Not compatible with Python nodes in the link
+    /// path, which drop repeated link requests.
     restart_outlinks: bool,
 
     /// Resend announces of remote destinations at a slower pace once
@@ -1236,19 +1237,20 @@ async fn handle_link_request<'a>(
             packet.destination
         );
         handle_link_request_as_destination(destination, packet, handler).await;
-    } else if let Some(entry) = handler.path_table.next_hop_full(&packet.destination) {
+    } else if let Some(entry) = handler.path_table.get(&packet.destination) {
         // handle link request as intermediate
         log::trace!(
             "tp({}): handle link request for remote destination {}",
             handler.config.name,
             packet.destination
         );
-        let (next_hop, next_hop_iface) = entry;
+        let (next_hop, next_hop_iface, remaining_hops) = (entry.received_from, entry.iface, entry.hops);
         handler.link_table.add(
             packet,
             iface,
             next_hop,
             next_hop_iface,
+            remaining_hops,
         );
         send_to_next_hop(packet, &handler).await;
     } else {
