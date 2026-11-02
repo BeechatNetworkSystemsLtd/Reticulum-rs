@@ -5,7 +5,6 @@
 --mode reader: wait for link, read the incoming stream until EOF, print sha.
 """
 import argparse, hashlib, sys, time
-sys.path.insert(0, "/home/user/g/reticulum/Reticulum")
 import RNS
 import RNS.Buffer
 

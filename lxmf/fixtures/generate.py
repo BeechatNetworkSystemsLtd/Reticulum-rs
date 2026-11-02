@@ -3,7 +3,7 @@
 
 Run from anywhere with:
 
-    PYTHONPATH=/home/user/g/reticulum/Reticulum:/home/user/g/reticulum/LXMF \
+    PYTHONPATH=/path/to/Reticulum:/path/to/LXMF \
         python3 fixtures/generate.py
 
 The script is deterministic: all identities, timestamps, stamps and
@@ -25,7 +25,7 @@ from LXMF.LXMessage import LXMessage
 import LXMF.LXStamper as LXStamper
 
 # Fixed identities from the Reticulum python test suite
-# (/home/user/g/reticulum/Reticulum/tests/identity.py)
+# (Reticulum repository: tests/identity.py)
 FIXED_KEYS = [
     ("f8953ffaf607627e615603ff1530c82c434cf87c07179dd7689ea776f30b964cfb7ba6164af00c5111a45e69e57d885e1285f8dbfe3a21e95ae17cf676b0f8b7", "650b5d76b6bec0390d1f8cfca5bd33f9"),
     ("d85d036245436a3c33d3228affae06721f8203bc364ee0ee7556368ac62add650ebf8f926abf628da9d92baaa12db89bd6516ee92ec29765f3afafcb8622d697", "1469e89450c361b253aefb0c606b6111"),

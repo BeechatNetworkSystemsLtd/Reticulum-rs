@@ -10,8 +10,7 @@ Mirrors `Examples/Echo.py` and `Examples/Ratchets.py`:
   --mode ratchet-server : IN SINGLE destination that rotates its ratchet on
                           every announce and prints the current ratchet id
 """
-import argparse, hashlib, os, sys, tempfile, threading, time
-sys.path.insert(0, "/home/user/g/reticulum/Reticulum")
+import argparse, hashlib, os, tempfile, threading, time
 import RNS
 
 APP_NAME = "example_utilities"

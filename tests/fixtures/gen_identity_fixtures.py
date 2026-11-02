@@ -3,7 +3,7 @@
 
 Run with PYTHONPATH pointing at the Python Reticulum checkout:
 
-    PYTHONPATH=/home/user/g/reticulum/Reticulum python3 tests/fixtures/gen_identity_fixtures.py
+    PYTHONPATH=/path/to/Reticulum python3 tests/fixtures/gen_identity_fixtures.py
 
 Everything random is pinned (fixed keys, fixed ephemeral keys, fixed IVs,
 fixed announce random hashes and timestamps) so the Rust port can verify
@@ -15,8 +15,6 @@ import os
 import struct
 import sys
 import tempfile
-
-sys.path.insert(0, os.environ.get("RETICULUM_PYTHON_DIR", "/home/user/g/reticulum/Reticulum"))
 
 import RNS
 from RNS.vendor import umsgpack as umsgpack

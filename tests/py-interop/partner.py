@@ -7,8 +7,7 @@ Modes:
   --mode request-server   : announce destination, register "echo" request handler returning data
   --mode request-client   : connect, send request "echo" with payload, print response hex
 """
-import argparse, os, sys, time
-sys.path.insert(0, "/home/user/g/reticulum/Reticulum")
+import argparse, os, time
 import RNS
 
 APP_NAME = "example_utilities"

@@ -7,7 +7,7 @@ reproduces them byte-for-byte from the same inputs.
 Regenerate with:
 
 ```sh
-PYTHONPATH=/home/user/g/reticulum/Reticulum:/home/user/g/reticulum/LXMF     python3 fixtures/generate.py
+PYTHONPATH=/path/to/Reticulum:/path/to/LXMF python3 fixtures/generate.py
 ```
 
 Requirements: Python 3 with the `cryptography` module installed (used by

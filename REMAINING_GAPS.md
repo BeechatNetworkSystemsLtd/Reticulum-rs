@@ -1,6 +1,6 @@
 # Remaining gaps vs Python Reticulum 1.5.5
 
-Comparison target: `/home/user/g/reticulum/Reticulum` (`RNS/_version.py` =
+Comparison target: Python Reticulum checkout (`RNS/_version.py` =
 1.5.5). The items below are the differences that remain after the parity
 series landed. LXMF, LXST, `reticulum-actor`, `reticulum-ffi`, and
 `firmware/` are Rust-side extras, not Python parity items, and are not

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Broadcast partner for Rust PLAIN-destination interop tests."""
-import argparse, sys, time
-sys.path.insert(0, "/home/user/g/reticulum/Reticulum")
+import argparse, time
 import RNS
 
 APP_NAME = "example_utilities"
