@@ -43,9 +43,8 @@ async fn pair(ports: (u16, u16)) -> (Transport, Transport, Arc<Mutex<Link>>) {
         .await
         .set_proof_strategy(ProofStrategy::All);
     let hash = destination.lock().await.desc.address_hash;
-    server.send_announce(&destination, None).await;
-
     let mut announces = client.recv_announces().await;
+    server.send_announce(&destination, None).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let desc = loop {
         assert!(tokio::time::Instant::now() < deadline, "no announce");

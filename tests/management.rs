@@ -64,9 +64,8 @@ async fn probe_destination_proves_packets() {
     let (client, server) = udp_pair("probe", 4412, 4413, &identity_a, &identity_b).await;
 
     let probe = server.enable_probe_destination().await;
-    server.send_announce(&probe, None).await;
-
     let mut announces = client.recv_announces().await;
+    server.send_announce(&probe, None).await;
     let announce = tokio::time::timeout(Duration::from_secs(10), announces.recv())
         .await
         .expect("announce timeout")
@@ -95,9 +94,8 @@ async fn remote_management_status_and_path() {
     let (client, server) = udp_pair("mgmt", 4422, 4423, &identity_a, &identity_b).await;
 
     let management = server.enable_remote_management().await;
-    server.send_announce(&management, None).await;
-
     let mut announces = client.recv_announces().await;
+    server.send_announce(&management, None).await;
     let announce = tokio::time::timeout(Duration::from_secs(10), announces.recv())
         .await
         .expect("announce timeout")

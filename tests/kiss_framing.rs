@@ -64,9 +64,8 @@ async fn kiss_announce_over_pty_pair() {
         .await;
     let dest_hash = dest.lock().await.desc.address_hash;
 
-    node_a.send_announce(&dest, None).await;
-
     let mut announces = node_b.recv_announces().await;
+    node_a.send_announce(&dest, None).await;
     let result = time::timeout(Duration::from_secs(10), announces.recv()).await;
     match result {
         Ok(Ok(announce)) => {
@@ -122,9 +121,8 @@ async fn ax25_kiss_announce_over_pty_pair() {
         .await;
     let dest_hash = dest.lock().await.desc.address_hash;
 
-    node_a.send_announce(&dest, None).await;
-
     let mut announces = node_b.recv_announces().await;
+    node_a.send_announce(&dest, None).await;
     let result = time::timeout(Duration::from_secs(10), announces.recv()).await;
     match result {
         Ok(Ok(announce)) => {
@@ -167,9 +165,8 @@ async fn serial_hdlc_announce_over_pty_pair() {
         .await;
     let dest_hash = dest.lock().await.desc.address_hash;
 
-    node_a.send_announce(&dest, None).await;
-
     let mut announces = node_b.recv_announces().await;
+    node_a.send_announce(&dest, None).await;
     let result = time::timeout(Duration::from_secs(10), announces.recv()).await;
     match result {
         Ok(Ok(announce)) => {

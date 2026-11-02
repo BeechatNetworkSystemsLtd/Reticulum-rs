@@ -105,9 +105,8 @@ async fn link_through_python_middle_node() {
         )
         .await;
     let dest_hash = destination.lock().await.desc.address_hash;
-    c.send_announce(&destination, Some(b"via-python")).await;
-
     let mut announces = a.recv_announces().await;
+    c.send_announce(&destination, Some(b"via-python")).await;
     let announce = tokio::time::timeout(Duration::from_secs(30), announces.recv())
         .await
         .expect("announce must propagate through the Python middle")
@@ -351,9 +350,8 @@ async fn resource_and_request_through_python_middle() {
         }
     });
 
-    c.send_announce(&destination, None).await;
-
     let mut announces = a.recv_announces().await;
+    c.send_announce(&destination, None).await;
     let announce = tokio::time::timeout(Duration::from_secs(30), announces.recv())
         .await
         .expect("announce through python middle")

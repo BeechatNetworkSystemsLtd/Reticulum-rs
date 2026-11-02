@@ -116,9 +116,8 @@ async fn auto_interface_peers_and_exchanges_announce() {
         .await;
     let dest_hash = dest.lock().await.desc.address_hash;
 
-    node_a.send_announce(&dest, None).await;
-
     let mut announces = node_b.recv_announces().await;
+    node_a.send_announce(&dest, None).await;
     let result = time::timeout(Duration::from_secs(15), announces.recv()).await;
     match result {
         Ok(Ok(announce)) => {

@@ -40,8 +40,8 @@ async fn connect(
     dest: &DestArc,
 ) -> reticulum::destination::DestinationDesc {
     let hash = dest.lock().await.desc.address_hash;
-    server.send_announce(dest, None).await;
     let mut announces = client.recv_announces().await;
+    server.send_announce(dest, None).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         assert!(tokio::time::Instant::now() < deadline, "no announce");

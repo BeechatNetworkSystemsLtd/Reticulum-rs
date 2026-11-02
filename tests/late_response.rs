@@ -45,9 +45,8 @@ async fn response_before_await_is_delivered() {
         Some(reticulum::resource::msgpack_bin(&ctx.data))
     })
     .await;
-    b.send_announce(&destination, None).await;
-
     let mut announces = a.recv_announces().await;
+    b.send_announce(&destination, None).await;
     let announce = tokio::time::timeout(Duration::from_secs(10), announces.recv())
         .await
         .expect("announce")

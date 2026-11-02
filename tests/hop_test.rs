@@ -163,13 +163,17 @@ async fn message_proof_over_remote_link() {
         .await;
     dest_c.lock().await.proof_strategy = reticulum::destination::ProofStrategy::All;
     let dest_c_hash = dest_c.lock().await.desc.address_hash;
-    // NOTE: we have to wait before sending announce because if the TCP client has not yet
-    // connected, the outgoing packet will be dropped
-    // TODO: can we do this without waiting?
-    time::sleep(Duration::from_millis(100)).await;
-    transport_c.send_announce(&dest_c, None).await;
-
-    transport_a.recv_announces().await.recv().await.unwrap();
+    // Re-announce until A hears it: announces sent before the TCP clients
+    // along the chain are connected are dropped.
+    let mut announces = transport_a.recv_announces().await;
+    let deadline = time::Instant::now() + Duration::from_secs(15);
+    loop {
+        transport_c.send_announce(&dest_c, None).await;
+        if let Ok(Ok(_)) = time::timeout(Duration::from_secs(1), announces.recv()).await {
+            break;
+        }
+        assert!(time::Instant::now() < deadline, "announce from C never reached A");
+    }
     let link = transport_a.link(dest_c.lock().await.desc).await;
     let link_id = *link.lock().await.id();
 

@@ -61,9 +61,8 @@ async fn split_resource_transfers_all_segments() {
     let dest_hash = destination.lock().await.desc.address_hash;
     b.set_accepts_links(&dest_hash, true).await;
     // The destination lives on b; b announces, a receives and links.
-    b.send_announce(&destination, None).await;
-
     let mut announces = a.recv_announces().await;
+    b.send_announce(&destination, None).await;
     let announce = tokio::time::timeout(Duration::from_secs(10), announces.recv())
         .await
         .expect("announce timeout")
@@ -151,9 +150,8 @@ async fn split_file_transfers_all_segments() {
         .await;
     let dest_hash = destination.lock().await.desc.address_hash;
     b.set_accepts_links(&dest_hash, true).await;
-    b.send_announce(&destination, None).await;
-
     let mut announces = a.recv_announces().await;
+    b.send_announce(&destination, None).await;
     let announce = tokio::time::timeout(Duration::from_secs(10), announces.recv())
         .await
         .expect("announce timeout")

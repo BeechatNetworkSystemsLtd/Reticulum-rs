@@ -10,7 +10,7 @@ use reticulum::hash::AddressHash;
 use reticulum::identity::PrivateIdentity;
 use reticulum::iface::udp::UdpInterface;
 use reticulum::storage::{FsStorage, MemoryStorage};
-use reticulum::transport::{ReceivedData, Transport, TransportConfig};
+use reticulum::transport::{ReceiptEvent, ReceivedData, Transport, TransportConfig};
 use tokio::sync::Mutex;
 
 /// Server and client transport pair over UDP loopback.
@@ -97,12 +97,14 @@ async fn wait_announce(
     }
 }
 
+/// `receipts` must be subscribed before the packet is sent: the proof can
+/// arrive before this is called, and a broadcast receiver created later
+/// would miss it.
 async fn wait_receipt(
-    transport: &Transport,
+    receipts: &mut tokio::sync::broadcast::Receiver<ReceiptEvent>,
     packet_hash: &reticulum::hash::Hash,
     timeout: Duration,
 ) -> bool {
-    let mut receipts = transport.receipt_events();
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -176,6 +178,7 @@ async fn single_destination_encrypted_exchange_with_ratchets() {
 
     // Encrypted SINGLE-destination packet exchange with proof.
     let payload: Vec<u8> = (0..128u32).map(|i| (i % 251) as u8).collect();
+    let mut receipts = client.receipt_events();
     let packet_hash = client
         .send_to_destination(&address, &payload)
         .await
@@ -188,7 +191,7 @@ async fn single_destination_encrypted_exchange_with_ratchets() {
 
     // This destination explicitly opts into PROVE_ALL.
     assert!(
-        wait_receipt(&client, &packet_hash, Duration::from_secs(10)).await,
+        wait_receipt(&mut receipts, &packet_hash, Duration::from_secs(10)).await,
         "delivery proof must arrive"
     );
 
@@ -254,6 +257,7 @@ async fn proof_strategy_matrix() {
             .expect("announce");
 
         let payload = format!("payload for {aspect}").into_bytes();
+        let mut receipts = client.receipt_events();
         let packet_hash = client
             .send_to_destination(&address, &payload)
             .await
@@ -264,7 +268,7 @@ async fn proof_strategy_matrix() {
             .expect("packet received");
         assert_eq!(decrypted, payload);
 
-        let proved = wait_receipt(&client, &packet_hash, Duration::from_secs(3)).await;
+        let proved = wait_receipt(&mut receipts, &packet_hash, Duration::from_secs(3)).await;
         assert_eq!(proved, expect_proof, "proof strategy {strategy:?}");
     }
 }

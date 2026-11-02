@@ -133,6 +133,8 @@ async fn unavailable_tcp_client_does_not_block_server_traffic() {
     let transport_b = build_transport("b", &server_addr_b, &[&server_addr_a]).await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
+    // Subscribe before sending, or B may receive everything first.
+    let mut iface_rx = transport_b.iface_rx();
 
     let sender = tokio::spawn(async move {
         for counter in 0..3u8 {
@@ -147,7 +149,6 @@ async fn unavailable_tcp_client_does_not_block_server_traffic() {
         .expect("send_packet stalled behind an unavailable TCP client")
         .unwrap();
 
-    let mut iface_rx = transport_b.iface_rx();
     let mut received = 0usize;
 
     tokio::time::timeout(Duration::from_secs(2), async {

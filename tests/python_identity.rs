@@ -297,6 +297,9 @@ async fn rust_sends_encrypted_packet_to_python() {
     let payload: Vec<u8> = (0..200u32).map(|i| (i % 249) as u8).collect();
     let payload_sha = sha256_hex(&payload);
 
+    // Subscribe before sending: python proves immediately, and a broadcast
+    // receiver created after the proof arrives would miss it.
+    let mut receipts = transport.receipt_events();
     let packet_hash = transport
         .send_to_destination(&dest_hash, &payload)
         .await
@@ -313,7 +316,6 @@ async fn rust_sends_encrypted_packet_to_python() {
     assert_eq!(received_sha, payload_sha);
 
     // Python proves the packet (PROVE_ALL) and the Rust receipt concludes.
-    let mut receipts = transport.receipt_events();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut delivered = false;
     while tokio::time::Instant::now() < deadline {
