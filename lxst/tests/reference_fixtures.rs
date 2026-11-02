@@ -219,8 +219,10 @@ fn input_frame(fixture: &Json, name: &str) -> AudioFrame {
     let input = fixture.get("inputs").unwrap().get(name).unwrap();
     let bytes = unhex(input.get("float32_hex").unwrap().as_str());
     let samples: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     AudioFrame::from_interleaved(samples, input.get("channels").unwrap().as_num() as usize)
 }
@@ -313,8 +315,10 @@ fn raw_encode_is_byte_exact() {
             // value bytes can be compared.
             assert_eq!(encoded.len(), expected.len(), "frame={name}");
             for (i, (a, b)) in encoded[1..]
-                .chunks_exact(16)
-                .zip(expected[1..].chunks_exact(16))
+                .as_chunks::<16>()
+                .0
+                .iter()
+                .zip(expected[1..].as_chunks::<16>().0)
                 .enumerate()
             {
                 assert_eq!(&a[..10], &b[..10], "frame={name} sample {i}");

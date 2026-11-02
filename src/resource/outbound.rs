@@ -711,10 +711,8 @@ impl OutgoingResource {
         }
 
         let requested_hashes = &request_data[pad + 32..];
-        let mut map_hashes: Vec<[u8; MAPHASH_LEN]> = Vec::new();
-        for chunk in requested_hashes.chunks_exact(MAPHASH_LEN) {
-            map_hashes.push(chunk.try_into().unwrap());
-        }
+        let map_hashes: Vec<[u8; MAPHASH_LEN]> =
+            requested_hashes.as_chunks::<MAPHASH_LEN>().0.to_vec();
 
         let search_start = self.receiver_min_consecutive_height;
         let search_end = core::cmp::min(

@@ -58,8 +58,10 @@ pub fn to_i16_bytes(samples: &[f32]) -> Vec<u8> {
 /// Convert interleaved i16 little-endian bytes to normalised samples.
 pub fn from_i16_bytes(bytes: &[u8], channels: usize) -> AudioFrame {
     let samples: Vec<f32> = bytes
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / TYPE_MAP_FACTOR)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| i16::from_le_bytes(*c) as f32 / TYPE_MAP_FACTOR)
         .collect();
     AudioFrame::from_interleaved(samples, channels.max(1))
 }
@@ -82,8 +84,10 @@ pub fn resample_bytes(
     }
 
     let mut samples: Vec<i16> = sample_bytes
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| i16::from_le_bytes(*c))
         .collect();
     let input_frames = samples.len() / channels;
 

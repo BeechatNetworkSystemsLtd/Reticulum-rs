@@ -33,21 +33,16 @@ async fn main() {
 
         let message = ExampleMessage::new_text("foo");
         loop {
-            let watch_delivery;
-            let packet_hash;
-
-            match channel.send(&message).await {
-                Ok(hash) => {
-                    watch_delivery = channel.watch_message_delivery(hash).await;
-                    log::info!("message {} successfully sent over channel", hash);
-                    packet_hash = hash;
-                }
+            let packet_hash = match channel.send(&message).await {
+                Ok(hash) => hash,
                 Err(e) => {
                     log::info!("error sending message: {:?}", e);
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
-            }
+            };
+            let watch_delivery = channel.watch_message_delivery(packet_hash).await;
+            log::info!("message {} successfully sent over channel", packet_hash);
 
             if let Some(mut watch) = watch_delivery {
                 if watch.recv().await.unwrap() {

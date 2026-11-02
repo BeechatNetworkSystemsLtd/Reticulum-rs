@@ -199,22 +199,22 @@ impl Raw {
         let mut samples = Vec::with_capacity(data.len() / width);
         match self.header_bitdepth {
             BITDEPTH_16 => {
-                for c in data.chunks_exact(2) {
-                    samples.push(f16::from_le_bytes([c[0], c[1]]).to_f32());
+                for c in data.as_chunks::<2>().0 {
+                    samples.push(f16::from_le_bytes(*c).to_f32());
                 }
             }
             BITDEPTH_32 => {
-                for c in data.chunks_exact(4) {
-                    samples.push(f32::from_le_bytes(c.try_into().unwrap()));
+                for c in data.as_chunks::<4>().0 {
+                    samples.push(f32::from_le_bytes(*c));
                 }
             }
             BITDEPTH_64 => {
-                for c in data.chunks_exact(8) {
-                    samples.push(f64::from_le_bytes(c.try_into().unwrap()) as f32);
+                for c in data.as_chunks::<8>().0 {
+                    samples.push(f64::from_le_bytes(*c) as f32);
                 }
             }
             _ => {
-                for c in data.chunks_exact(16) {
+                for c in data.as_chunks::<16>().0 {
                     samples.push(f128_le_to_f32(c)?);
                 }
             }
