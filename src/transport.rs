@@ -1630,7 +1630,7 @@ async fn manage_transport(
 mod tests {
     use super::*;
 
-    use crate::crypt::GroupKey;
+    use crate::crypt::group::GroupKey;
     use crate::packet::HeaderType;
 
     #[tokio::test]

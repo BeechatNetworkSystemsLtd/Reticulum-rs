@@ -460,7 +460,7 @@ mod tests {
     use rand_core::OsRng;
 
     use crate::buffer::OutputBuffer;
-    use crate::crypt::GroupKey;
+    use crate::crypt::group::GroupKey;
     use crate::hash::{AddressHash, Hash};
     use crate::identity::{PrivateIdentity, GroupIdentity};
     use crate::serde::Serialize;

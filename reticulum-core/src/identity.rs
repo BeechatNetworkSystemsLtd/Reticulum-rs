@@ -9,7 +9,7 @@ use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
 use crate::{
     crypt::{
         fernet::{Fernet, PlainText, Token},
-        GroupKey,
+        group::GroupKey,
     },
     error::RnsError,
     hash::{AddressHash, Hash},

@@ -22,7 +22,7 @@ use rand_core::OsRng;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 
-use reticulum::crypt::{GroupKey, GROUP_KEY_LENGTH};
+use reticulum::crypt::group::{GroupKey, GROUP_KEY_LENGTH};
 use reticulum::destination::DestinationName;
 use reticulum::identity::{GroupIdentity, PrivateIdentity, PUBLIC_KEY_LENGTH};
 use reticulum::iface::tcp_client::TcpClient;
