@@ -740,7 +740,7 @@ impl I2pPeer {
                                         {
                                             stats.count_rx(plain.len());
                                             let _ = rx_channel
-                                                .send(RxMessage { address: iface_address, packet })
+                                                .send(RxMessage { address: iface_address, packet: Box::new(packet) })
                                                 .await;
                                         }
                                     }

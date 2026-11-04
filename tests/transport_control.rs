@@ -203,13 +203,13 @@ async fn announce_cap_queues_forwarded_announces() {
         manager
             .send(TxMessage {
                 tx_type: TxMessageType::Broadcast(None),
-                packet: announce_packet(2),
+                packet: Box::new(announce_packet(2)),
             })
             .await;
         manager
             .send(TxMessage {
                 tx_type: TxMessageType::Broadcast(None),
-                packet: announce_packet(3),
+                packet: Box::new(announce_packet(3)),
             })
             .await;
     }

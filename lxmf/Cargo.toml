@@ -3,10 +3,14 @@ name = "lxmf"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "LXMF - the extensible message and notification layer over Reticulum"
+
+[features]
+# bz2 forwards to reticulum's bzip2 support; advertised as SF_COMPRESSION.
+default = ["bz2"]
+bz2 = ["reticulum/bz2"]
 
 [dependencies]
-reticulum = { version = "*", path = ".." }
+reticulum = { version = "*", path = "..", default-features = false }
 reticulum-core = { version = "*", path = "../reticulum-core" }
 
 # MessagePack wire format (same low-level encoder as the reticulum crates,

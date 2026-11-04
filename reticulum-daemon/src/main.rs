@@ -238,6 +238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // or the abstract unix domain socket `\0rns/<instance_name>` on
     // platforms supporting them.
     if config.reticulum.share_instance {
+        #[cfg(target_os = "linux")]
         let instance_name = config
             .reticulum
             .instance_name
@@ -250,10 +251,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .eq_ignore_ascii_case("tcp")
         {
             SharedInstanceAddress::tcp(config.reticulum.shared_instance_port)
-        } else if cfg!(unix) {
-            SharedInstanceAddress::unix_abstract(instance_name.clone())
         } else {
-            SharedInstanceAddress::tcp(config.reticulum.shared_instance_port)
+            #[cfg(target_os = "linux")]
+            {
+                SharedInstanceAddress::unix_abstract(instance_name.clone())
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                SharedInstanceAddress::tcp(config.reticulum.shared_instance_port)
+            }
         };
 
         log::info!("Starting shared instance interface: LocalServer on {address:?}");
@@ -275,7 +281,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .reticulum
             .shared_instance_type
             .eq_ignore_ascii_case("tcp")
-            && cfg!(unix);
+            && cfg!(target_os = "linux");
         if domain {
             #[cfg(target_os = "linux")]
             {
@@ -303,12 +309,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                 }
-            }
-            #[cfg(all(unix, not(target_os = "linux")))]
-            {
-                log::error!(
-                    "could not bind shared instance control \\0rns/{instance_name}/rpc: abstract sockets require Linux"
-                );
             }
         } else {
             match tokio::net::TcpListener::bind(("127.0.0.1", control_port)).await {

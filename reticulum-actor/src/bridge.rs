@@ -77,7 +77,7 @@ impl BridgeInterface {
                         let Some(plain) = plain else { continue };
                         if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(&plain)) {
                             stats.count_rx(frame.len());
-                            if rx_channel.send(RxMessage { address: iface_address, packet }).await.is_err() {
+                            if rx_channel.send(RxMessage { address: iface_address, packet: Box::new(packet) }).await.is_err() {
                                 stats.set_online(false);
                                 return;
                             }
@@ -94,6 +94,8 @@ impl BridgeInterface {
 impl Interface for BridgeInterface {
     fn mtu() -> usize {
         // The actual per-platform MTU is enforced by the worker at runtime.
-        core::mem::size_of::<Packet>()
+        // `Packet` data is boxed now, so `size_of::<Packet>()` no longer
+        // reflects wire size; report the protocol MDU like other transports.
+        reticulum::packet::PACKET_MDU
     }
 }

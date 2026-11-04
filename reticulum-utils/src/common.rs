@@ -821,16 +821,10 @@ mod tests {
     #[tokio::test]
     async fn require_shared_instance_fails_when_nothing_is_listening() {
         let dir = std::env::temp_dir().join(format!("rns-require-{}", std::process::id()));
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
         write_shared_config(
             &dir,
-            &format!(
-                "[reticulum]\nshare_instance = true\nshared_instance_type = \"tcp\"\nshared_instance_port = {port}\n"
-            ),
+            // No listener can own port zero; a released ephemeral port can be reused.
+            "[reticulum]\nshare_instance = true\nshared_instance_type = \"tcp\"\nshared_instance_port = 0\n",
         );
         let err = build_tool_transport_requiring_shared(ToolTransportOptions {
             config_dir: &dir,

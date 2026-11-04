@@ -722,7 +722,7 @@ impl OutgoingResource {
 
         for i in search_start..search_end {
             if map_hashes.contains(&self.part_hashes[i]) {
-                let packet = self.parts[i];
+                let packet = self.parts[i].clone();
                 if !self.part_sent[i] {
                     self.part_sent[i] = true;
                     self.sent_parts += 1;

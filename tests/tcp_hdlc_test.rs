@@ -5,10 +5,9 @@ use rand_core::OsRng;
 use reticulum::{
     identity::PrivateIdentity,
     iface::{tcp_client::TcpClient, tcp_server::TcpServer},
-    packet::Packet,
+    packet::{Packet, PACKET_MDU},
     transport::{Transport, TransportConfig},
 };
-use tokio_util::sync::CancellationToken;
 
 static INIT: Once = Once::new();
 
@@ -51,74 +50,60 @@ async fn build_transport(name: &str, server_addr: &str, client_addr: &[&str]) ->
 }
 
 #[tokio::test]
-async fn packet_overload() {
+async fn escape_heavy_packet_roundtrips_hdlc_window() {
     setup();
 
-    let transport_a = build_transport("a", "127.0.0.1:18081", &[]).await;
-    let transport_b = build_transport("b", "127.0.0.1:18082", &["127.0.0.1:18081"]).await;
+    let server_addr_a = free_local_addr();
+    let server_addr_b = free_local_addr();
 
-    let stop = CancellationToken::new();
+    let transport_a = build_transport("a", &server_addr_a, &[]).await;
+    let transport_b = build_transport("b", &server_addr_b, &[&server_addr_a]).await;
 
-    let producer_task = {
-        let stop = stop.clone();
-        tokio::spawn(async move {
-            let mut tx_counter = 0;
+    // Subscribe before sending so the broadcast is not missed.
+    let mut iface_rx = transport_b.iface_rx();
 
-            let mut payload_size = 0;
-            loop {
-                tokio::select! {
-                    _ = stop.cancelled() => {
-                            break;
-                    },
-                    _ = tokio::time::sleep(std::time::Duration::from_micros(1)) => {
+    // A full data buffer of HDLC escape-sensitive bytes (0x7e flag, 0x7d
+    // escape) doubles on the wire: the frame is over 4 KiB and used to
+    // overflow the receive shift window, losing its opening delimiter.
+    let mut payload = Vec::with_capacity(PACKET_MDU);
+    for i in 0..PACKET_MDU {
+        payload.push(if i % 2 == 0 { 0x7e } else { 0x7d });
+    }
 
-                        let mut packet = Packet::default();
+    let mut packet = Packet::default();
+    packet.data.write(&payload).unwrap();
 
-                        packet.data.resize(payload_size);
-
-                        payload_size += 1;
-                        if payload_size >= 3072 {
-                            payload_size = 0;
-                        }
-
-                        transport_a.send_packet(packet).await;
-                        tx_counter += 1;
-                    },
-                };
+    // A broadcast only reaches interfaces registered in the manager;
+    // A's spawned peer appears once its server accepts B's dial. A send
+    // before that is dropped silently, so wait on the published online
+    // flag (same contract as the i2p/local iface tests).
+    async fn up(transport: &Transport) -> bool {
+        transport
+            .interface_stats()
+            .await
+            .iter()
+            .any(|stat| stat.kind == "TcpClient" && stat.online)
+    }
+    let link_ready = async {
+        for _ in 0..200 {
+            if up(&transport_a).await && up(&transport_b).await {
+                return true;
             }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+    .await;
+    assert!(link_ready, "TCP link did not come online");
 
-            tx_counter
-        })
-    };
+    transport_a.send_packet(packet).await;
 
-    let consumer_task = {
-        let stop = stop.clone();
-        let mut messages = transport_b.iface_rx();
-        tokio::spawn(async move {
-            let mut rx_counter = 0;
-            loop {
-                tokio::select! {
-                    _ = stop.cancelled() => {
-                            break;
-                    },
-                    Ok(_) = messages.recv() => {
-                        rx_counter += 1;
-                    },
-                };
-            }
+    let message = tokio::time::timeout(Duration::from_secs(5), iface_rx.recv())
+        .await
+        .expect("escape-heavy HDLC frame was not received")
+        .unwrap();
 
-            rx_counter
-        })
-    };
-
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-    stop.cancel();
-
-    let tx_counter = producer_task.await.unwrap();
-    let rx_counter = consumer_task.await.unwrap();
-
-    log::info!("TX: {}, RX: {}", tx_counter, rx_counter);
+    assert_eq!(message.packet.data.as_slice(), payload.as_slice());
 }
 
 #[tokio::test]

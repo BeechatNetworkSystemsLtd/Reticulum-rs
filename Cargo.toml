@@ -23,8 +23,9 @@ reticulum-core = { version = "*", path = "reticulum-core" }
 # Random Number generator
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 
-# Async IO
-tokio = { version = "1.44.2", features = ["full"] }
+# Async IO (full minus signal/process, which esp-idf newlib lacks;
+# iface-pipe re-adds tokio/process, dev-dependents re-add signal/process)
+tokio = { version = "1.44.2", features = ["net","fs","io-std","io-util","macros","parking_lot","rt","rt-multi-thread","sync","time"] }
 tokio-util = "0.7.15"
 
 rmp = "0.8.14"
@@ -39,6 +40,8 @@ sha2 = "0.10.8"
 
 # HKDF for IFAC key derivation (same construction as RNS.Cryptography.hkdf)
 hkdf = "0.12"
+# AtomicU64 on targets without native 64-bit atomics (xtensa espidf)
+portable-atomic = "1"
 
 # serial ports for Serial/KISS/AX.25 KISS interfaces
 libc = { version = "0.2", optional = true }
@@ -79,7 +82,7 @@ bz2 = ["dep:bzip2"]
 # Serial-family interfaces (SerialInterface, KISSInterface, AX25KISSInterface)
 iface-serial = ["dep:tokio-serial", "dep:libc"]
 # PipeInterface (subprocess stdin/stdout)
-iface-pipe = []
+iface-pipe = ["tokio/process"]
 # AutoInterface (IPv6 link-local multicast peering)
 iface-auto = ["dep:socket2"]
 # I2PInterface (SAMv3 bridge sessions and streams)
@@ -96,7 +99,7 @@ tonic-build = "0.13.0"
 reticulum-discovery = { path = "reticulum-discovery" }
 serde_json = "1.0.150"
 criterion = "0.5"
-tokio = { version = "1.44.2", features = ["test-util"] }
+tokio = { version = "1.44.2", features = ["test-util", "signal", "process"] }
 
 [workspace]
 members = [

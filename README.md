@@ -78,6 +78,45 @@ Reticulum-rs/
 └── LICENSE
 ```
 
+### Interface message ownership
+
+Host interface messages (`RxMessage` and `TxMessage`) own a `Box<Packet>` so
+channel and inbound-queue slots do not embed packet buffers. Construct receive
+messages with `packet: Box::new(packet)`, borrow packets with `&message.packet`,
+or recover an owned `Packet` with `*message.packet`. `RxMessage` is `Clone`, not
+`Copy`; cloning it also clones the packet allocation.
+
+`Packet` itself and its `StaticBuffer<N>` payload backing are likewise no
+longer `Copy`: the buffer lives in a `Box`, so cloning a `Packet` or a
+`StaticBuffer` allocates and copies the contents.
+
+### Memory-constrained tuning
+
+For small targets (no PSRAM, ~hundreds of KB heap) the transport and
+LXMF router expose public capacity knobs; the defaults assume a host
+and are too large for, e.g., an ESP32-S3:
+
+- `TransportConfig.channel_capacity` (default 16) — capacity of the
+  internal announce/link/received-data/iface-message broadcast
+  channels (it also scales the interface-ingress queue to at least 4);
+  lower values trade memory for lagged/dropped events under bursts.
+- `TransportConfig.enable_resource_watchdog` (default `true`) — set to
+  `false` to skip spawning the resource-watchdog task when no resource
+  transfers will run.
+- `TransportConfig.announce_cache_capacity` (default 8192) — bound on
+  retained announce packets; each cached announce costs a full packet
+  buffer. 0 disables announce caching; the cache evicts oldest-first
+  (FIFO) at capacity.
+- `TransportConfig.phy_cache_capacity` (default 512) — per-packet
+  RSSI/SNR/quality sample history retained per metric (~40 bytes per
+  sample across the three series). 0 disables the history; aggregate
+  interface statistics are unaffected.
+- `TransportConfig::set_inbound_queue_length(class, len)` — per
+  `TrafficClass` inbound queue length (a configured 0 keeps the
+  default).
+- `RouterConfig::event_channel_capacity` (`lxmf`, default 256) —
+  broadcast capacity of the router event channel.
+
 ## Getting Started
 
 ### Prerequisites
@@ -230,7 +269,10 @@ let stream = create_bidirectional_buffer(&channel, incoming, 1, 2);
 
 ## Feature flags
 
-- `bz2` (default) — bzip2 compression for resources and buffer streams
+- `bz2` (default, `reticulum` and `lxmf`) — bzip2 compression for
+  resources and buffer streams; `lxmf/bz2` forwards to `reticulum/bz2`
+  and delivery announces advertise compression support only when it is
+  enabled. Building with `default-features = false` drops the codec.
 - `iface-serial` — Serial/KISS/AX.25 KISS interfaces
 - `iface-pipe` — subprocess pipe interface
 - `iface-auto` — AutoInterface (Linux, IPv6 link-local multicast)

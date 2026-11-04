@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::buffer::{InputBuffer, OutputBuffer};
 use crate::error::RnsError;
 use crate::iface::RxMessage;
-use crate::packet::Packet;
+use crate::packet::{Packet, PACKET_MDU};
 use crate::serde::Serialize;
 
 use tokio::io::AsyncReadExt;
@@ -229,7 +229,11 @@ impl TcpClient {
             reconnect_attempts = 0;
             log::info!("tcp_client connected to <{}>", addr);
 
-            const BUFFER_SIZE: usize = core::mem::size_of::<Packet>() * 2;
+            // Wire capacity for a serialized packet: PACKET_MDU + header/ifac
+            // slack (same convention as control::packet_wire_len). The
+            // in-memory `Packet` is boxed, so `size_of::<Packet>()` no
+            // longer reflects wire size.
+            const BUFFER_SIZE: usize = PACKET_MDU + 128;
             let kiss_framing = options.kiss_framing;
             let fixed_limit = options.fixed_mtu;
             let hw_mtu = options.hardware_mtu();
@@ -245,7 +249,11 @@ impl TcpClient {
 
                 tokio::spawn(async move {
                     let mut hdlc_rx_buffer = [0u8; BUFFER_SIZE];
-                    let mut rx_buffer = [0u8; BUFFER_SIZE + (BUFFER_SIZE / 2)];
+                    // Escaping can double wire bytes and two flag bytes
+                    // bracket the frame: a full serialized packet needs a
+                    // 2*BUFFER_SIZE+2 window or its opening flag shifts out.
+                    const RX_WINDOW_SIZE: usize = BUFFER_SIZE * 2 + 2;
+                    let mut rx_buffer = [0u8; RX_WINDOW_SIZE];
                     let mut tcp_buffer = [0u8; (BUFFER_SIZE * 16)];
                     let mut kiss_decoder = TcpKissDecoder::new(hw_mtu);
 
@@ -280,7 +288,7 @@ impl TcpClient {
                                             // TCP stream may contain several or partial HDLC frames
                                             for byte in &tcp_buffer[..n] {
                                                 // Push new byte from the end of buffer
-                                                rx_buffer[BUFFER_SIZE-1] = *byte;
+                                                rx_buffer[RX_WINDOW_SIZE-1] = *byte;
 
                                                 // Check if it is contains a HDLC frame
                                                 let frame = Hdlc::find(&rx_buffer[..]);
@@ -328,7 +336,7 @@ impl TcpClient {
                                                                 log::trace!("tcp_client: rx << ({}) {}", iface_address, packet);
                                                             }
                                                             stats.count_rx(output.offset());
-                                                            let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
+                                                            let _ = rx_channel.send(RxMessage { address: iface_address, packet: Box::new(packet) }).await;
                                                         } else {
                                                             log::warn!("tcp_client: couldn't decode packet");
                                                         }
@@ -371,7 +379,8 @@ impl TcpClient {
                             break;
                         }
 
-                        let mut hdlc_tx_buffer = [0u8; BUFFER_SIZE];
+                        // HDLC escaping can double the wire bytes.
+                        let mut hdlc_tx_buffer = [0u8; BUFFER_SIZE * 2];
                         let mut tx_buffer = [0u8; BUFFER_SIZE];
 
                         let mut tx_channel = tx_channel.lock().await;
@@ -410,6 +419,10 @@ impl TcpClient {
                                         let _ = stream.flush().await;
                                         stats.count_tx(wire.len());
                                     }
+                                } else {
+                                    log::warn!(
+                                        "tcp_client: dropping packet that does not serialize"
+                                    );
                                 }
                             }
                         };
@@ -710,7 +723,7 @@ async fn deliver_frame(
         let _ = rx_channel
             .send(super::RxMessage {
                 address: iface_address,
-                packet,
+                packet: Box::new(packet),
             })
             .await;
     } else {

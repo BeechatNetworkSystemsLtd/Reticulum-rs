@@ -192,3 +192,8 @@ When `lipo` is available, the recipe also creates a universal simulator slice:
 - `reticulum-actor/src/core.rs` — actor thread, `CoreState`, `Reticulum` integration, and the headless `App` handle.
 - `reticulum-ffi/src/lib.rs` — exported UniFFI records, enums, `FfiApp`, `AppReconciler`, and conversion shims from `reticulum-actor` types.
 - `uniffi-bindgen/` — helper crate to run `uniffi-bindgen` from the workspace.
+
+### Cardputer firmware
+
+- `firmware/cardputer-idf/` — standalone Reticulum + LXMF chat firmware for the M5Stack Cardputer Advanced (ESP32-S3); see its README for hardware, build/flash commands, and RAM constraints.
+- `make card-build`, `make card-flash`, `make card-monitor` — ESP-IDF firmware targets; serial port defaults to `/dev/ttyACM2` (`PORT` override).

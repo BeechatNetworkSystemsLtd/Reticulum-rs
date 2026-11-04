@@ -242,3 +242,24 @@ c6-soak:
 
 c6-test: c6-acceptance c6-stability c6-soak
 	@echo "=== all c6l-modem tests passed ==="
+
+# -----------------------------------------------------------------------------
+# ESP32-S3 Cardputer Advanced chat firmware
+# -----------------------------------------------------------------------------
+
+PORT            ?= /dev/ttyACM2
+CARD_DIR        := firmware/cardputer-idf
+CARD_ELF        := $(CARD_DIR)/target/xtensa-esp32s3-espidf/release/cardputer-idf
+
+card-build:
+	cd $(CARD_DIR) && . /home/lio/export-esp.sh && \
+		export LD_LIBRARY_PATH="/home/lio/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/lib:$$LD_LIBRARY_PATH" && \
+		$(CARGO) +esp build --release
+
+card-flash: card-build
+	sudo ~/.cargo/bin/espflash flash --port $(PORT) --partition-table $(CARD_DIR)/partitions.csv $(CARD_ELF)
+
+card-monitor:
+	sudo ~/.cargo/bin/espflash monitor --port $(PORT)
+
+.PHONY: card-build card-flash card-monitor

@@ -11,14 +11,10 @@ pub struct PacketTrack {
     pub min_hops: u8,
 }
 
-/// Maximum number of cached announce packets
-/// (Python caches announces to storage; this in-memory bound keeps the
-/// cache usable for path responses and cache requests).
-const MAX_CACHED_ANNOUNCES: usize = 8192;
-
 pub struct PacketCache {
     map: HashMap<Hash, PacketTrack>,
     remove_cache: Vec<Hash>,
+    announce_capacity: usize,
     /// Force-cached announce packets by packet hash
     /// (Python `Transport.cache(force_cache=True, packet_type="announce")`).
     announces: HashMap<Hash, Packet>,
@@ -26,10 +22,12 @@ pub struct PacketCache {
 }
 
 impl PacketCache {
-    pub fn new() -> Self {
+    /// `announce_capacity` bounds retained announce packets; 0 disables caching.
+    pub fn new(announce_capacity: usize) -> Self {
         Self {
             map: HashMap::new(),
             remove_cache: Vec::new(),
+            announce_capacity,
             announces: HashMap::new(),
             announce_order: VecDeque::new(),
         }
@@ -76,24 +74,34 @@ impl PacketCache {
     /// Cache an announce packet for later path responses and cache requests
     /// (Python `Transport.cache(force_cache=True, packet_type="announce")`).
     pub fn cache_announce(&mut self, packet: &Packet) {
-        let hash = packet.hash();
-
-        if !self.announces.contains_key(&hash) {
-            self.announce_order.push_back(hash);
-            if self.announce_order.len() > MAX_CACHED_ANNOUNCES {
-                if let Some(evicted) = self.announce_order.pop_front() {
-                    self.announces.remove(&evicted);
-                }
-            }
+        if self.announce_capacity == 0 {
+            return;
         }
 
-        self.announces.insert(hash, *packet);
+        let hash = packet.hash();
+
+        // Duplicate hashes only replace the stored packet; they must not
+        // consume a FIFO slot or evict an unrelated entry.
+        if !self.announces.contains_key(&hash) {
+            // Evict before cloning so the incoming packet's copy never
+            // coexists with an over-capacity cache.
+            while self.announce_order.len() >= self.announce_capacity {
+                if let Some(evicted) = self.announce_order.pop_front() {
+                    self.announces.remove(&evicted);
+                } else {
+                    break;
+                }
+            }
+            self.announce_order.push_back(hash);
+        }
+
+        self.announces.insert(hash, packet.clone());
     }
 
     /// Retrieve a cached announce by packet hash
     /// (Python `Transport.get_cached_packet(hash, packet_type="announce")`).
     pub fn get_cached_announce(&self, hash: &Hash) -> Option<Packet> {
-        self.announces.get(hash).copied()
+        self.announces.get(hash).cloned()
     }
 
     /// Hashes currently in the duplicate filter (Python `packet_hashlist`).
@@ -119,7 +127,7 @@ mod tests {
         PropagationType,
     };
 
-    fn announce_packet(hops: u8) -> Packet {
+    fn announce_packet(seed: u8) -> Packet {
         Packet {
             header: Header {
                 ifac_flag: IfacFlag::Open,
@@ -128,19 +136,19 @@ mod tests {
                 propagation_type: PropagationType::Broadcast,
                 destination_type: DestinationType::Single,
                 packet_type: PacketType::Announce,
-                hops,
+                hops: 0,
             },
             ifac: None,
             destination: AddressHash::new([1; 16]),
             transport: None,
             context: PacketContext::None,
-            data: PacketDataBuffer::new_from_slice(&[2; 32]),
+            data: PacketDataBuffer::new_from_slice(&[seed; 32]),
         }
     }
 
     #[test]
     fn announce_cache_roundtrip() {
-        let mut cache = PacketCache::new();
+        let mut cache = PacketCache::new(8);
         let packet = announce_packet(2);
         let hash = packet.hash();
 
@@ -148,5 +156,56 @@ mod tests {
         cache.cache_announce(&packet);
         assert_eq!(cache.get_cached_announce(&hash), Some(packet));
         assert!(cache.get_cached_announce(&hash).is_some());
+    }
+
+    #[test]
+    fn announce_cache_evicts_oldest_at_capacity() {
+        let mut cache = PacketCache::new(2);
+        let first = announce_packet(1);
+        let second = announce_packet(2);
+        let third = announce_packet(3);
+
+        cache.cache_announce(&first);
+        cache.cache_announce(&second);
+        cache.cache_announce(&third);
+
+        assert!(cache.get_cached_announce(&first.hash()).is_none());
+        assert_eq!(cache.get_cached_announce(&second.hash()), Some(second));
+        assert_eq!(cache.get_cached_announce(&third.hash()), Some(third));
+    }
+
+    #[test]
+    fn announce_cache_reannounce_keeps_fifo_slot() {
+        let mut cache = PacketCache::new(2);
+        let first = announce_packet(1);
+        let mut first_updated = first.clone();
+        first_updated.header.hops = 2;
+        let second = announce_packet(2);
+        let third = announce_packet(3);
+
+        cache.cache_announce(&first);
+        cache.cache_announce(&second);
+        // Same packet hash: updates the stored packet without consuming a
+        // FIFO slot, so `second` must not be evicted by `third`.
+        cache.cache_announce(&first_updated);
+        assert_eq!(
+            cache.get_cached_announce(&first.hash()),
+            Some(first_updated)
+        );
+        cache.cache_announce(&third);
+
+        assert!(cache.get_cached_announce(&first.hash()).is_none());
+        assert_eq!(cache.get_cached_announce(&second.hash()), Some(second));
+        assert_eq!(cache.get_cached_announce(&third.hash()), Some(third));
+    }
+
+    #[test]
+    fn announce_cache_zero_capacity_disables() {
+        let mut cache = PacketCache::new(0);
+        let packet = announce_packet(1);
+
+        cache.cache_announce(&packet);
+
+        assert!(cache.get_cached_announce(&packet.hash()).is_none());
     }
 }

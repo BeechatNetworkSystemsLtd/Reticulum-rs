@@ -154,7 +154,7 @@ impl IncomingResource {
             part_timeout_factor: PART_TIMEOUT_FACTOR,
             timeout_factor: super::TRAFFIC_TIMEOUT_FACTOR,
             sender_grace_time: super::SENDER_GRACE_TIME,
-            advertisement_packet: *advertisement_packet,
+            advertisement_packet: advertisement_packet.clone(),
             assembled: None,
             metadata: None,
         })

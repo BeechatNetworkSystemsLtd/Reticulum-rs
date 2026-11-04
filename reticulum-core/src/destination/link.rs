@@ -106,8 +106,6 @@ impl From<&Packet> for LinkId {
     }
 }
 
-// TODO: consider boxing MessageReceived because Packet is >2000 bytes
-#[expect(clippy::large_enum_variant)]
 pub enum LinkHandleResult {
     None,
     Activated,

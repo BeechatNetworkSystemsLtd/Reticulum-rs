@@ -1663,6 +1663,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "portable-atomic"
+version = "1.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
+
+[[package]]
 name = "postcard"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1853,6 +1859,7 @@ dependencies = [
  "hkdf",
  "libc",
  "log",
+ "portable-atomic",
  "rand_core",
  "reticulum-core",
  "reticulum-discovery",

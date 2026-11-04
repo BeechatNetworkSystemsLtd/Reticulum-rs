@@ -98,7 +98,7 @@ async fn outlet_send(
     packet.context = PacketContext::Channel;
 
     if active {
-        transport.lock().await.send_packet(packet).await;
+        transport.lock().await.send_packet(packet.clone()).await;
     }
 
     Ok((packet, active))
@@ -560,7 +560,7 @@ impl Outbound {
                 return;
             }
 
-            packet = entry.packet;
+            packet = entry.packet.clone();
         } else {
             log::error!(
                 "channel({}) internal error: timeout set for unknown message {}",
@@ -1014,7 +1014,7 @@ mod mock {
     use crate::packet::{PacketContext, PacketDataBuffer};
     use crate::transport::BroadcastLinkPayloadSink;
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     pub struct Packet {
         pub data: PacketDataBuffer,
         pub id: LinkId,
@@ -1299,7 +1299,7 @@ mod tests {
         let packets = fixture.transport_a.packets().await;
         assert_eq!(packets.len(), 1);
 
-        let packet = packets[0];
+        let packet = packets[0].clone();
 
         assert_eq!(
             channel_a.message_status(&packet_hash).await,

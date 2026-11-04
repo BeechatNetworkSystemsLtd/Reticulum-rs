@@ -737,7 +737,7 @@ async fn rnode_multi_probes_interfaces_and_honors_outgoing() {
         manager
             .send(TxMessage {
                 tx_type: TxMessageType::Direct(peers[0]),
-                packet: Packet::default(),
+                packet: Box::new(Packet::default()),
             })
             .await;
     }
@@ -768,7 +768,7 @@ async fn rnode_multi_probes_interfaces_and_honors_outgoing() {
         manager
             .send(TxMessage {
                 tx_type: TxMessageType::Direct(peers[1]),
-                packet: Packet::default(),
+                packet: Box::new(Packet::default()),
             })
             .await;
     }

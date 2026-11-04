@@ -10,8 +10,11 @@ rust-analyzer.log
 firmware/c6l-modem/target/
 firmware/c6l-modem-idf/.embuild/
 firmware/c6l-modem-idf/target/
+firmware/cardputer-idf/.embuild/
+firmware/cardputer-idf/target/
 firmware/patches/*/target/
 firmware/c6l-modem/tests/__pycache__/
 
 # hardware test artifacts: flash backups, firmware images (keep on disk)
 hw-backup/
+/cardputer.jpg

@@ -17,7 +17,11 @@
 //! [`MemoryStorage`] while `FsStorage` matches the Python directory layout.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(target_has_atomic = "64")]
+use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
 use reticulum_core::destination::RATCHET_COUNT;

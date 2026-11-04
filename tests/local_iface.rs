@@ -111,7 +111,7 @@ async fn local_tcp_shared_instance_announce() {
         .any(|stat| stat.kind == "LocalClient" && stat.sent >= 1));
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn local_unix_abstract_shared_instance_announce() {
     setup();

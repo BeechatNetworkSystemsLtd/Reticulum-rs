@@ -3127,11 +3127,11 @@ fn map_shared(
             Ok(reticulum::iface::local::SharedInstanceAddress::tcp(port))
         }
         SharedInstanceAddress::UnixAbstract { name } => {
-            #[cfg(unix)]
+            #[cfg(target_os = "linux")]
             {
                 Ok(reticulum::iface::local::SharedInstanceAddress::unix_abstract(name))
             }
-            #[cfg(not(unix))]
+            #[cfg(not(target_os = "linux"))]
             {
                 let _ = name;
                 Err("Unix abstract sockets are unavailable".into())

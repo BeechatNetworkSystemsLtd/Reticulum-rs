@@ -413,7 +413,7 @@ async fn deliver_packet(host: &mut Host, payload: &[u8], source: [u8; ENDPOINT_I
         Ok(packet) => {
             stats.count_rx(payload.len());
             host.parent_stats.count_rx(payload.len());
-            let _ = host.rx.send(RxMessage { address, packet }).await;
+            let _ = host.rx.send(RxMessage { address, packet: Box::new(packet) }).await;
         }
         Err(_) => log::debug!("weave: couldn't decode packet"),
     }
@@ -943,7 +943,7 @@ mod tests {
             .await
             .send(super::super::TxMessage {
                 tx_type: super::super::TxMessageType::Direct(peer_addr),
-                packet,
+                packet: Box::new(packet),
             })
             .await;
         let (command, command_raw) = read_frame(&mut server_read, &mut device_reassembler).await;

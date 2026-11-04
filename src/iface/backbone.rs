@@ -631,7 +631,7 @@ impl BackboneClient {
                                         };
                                         if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(&plain)) {
                                             stats.count_rx(plain.len());
-                                            let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
+                                            let _ = rx_channel.send(RxMessage { address: iface_address, packet: Box::new(packet) }).await;
                                         }
                                     }
                                     false
@@ -1298,7 +1298,7 @@ mod tests {
             .await
             .send(TxMessage {
                 tx_type: TxMessageType::Direct(address),
-                packet: Packet::default(),
+                packet: Box::new(Packet::default()),
             })
             .await;
         tokio::time::sleep(Duration::from_millis(50)).await;

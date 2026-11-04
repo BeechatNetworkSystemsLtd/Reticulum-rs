@@ -186,7 +186,7 @@ impl SerialInterface {
                                                 let _ = rx_channel
                                                     .send(RxMessage {
                                                         address: iface_address,
-                                                        packet,
+                                                        packet: Box::new(packet),
                                                     })
                                                     .await;
                                             }

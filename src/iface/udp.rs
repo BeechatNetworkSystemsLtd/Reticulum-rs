@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use crate::buffer::{InputBuffer, OutputBuffer};
 use crate::error::RnsError;
 use crate::iface::RxMessage;
-use crate::packet::Packet;
+use crate::packet::{Packet, PACKET_MDU};
 use crate::serde::Serialize;
 
 use super::{Interface, InterfaceContext};
@@ -72,7 +72,11 @@ impl UdpInterface {
             log::info!("udp_interface bound to <{}>", bind_addr);
             stats.set_online(true);
 
-            const BUFFER_SIZE: usize = core::mem::size_of::<Packet>() * 3;
+            // Wire capacity for a serialized packet: PACKET_MDU + header/ifac
+            // slack (same convention as control::packet_wire_len). The
+            // in-memory `Packet` is boxed, so `size_of::<Packet>()` no longer
+            // reflects wire size.
+            const BUFFER_SIZE: usize = PACKET_MDU + 128;
 
             // Start receive task
             let rx_task = {
@@ -126,7 +130,7 @@ impl UdpInterface {
                                                 log::trace!("udp_interface: rx << ({}) {}", iface_address, packet);
                                             }
                                             stats.count_rx(n);
-                                            let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
+                                            let _ = rx_channel.send(RxMessage { address: iface_address, packet: Box::new(packet) }).await;
                                         } else {
                                             log::warn!("udp_interface: couldn't decode packet");
                                         }
@@ -186,6 +190,10 @@ impl UdpInterface {
                                         if socket.send_to(&wire, &forward_addr).await.is_ok() {
                                             stats.count_tx(wire.len());
                                         }
+                                    } else {
+                                        log::warn!(
+                                            "udp_interface: dropping packet that does not serialize"
+                                        );
                                     }
                                 }
                             };

@@ -303,6 +303,10 @@ pub struct RouterConfig {
     pub delivery_timeout: Duration,
     /// How long to wait for link activation.
     pub link_timeout: Duration,
+    /// Capacity of the router event broadcast channel. Each slot holds a
+    /// full LxmEvent (~1 KB), so RAM-constrained embedders set this low
+    /// (e.g. 4); 256 matches the historical fixed value.
+    pub event_channel_capacity: usize,
 }
 
 impl RouterConfig {
@@ -330,6 +334,7 @@ impl Default for RouterConfig {
             propagation_max_inbound_syncs: 10,
             control_allowed: Vec::new(),
             delivery_timeout: Duration::from_secs(LINK_MAX_INACTIVITY),
+            event_channel_capacity: 256,
             link_timeout: Duration::from_secs(30),
         }
     }
@@ -453,7 +458,7 @@ impl LxmRouter {
             .await;
         let propagation_destination_hash = propagation_destination.lock().await.desc.address_hash;
 
-        let (events, _) = broadcast::channel(256);
+        let (events, _) = broadcast::channel(config.event_channel_capacity);
 
         let mut state = RouterState::new();
         // Self-recall so that locally generated echoes resolve
@@ -837,7 +842,7 @@ impl LxmRouter {
         let app_data = pack_announce_app_data(
             delivery.display_name.as_deref(),
             delivery.stamp_cost,
-            &[SF_COMPRESSION],
+            delivery_supported_functionality(),
         );
 
         self.transport
@@ -2804,5 +2809,30 @@ fn save_tickets(path: &Path, tickets: &Tickets) {
     let tmp = path.with_extension("tmp");
     if std::fs::write(&tmp, &out).is_ok() {
         let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+/// Functionality list advertised in the delivery announce; compression is
+/// signalled only when this build can actually compress/decompress.
+fn delivery_supported_functionality() -> &'static [u8] {
+    if cfg!(feature = "bz2") {
+        &[SF_COMPRESSION]
+    } else {
+        &[]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn announce_advertises_compression_exactly_when_available() {
+        let app_data =
+            pack_announce_app_data(Some("Test"), None, delivery_supported_functionality());
+        assert_eq!(
+            compression_support_from_app_data(Some(&app_data)),
+            cfg!(feature = "bz2")
+        );
     }
 }

@@ -170,6 +170,21 @@ pub struct TransportConfig {
     /// reload (Python `Reticulum.blackhole_sources`).
     blackhole_sources: Vec<crate::hash::AddressHash>,
 
+    /// Capacity of the internal event broadcast channels
+    /// (announce/link/received-data/iface-message fan-out). Each slot of
+    /// the data-bearing channels costs a full packet buffer, so RAM-
+    /// constrained embedders set this low (e.g. 2); 16 matches the
+    /// historical fixed value.
+    pub channel_capacity: usize,
+    /// Bound on retained announce packets (each cached announce costs a
+    /// full packet buffer). 0 disables announce caching; RAM-constrained
+    /// embedders set this low (e.g. 2). 8192 matches the historical cap.
+    pub announce_cache_capacity: usize,
+    /// Per-metric bound on retained per-packet radio stats (RSSI/SNR/
+    /// quality) for the local-client RPC cache. 0 disables history —
+    /// lookups then always return `None`. 512 matches Python
+    /// `Transport.LOCAL_CLIENT_CACHE_MAXSIZE`.
+    pub phy_cache_capacity: usize,
     /// Storage backend for identity & destination persistence. When unset,
     /// known destinations and ratchets are kept in memory only.
     storage: Option<std::sync::Arc<dyn Storage>>,
@@ -183,7 +198,12 @@ pub struct TransportConfig {
     /// (Python `local_hops_delta`, default off). The sampled value is in `2..=7`.
     local_hops_delta: bool,
 
-    timer_config: TimerConfig,
+    /// Spawn the resource-transfer watchdog task. Its future carries
+    /// inline resource packets (~2.5 KB of state machine); RAM-
+    /// constrained embedders that never run resource transfers set
+    /// this to false. Default true (Python parity).
+    pub enable_resource_watchdog: bool,
+    pub(crate) timer_config: TimerConfig,
 }
 
 #[derive(Clone)]
@@ -294,19 +314,18 @@ const REVERSE_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 const MAX_RECEIPTS: usize = 1024;
 /// Python `Packet.TIMEOUT_PER_HOP` / `DEFAULT_PER_HOP_TIMEOUT`.
 const TIMEOUT_PER_HOP: Duration = Duration::from_secs(6);
-/// Python `Transport.LOCAL_CLIENT_CACHE_MAXSIZE`.
-const PHY_CACHE_MAX: usize = 512;
-
 /// Per-packet radio stats for the local-client RPC cache.
 struct PhyCache {
+    capacity: usize,
     rssi: std::collections::VecDeque<(Hash, f64)>,
     snr: std::collections::VecDeque<(Hash, f64)>,
     q: std::collections::VecDeque<(Hash, f64)>,
 }
 
 impl PhyCache {
-    fn new() -> Self {
+    fn new(capacity: usize) -> Self {
         Self {
+            capacity,
             rssi: std::collections::VecDeque::new(),
             snr: std::collections::VecDeque::new(),
             q: std::collections::VecDeque::new(),
@@ -314,14 +333,17 @@ impl PhyCache {
     }
 
     fn record(&mut self, hash: Hash, rssi: Option<i16>, snr: Option<f32>, quality: Option<f32>) {
+        if self.capacity == 0 {
+            return;
+        }
         if let Some(rssi) = rssi {
-            push_phy(&mut self.rssi, hash, f64::from(rssi));
+            push_phy(&mut self.rssi, self.capacity, hash, f64::from(rssi));
         }
         if let Some(snr) = snr {
-            push_phy(&mut self.snr, hash, f64::from(snr));
+            push_phy(&mut self.snr, self.capacity, hash, f64::from(snr));
         }
         if let Some(quality) = quality {
-            push_phy(&mut self.q, hash, f64::from(quality));
+            push_phy(&mut self.q, self.capacity, hash, f64::from(quality));
         }
     }
 
@@ -334,11 +356,13 @@ impl PhyCache {
     }
 }
 
-fn push_phy(cache: &mut std::collections::VecDeque<(Hash, f64)>, hash: Hash, value: f64) {
-    cache.push_back((hash, value));
-    while cache.len() > PHY_CACHE_MAX {
+fn push_phy(cache: &mut std::collections::VecDeque<(Hash, f64)>, capacity: usize, hash: Hash, value: f64) {
+    // Evict before pushing: pushing onto a full deque would double its
+    // backing store instead of reusing the freed slot.
+    if cache.len() == capacity {
         cache.pop_front();
     }
+    cache.push_back((hash, value));
 }
 
 pub(crate) struct TransportHandler {
@@ -459,7 +483,11 @@ impl TransportConfig {
             storage: None,
             use_implicit_proof: true,
             local_hops_delta: false,
+            enable_resource_watchdog: true,
             timer_config: TimerConfig::default(),
+            channel_capacity: 16,
+            announce_cache_capacity: 8192,
+            phy_cache_capacity: 512,
         }
     }
 
@@ -570,25 +598,32 @@ impl Default for TransportConfig {
             storage: None,
             use_implicit_proof: true,
             local_hops_delta: false,
-            timer_config: Default::default(),
+            enable_resource_watchdog: true,
+            timer_config: TimerConfig::default(),
+            channel_capacity: 16,
+            announce_cache_capacity: 8192,
+            phy_cache_capacity: 512,
         }
     }
 }
 
 impl Transport {
     pub fn new(config: TransportConfig) -> Self {
-        let (announce_tx, _) = tokio::sync::broadcast::channel(16);
-        let (link_in_event_tx, _) = tokio::sync::broadcast::channel(16);
-        let (link_out_event_tx, _) = tokio::sync::broadcast::channel(16);
-        let (received_data_tx, _) = tokio::sync::broadcast::channel(16);
-        let (iface_messages_tx, _) = tokio::sync::broadcast::channel(16);
+        let cap = config.channel_capacity;
+        let (announce_tx, _) = tokio::sync::broadcast::channel(cap);
+        let (link_in_event_tx, _) = tokio::sync::broadcast::channel(cap);
+        let (link_out_event_tx, _) = tokio::sync::broadcast::channel(cap);
+        let (received_data_tx, _) = tokio::sync::broadcast::channel(cap);
+        let (iface_messages_tx, _) = tokio::sync::broadcast::channel(cap);
 
         let local_hops_delta = if config.local_hops_delta {
             (OsRng.next_u32() as u8 % 6) + 2
         } else {
             0
         };
-        let iface_manager = InterfaceManager::new(16);
+        // The central ingress mpsc carries inline ~2 KB packets per slot;
+        // depth follows the embedded-scaled channel capacity (default 16).
+        let iface_manager = InterfaceManager::new(cap.max(4));
         if local_hops_delta != 0 {
             iface_manager
                 .set_local_hops_delta(local_hops_delta, Some(*config.identity.address_hash()));
@@ -618,8 +653,10 @@ impl Transport {
             config.inbound_queue_lengths,
         )));
         let storage = config.storage.clone();
-        let persisted_loaded = storage.is_none();
+        let announce_cache_capacity = config.announce_cache_capacity;
+        let phy_cache_capacity = config.phy_cache_capacity;
         let identity = config.identity.clone();
+        let persisted_loaded = storage.is_none();
         let blackholes = std::sync::Arc::new(tokio::sync::RwLock::new(
             blackholes::Blackholes::new(blackhole_publish),
         ));
@@ -635,11 +672,11 @@ impl Transport {
             plain_in_destinations: HashMap::new(),
             group_in_destinations: HashMap::new(),
             announce_limits: AnnounceLimits::new(),
-            phy: PhyCache::new(),
+            phy: PhyCache::new(phy_cache_capacity),
             out_links: HashMap::new(),
             in_links: HashMap::new(),
             in_link_ifaces: HashMap::new(),
-            packet_cache: Mutex::new(PacketCache::new()),
+            packet_cache: Mutex::new(PacketCache::new(announce_cache_capacity)),
             resources: ResourceManager::new(),
             blackholes: blackholes.clone(),
             path_requests,
@@ -1047,7 +1084,7 @@ impl Transport {
             .await
             .send(TxMessage {
                 tx_type: TxMessageType::Broadcast(from_iface),
-                packet,
+                packet: Box::new(packet),
             })
             .await;
     }
@@ -1058,7 +1095,7 @@ impl Transport {
             .await
             .send(TxMessage {
                 tx_type: TxMessageType::Direct(addr),
-                packet,
+                packet: Box::new(packet),
             })
             .await;
     }
@@ -2095,7 +2132,7 @@ impl Transport {
             handler
                 .send(TxMessage {
                     tx_type: TxMessageType::Direct(iface),
-                    packet,
+                    packet: Box::new(packet),
                 })
                 .await;
         } else {
@@ -2499,7 +2536,7 @@ impl TransportHandler {
     pub(crate) async fn send_packet(&self, packet: Packet) {
         let message = TxMessage {
             tx_type: TxMessageType::Broadcast(None),
-            packet,
+            packet: Box::new(packet),
         };
 
         self.send(message).await;
@@ -2650,7 +2687,7 @@ impl TransportHandler {
 
         self.send(TxMessage {
             tx_type: TxMessageType::Broadcast(on_iface),
-            packet,
+            packet: Box::new(packet),
         })
         .await;
     }
@@ -2907,7 +2944,7 @@ async fn handle_proof<'a>(
             handler
                 .send(TxMessage {
                     tx_type: TxMessageType::Direct(iface),
-                    packet,
+                    packet: Box::new(packet),
                 })
                 .await;
         }
@@ -2943,7 +2980,7 @@ async fn handle_proof<'a>(
             handler
                 .send(TxMessage {
                     tx_type: TxMessageType::Direct(iface),
-                    packet,
+                    packet: Box::new(packet),
                 })
                 .await;
         }
@@ -3020,7 +3057,7 @@ async fn send_to_next_hop<'a>(
         handler
             .send(TxMessage {
                 tx_type: TxMessageType::Direct(iface),
-                packet,
+                packet: Box::new(packet),
             })
             .await;
     }
@@ -3042,7 +3079,7 @@ async fn handle_keepalive_response<'a>(
             handler
                 .send(TxMessage {
                     tx_type: TxMessageType::Direct(iface),
-                    packet: propagated,
+                    packet: Box::new(propagated),
                 })
                 .await;
         }
@@ -3681,7 +3718,7 @@ async fn handle_data<'a>(
                 handler
                     .send(TxMessage {
                         tx_type: TxMessageType::Direct(iface),
-                        packet,
+                        packet: Box::new(packet),
                     })
                     .await;
             } else {
@@ -3715,7 +3752,7 @@ async fn handle_data<'a>(
                     }
                 }
             } else {
-                packet.data
+                packet.data.clone()
             };
 
             data_handled = true;
@@ -3741,7 +3778,7 @@ async fn handle_data<'a>(
                 .received_data_tx
                 .send(ReceivedData {
                     destination: packet.destination,
-                    data: packet.data,
+                    data: packet.data.clone(),
                     decrypted: false,
                 })
                 .ok();
@@ -4143,7 +4180,7 @@ async fn handle_path_request<'a>(
         handler
             .send(TxMessage {
                 tx_type: TxMessageType::Direct(iface),
-                packet: response,
+                packet: Box::new(response),
             })
             .await;
 
@@ -4822,7 +4859,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
         handler
             .send(TxMessage {
                 tx_type: TxMessageType::Broadcast(None),
-                packet,
+                packet: Box::new(packet),
             })
             .await;
     }
@@ -5177,7 +5214,7 @@ async fn relay_reverse_proof(
     }
     handler.reverse_table.remove(&packet.destination);
     if ingress == outbound {
-        let mut outbound_packet = *packet;
+        let mut outbound_packet = packet.clone();
         // Python writes `local_hops_delta` when the proof came from a
         // local client toward the wider network. `send` only rewrites
         // hops 0, so the sampled value has to be applied here.
@@ -5189,7 +5226,7 @@ async fn relay_reverse_proof(
         handler
             .send(TxMessage {
                 tx_type: TxMessageType::Direct(received),
-                packet: outbound_packet,
+                packet: Box::new(outbound_packet),
             })
             .await;
     }
@@ -5854,6 +5891,7 @@ async fn manage_transport(
     let cancel = handler.lock().await.cancel.clone();
     let retransmit = handler.lock().await.config.retransmit;
     let timer_config = handler.lock().await.config.timer_config;
+    let enable_resource_watchdog = handler.lock().await.config.enable_resource_watchdog;
 
     let mut last_retransmit_old = if handler.lock().await.config.announce_forever {
         Some(time::Instant::now() - timer_config.old_announces_retransmit)
@@ -5923,9 +5961,17 @@ async fn manage_transport(
                             out
                         };
                         for message in drained {
-                        let _ = iface_messages_tx.send(message);
+                        if iface_messages_tx.receiver_count() > 0 {
+                            let _ = iface_messages_tx.send(message.clone());
+                        }
 
-                        let packet = message.packet;
+                        // Borrow, don't unbox: a Packet value held across
+                        // these awaits is ~2 KB inline in the task's
+                        // state machine (9 KB total), which no embedded
+                        // heap can fragment-proof. `message` outlives the
+                        // arm; &&Packet deref-coerces at every &Packet
+                        // call site below.
+                        let packet = &*message.packet;
 
                         let mut handler = handler.lock().await;
 
@@ -5953,7 +5999,7 @@ async fn manage_transport(
                         // Early packet filter with protocol-violation
                         // accounting (Python 1.5.0 `Transport.packet_filter`
                         // + `Interface.protocol_violation`).
-                        if !packet_filter(&packet) {
+                        if !packet_filter(packet) {
                             let manager = handler.iface_manager.lock().await;
                             manager.count_packet_filter_hit(&message.address);
                             manager.count_protocol_violation(&message.address);
@@ -5961,7 +6007,7 @@ async fn manage_transport(
                         }
 
                         if handle_fixed_destinations(
-                            &packet,
+                            packet,
                             &mut handler,
                             message.address
                         ).await {
@@ -5988,7 +6034,7 @@ async fn manage_transport(
                             }
                         }
 
-                        if !handler.filter_duplicate_packets(&packet).await {
+                        if !handler.filter_duplicate_packets(packet).await {
                             log::debug!(
                                 "tp({}): dropping duplicate packet: dst={}, ctx={:?}, type={:?}",
                                 handler.config.name,
@@ -6038,18 +6084,18 @@ async fn manage_transport(
 
                         match packet.header.packet_type {
                             PacketType::Announce => handle_announce(
-                                &packet,
+                                packet,
                                 &mut handler,
                                 message.address
                             ).await,
                             PacketType::LinkRequest => handle_link_request(
-                                &packet,
+                                packet,
                                 message.address,
                                 handler
                             ).await,
-                            PacketType::Proof => handle_proof(&packet, message.address, handler).await,
+                            PacketType::Proof => handle_proof(packet, message.address, handler).await,
                             PacketType::Data => handle_data(
-                                &packet,
+                                packet,
                                 message.address,
                                 handler_arc.clone(),
                                 handler,
@@ -6094,6 +6140,15 @@ async fn manage_transport(
                             let manager = handler.iface_manager.lock().await;
                             manager.release_held_announces()
                         };
+                        // Box the loop-held packet: an inline Packet
+                        // (~2 KB) held across the await below lands in
+                        // this task's state machine, and the resulting
+                        // 9 KB task spawn OOMs on fragmented embedded
+                        // heaps (observed on ESP32-S3).
+                        let released: Vec<_> = released
+                            .into_iter()
+                            .map(|(iface, packet)| (iface, Box::new(packet)))
+                            .collect();
                         for (iface, packet) in released {
                             log::trace!(
                                 "tp({}): releasing held announce packet from {}",
@@ -6134,12 +6189,12 @@ async fn manage_transport(
                                     None
                                 };
 
-                            let packet = tunnels::synthesize_tunnel_packet(
+                            let packet = Box::new(tunnels::synthesize_tunnel_packet(
                                 &handler.config.identity,
                                 &iface,
                                 handler.fixed_dest_tunnel_synthesize,
                                 transport_id,
-                            );
+                            ));
 
                             handler.iface_manager.lock().await.set_iface_wants_tunnel(&iface, false);
 
@@ -6277,7 +6332,7 @@ async fn manage_transport(
                                 handler
                                     .send(TxMessage {
                                         tx_type: TxMessageType::Broadcast(exclude),
-                                        packet,
+                                        packet: Box::new(packet),
                                     })
                                     .await;
                             }
@@ -6333,6 +6388,9 @@ async fn manage_transport(
     // Resource watchdog: retry/timeouts for active transfers, cleanup of
     // concluded ones. Runs faster than the cache cleanup to keep transfer
     // latency low (Python ticks every WATCHDOG_MAX_SLEEP = 1s).
+    // The task's future carries inline resource packets (~2.5 KB); RAM-
+    // constrained embedders that never run resource transfers disable it.
+    if enable_resource_watchdog {
     {
         let handler = handler.clone();
         let cancel = cancel.clone();
@@ -6369,6 +6427,7 @@ async fn manage_transport(
                 }
             }
         });
+    }
     }
 
     if retransmit {
@@ -6510,8 +6569,55 @@ mod queue_tests {
     fn test_rx_message(packet_type: PacketType) -> RxMessage {
         RxMessage {
             address: crate::hash::AddressHash::new_from_rand(rand_core::OsRng),
-            packet: test_packet(packet_type),
+            packet: Box::new(test_packet(packet_type)),
         }
+    }
+}
+
+#[cfg(test)]
+mod phy_tests {
+    use super::*;
+
+    fn hash(byte: u8) -> Hash {
+        Hash::new([byte; 32])
+    }
+
+    #[test]
+    fn lookup_returns_recent_and_misses_evicted() {
+        let mut cache = PhyCache::new(2);
+        cache.record(hash(1), Some(-70), None, None);
+        cache.record(hash(2), Some(-60), None, None);
+        // Third record evicts the oldest (hash 1).
+        cache.record(hash(3), Some(-50), None, None);
+
+        assert_eq!(PhyCache::lookup(&cache.rssi, &hash(1)), None);
+        assert_eq!(PhyCache::lookup(&cache.rssi, &hash(2)), Some(-60.0));
+        assert_eq!(PhyCache::lookup(&cache.rssi, &hash(3)), Some(-50.0));
+    }
+
+    #[test]
+    fn metrics_retain_independent_histories() {
+        let mut cache = PhyCache::new(1);
+        cache.record(hash(1), Some(-70), Some(8.0), Some(0.9));
+        // Capacity applies per metric; rssi evicts its own oldest only.
+        cache.record(hash(2), Some(-60), None, None);
+
+        assert_eq!(PhyCache::lookup(&cache.rssi, &hash(1)), None);
+        assert_eq!(PhyCache::lookup(&cache.rssi, &hash(2)), Some(-60.0));
+        assert_eq!(PhyCache::lookup(&cache.snr, &hash(1)), Some(8.0));
+        assert_eq!(PhyCache::lookup(&cache.q, &hash(1)), Some(f64::from(0.9_f32)));
+        assert_eq!(PhyCache::lookup(&cache.snr, &hash(2)), None);
+    }
+
+    #[test]
+    fn zero_capacity_disables_history() {
+        let mut cache = PhyCache::new(0);
+        cache.record(hash(1), Some(-70), Some(8.0), Some(0.9));
+
+        assert!(cache.rssi.is_empty());
+        assert!(cache.snr.is_empty());
+        assert!(cache.q.is_empty());
+        assert_eq!(PhyCache::lookup(&cache.rssi, &hash(1)), None);
     }
 }
 
@@ -6817,7 +6923,7 @@ mod tests {
             destination,
             ..Default::default()
         };
-        let duplicate: Packet = data_packet;
+        let duplicate: Packet = data_packet.clone();
 
         let different_packet = Packet {
             data: PacketDataBuffer::new_from_slice(b"bar"),
@@ -7065,7 +7171,7 @@ impl Transport {
         handler
             .send(TxMessage {
                 tx_type: TxMessageType::Direct(iface),
-                packet,
+                packet: Box::new(packet),
             })
             .await;
 

@@ -306,16 +306,20 @@ impl PathTable {
         let new_blob = announce_random_blob(announce);
         let emitted = crate::iface::control::announce_emitted(announce);
 
-        let prior_blobs = if let Some(existing) = self.map.get(&announce.destination) {
+        let mut random_blobs = if let Some(existing) = self.map.get(&announce.destination) {
             if !self.should_replace_path(existing, hops, new_blob, emitted, gravity) {
                 return;
             }
-            existing.random_blobs.clone()
+            // Move the history out of the old entry so an accepted update
+            // keeps the Vec backing allocation instead of cloning it.
+            self.map
+                .get_mut(&announce.destination)
+                .map(|entry| std::mem::take(&mut entry.random_blobs))
+                .unwrap_or_default()
         } else {
             Vec::new()
         };
 
-        let mut random_blobs = prior_blobs;
         remember_blob(&mut random_blobs, new_blob);
 
         let received_from = transport_id.unwrap_or(announce.destination);
@@ -388,7 +392,7 @@ impl PathTable {
 
         let entry = match self.map.get(&lookup) {
             Some(entry) => entry,
-            None => return (*original_packet, None),
+            None => return (original_packet.clone(), None),
         };
 
         // Python `Transport.inbound` path-forwarding: with more than one
@@ -428,7 +432,7 @@ impl PathTable {
                 destination: original_packet.destination,
                 transport: if last_hop { None } else { Some(next_hop) },
                 context: original_packet.context,
-                data: original_packet.data,
+                data: original_packet.data.clone(),
             },
             Some(iface),
         )
@@ -464,7 +468,7 @@ impl PathTable {
 
         let entry = match self.map.get(&lookup) {
             Some(entry) => entry,
-            None => return (*original_packet, None),
+            None => return (original_packet.clone(), None),
         };
 
         // Python `Transport.outbound`: packets for destinations more than
@@ -480,7 +484,7 @@ impl PathTable {
         }
 
         if direct {
-            return (*original_packet, Some(iface));
+            return (original_packet.clone(), Some(iface));
         }
 
         (
@@ -496,7 +500,7 @@ impl PathTable {
                 destination: original_packet.destination,
                 transport: Some(next_hop),
                 context: original_packet.context,
-                data: original_packet.data,
+                data: original_packet.data.clone(),
             },
             Some(iface),
         )
@@ -504,27 +508,27 @@ impl PathTable {
 
     pub fn handle_packet(&mut self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
         if original_packet.header.header_type == HeaderType::Type2 {
-            return (*original_packet, None);
+            return (original_packet.clone(), None);
         }
 
         if original_packet.header.packet_type == PacketType::Announce {
-            return (*original_packet, None);
+            return (original_packet.clone(), None);
         }
 
         if original_packet.header.destination_type == DestinationType::Plain
             || original_packet.header.destination_type == DestinationType::Group
         {
-            return (*original_packet, None);
+            return (original_packet.clone(), None);
         }
 
         let entry = match self.map.get(&original_packet.destination) {
             Some(entry) => entry,
-            None => return (*original_packet, None),
+            None => return (original_packet.clone(), None),
         };
 
         if entry.hops <= 1 {
             // Directly reachable: transmit the packet unchanged.
-            return (*original_packet, Some(entry.iface));
+            return (original_packet.clone(), Some(entry.iface));
         }
 
         (
@@ -537,7 +541,7 @@ impl PathTable {
                 destination: original_packet.destination,
                 transport: Some(entry.received_from),
                 context: original_packet.context,
-                data: original_packet.data,
+                data: original_packet.data.clone(),
             },
             Some(entry.iface),
         )
@@ -756,7 +760,13 @@ mod tests {
             999,
             2,
         );
-        assert_eq!(table.get(&destination).unwrap().iface, first);
+        let entry = table.get(&destination).unwrap();
+        assert_eq!(entry.iface, first);
+        assert_eq!(
+            entry.random_blobs.len(),
+            1,
+            "rejected announce leaves blob history untouched"
+        );
 
         // Same emission time, no gravity advantage: still keep it.
         learn(
@@ -846,6 +856,45 @@ mod tests {
             5,
         );
         assert_eq!(table.get(&destination).unwrap().iface, high_iface);
+    }
+
+    #[test]
+    fn repeated_announces_keep_blob_history_capped_at_max() {
+        let destination = address(10);
+        let iface = address(11);
+        let mut table = PathTable::new(false);
+
+        let total = MAX_RANDOM_BLOBS + 6;
+        for i in 0..total as u64 {
+            learn(
+                &mut table,
+                destination,
+                iface,
+                InterfaceMode::Full,
+                None,
+                10_000 + i,
+                i as u8,
+            );
+        }
+
+        let entry = table.get(&destination).unwrap();
+        assert_eq!(entry.random_blobs.len(), MAX_RANDOM_BLOBS);
+
+        // The newest blob stays findable while the evicted oldest is not.
+        let newest = announce_random_blob(&announce_at(
+            destination,
+            0,
+            10_000 + total as u64 - 1,
+            (total - 1) as u8,
+        ))
+        .unwrap();
+        let evicted = announce_random_blob(&announce_at(destination, 0, 10_000, 0)).unwrap();
+        assert!(entry.random_blobs.contains(&newest));
+        assert!(!entry.random_blobs.contains(&evicted));
+        assert_eq!(
+            timebase_from_random_blobs(&entry.random_blobs),
+            10_000 + total as u64 - 1
+        );
     }
 
     #[test]

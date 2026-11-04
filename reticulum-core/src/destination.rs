@@ -215,37 +215,41 @@ impl DestinationAnnounce {
 
         let destination = &packet.destination;
 
-        // Keeping signed data on stack is only option for now.
-        // Verification function doesn't support prehashed message.
-        let mut signed_data = PacketDataBuffer::new();
-        signed_data
-            .chain_write(destination.as_slice())?
-            .chain_write(public_key.as_bytes())?
-            .chain_write(verifying_key.as_bytes())?
-            .chain_write(name_hash)?
-            .chain_write(rand_hash)?;
+        // Verification function doesn't support prehashed message, so the
+        // signed fields are concatenated into an exact-size buffer:
+        // everything in `announce_data` except the signature, plus the
+        // destination hash. `announce_data.len() >= minimum >=
+        // SIGNATURE_LENGTH`, so the capacity never underflows and the
+        // extends below never reallocate.
+        let mut signed_data =
+            Vec::with_capacity(destination.as_slice().len() + announce_data.len() - SIGNATURE_LENGTH);
+        signed_data.extend_from_slice(destination.as_slice());
+        signed_data.extend_from_slice(public_key.as_bytes());
+        signed_data.extend_from_slice(verifying_key.as_bytes());
+        signed_data.extend_from_slice(name_hash);
+        signed_data.extend_from_slice(rand_hash);
 
         if let Some(ratchet) = &ratchet {
-            signed_data.chain_write(ratchet)?;
+            signed_data.extend_from_slice(ratchet);
         }
 
-        let signed_data = match app_data {
-            Some(app_data) => signed_data.chain_write(app_data)?.finalize(),
-            None => signed_data.finalize(),
-        };
+        if let Some(app_data) = app_data {
+            signed_data.extend_from_slice(app_data);
+        }
 
         let signature = Signature::from_slice(signature).map_err(|_| RnsError::CryptoError)?;
 
-        identity.verify(signed_data.as_slice(), &signature)?;
+        identity.verify(&signed_data, &signature)?;
 
         // The announced destination hash must belong to the announced name
         // hash and identity (Python rejects hash collisions here).
-        let hash_material = PacketDataBuffer::new()
-            .chain_write(name_hash)?
-            .chain_write(identity.address_hash.as_slice())?
-            .finalize();
-
-        let expected_hash = Hash::new_from_slice(hash_material.as_slice());
+        let expected_hash = Hash::new(
+            Hash::generator()
+                .chain_update(name_hash)
+                .chain_update(identity.address_hash.as_slice())
+                .finalize()
+                .into(),
+        );
 
         if AddressHash::new_from_hash(&expected_hash) != *destination {
             return Err(RnsError::IncorrectHash);
@@ -1206,5 +1210,28 @@ mod tests {
             .expect("valid announce packet");
 
         DestinationAnnounce::validate(&announce).expect("valid announce");
+    }
+
+    #[test]
+    fn validate_max_length_announce() {
+        use crate::packet::PACKET_MDU;
+
+        let priv_identity = PrivateIdentity::new_from_rand(OsRng);
+        let mut destination = SingleInputDestination::new(
+            priv_identity,
+            DestinationName::new("test", "max.length"),
+        );
+
+        // Fills the packet data buffer exactly, so any signed-bytes
+        // truncation or capacity overflow shows up at this boundary.
+        let app_data = [0xA5u8; PACKET_MDU - super::MIN_ANNOUNCE_DATA_LENGTH];
+        let announce = destination
+            .announce(OsRng, Some(&app_data[..]))
+            .expect("max-length announce");
+        assert_eq!(announce.data.len(), PACKET_MDU);
+
+        let (_, validated) =
+            DestinationAnnounce::validate(&announce).expect("valid max-length announce");
+        assert_eq!(validated.app_data, Some(&app_data[..]));
     }
 }

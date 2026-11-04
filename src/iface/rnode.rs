@@ -1173,6 +1173,15 @@ impl RnodeLink {
         })
     }
 
+    /// Wrap externally-provided byte streams (e.g. an in-process link to
+    /// an RNode KISS modem on embedded targets).
+    pub fn from_reader_writer(
+        reader: Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+        writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+    ) -> Result<Self, RnsError> {
+        Ok(Self { reader, writer })
+    }
+
     /// Open `ble://`. Without `iface-rnode-ble` this is
     /// [`RnsError::Unsupported`] and does not touch an adapter.
     pub async fn connect_ble(port: &str) -> Result<Self, RnsError> {
@@ -1456,6 +1465,9 @@ pub struct RnodeInterface {
     pub state: SharedRnodeState,
     id_interval: Option<u64>,
     id_callsign: Option<Vec<u8>>,
+    /// Link injected via [`Self::from_link`]; consumed by the first
+    /// `spawn` reconnect pass.
+    injected_link: Option<RnodeLink>,
 }
 
 impl RnodeInterface {
@@ -1470,6 +1482,7 @@ impl RnodeInterface {
             state: Arc::new(std::sync::RwLock::new(RnodeShared::default())),
             id_interval: None,
             id_callsign: None,
+            injected_link: None,
         }
     }
 
@@ -1494,6 +1507,7 @@ impl RnodeInterface {
             state: Arc::new(std::sync::RwLock::new(RnodeShared::default())),
             id_interval: None,
             id_callsign: None,
+            injected_link: None,
         }
     }
 
@@ -1509,6 +1523,25 @@ impl RnodeInterface {
             state: Arc::new(std::sync::RwLock::new(RnodeShared::default())),
             id_interval: None,
             id_callsign: None,
+            injected_link: None,
+        }
+    }
+
+    /// Interface over an already-open link (e.g. an in-process transport
+    /// built via [`RnodeLink::from_reader_writer`] on embedded targets).
+    /// `spawn` consumes the link once; it is not reopened after a drop.
+    pub fn from_link(link: RnodeLink, config: RnodeRadioConfig) -> Self {
+        Self {
+            tcp_addr: None,
+            serial_port: None,
+            baudrate: 115200,
+            config,
+            flow_control: false,
+            iface_manager: None,
+            state: Arc::new(std::sync::RwLock::new(RnodeShared::default())),
+            id_interval: None,
+            id_callsign: None,
+            injected_link: Some(link),
         }
     }
 
@@ -1553,18 +1586,23 @@ impl RnodeInterface {
             }
 
             let link = {
-                let (tcp_addr, serial_port, baudrate) = {
-                    let inner = inner.lock().unwrap();
+                let (tcp_addr, serial_port, baudrate, injected) = {
+                    let mut inner = inner.lock().unwrap();
                     (
                         inner.tcp_addr.clone(),
                         inner.serial_port.clone(),
                         inner.baudrate,
+                        inner.injected_link.take(),
                     )
                 };
 
-                let result =
-                    open_rnode_link(tcp_addr.as_deref(), serial_port.as_deref(), baudrate, false)
-                        .await;
+                let result = match injected {
+                    Some(link) => Ok(link),
+                    None => {
+                        open_rnode_link(tcp_addr.as_deref(), serial_port.as_deref(), baudrate, false)
+                            .await
+                    }
+                };
 
                 match result {
                     Ok(link) => link,
@@ -1678,7 +1716,7 @@ impl RnodeInterface {
                                     for data in packets {
                                         if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(&data)) {
                                             stats.count_rx(data.len());
-                                            let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
+                                            let _ = rx_channel.send(RxMessage { address: iface_address, packet: Box::new(packet) }).await;
                                         }
                                     }
 
@@ -2370,7 +2408,7 @@ impl RnodeVportPeer {
                         if let Ok(packet) = Packet::deserialize(&mut InputBuffer::new(&data)) {
                             stats.count_rx(data.len());
                             let _ = rx_channel
-                                .try_send(RxMessage { address: iface_address, packet });
+                                .try_send(RxMessage { address: iface_address, packet: Box::new(packet) });
                         }
                         continue;
                     }
@@ -3222,13 +3260,13 @@ mod tests {
         manager
             .send(TxMessage {
                 tx_type: TxMessageType::Direct(silent),
-                packet: Packet::default(),
+                packet: Box::new(Packet::default()),
             })
             .await;
         manager
             .send(TxMessage {
                 tx_type: TxMessageType::Direct(live),
-                packet: Packet::default(),
+                packet: Box::new(Packet::default()),
             })
             .await;
 

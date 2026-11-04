@@ -91,7 +91,7 @@ fn forwarded(packet: &Packet, transport: Option<AddressHash>, hops: u8) -> Packe
         destination: packet.destination,
         transport,
         context: packet.context,
-        data: packet.data,
+        data: packet.data.clone(),
     }
 }
 

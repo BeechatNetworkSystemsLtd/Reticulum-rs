@@ -89,7 +89,7 @@ pub enum SharedInstanceAddress {
     Tcp { port: u16 },
     /// Abstract unix domain socket (`shared_instance_type = domain`),
     /// bound to `\0rns/<instance_name>` (`LocalInterface.py` address format).
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     UnixAbstract { instance_name: String },
 }
 
@@ -100,7 +100,7 @@ impl SharedInstanceAddress {
 
     /// Abstract socket address `\0rns/<instance_name>` (the leading NUL byte
     /// marks the Linux abstract namespace).
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     pub fn unix_abstract(instance_name: impl Into<String>) -> Self {
         Self::UnixAbstract {
             instance_name: instance_name.into(),
@@ -110,7 +110,7 @@ impl SharedInstanceAddress {
     fn describe(&self) -> String {
         match self {
             Self::Tcp { port } => format!("127.0.0.1:{port}"),
-            #[cfg(unix)]
+    #[cfg(target_os = "linux")]
             Self::UnixAbstract { instance_name } => format!("\0rns/{instance_name}"),
         }
     }
@@ -600,7 +600,7 @@ impl LocalClient {
                 let _ = stream.set_nodelay(true);
                 Some(StreamType::Tcp(stream))
             }
-            #[cfg(unix)]
+            #[cfg(target_os = "linux")]
             SharedInstanceAddress::UnixAbstract { instance_name } => {
                 use std::os::linux::net::SocketAddrExt;
                 use std::os::unix::net::SocketAddr as UnixSocketAddr;
@@ -796,7 +796,7 @@ impl LocalClient {
                                                 let _ = rx_channel
                                                     .send(RxMessage {
                                                         address: iface_address,
-                                                        packet,
+                                                        packet: Box::new(packet),
                                                     })
                                                     .await;
                                             }

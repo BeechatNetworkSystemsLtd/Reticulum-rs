@@ -539,7 +539,7 @@ impl IfaceControlState {
             return;
         }
 
-        self.held_announces.insert(packet.destination, *packet);
+        self.held_announces.insert(packet.destination, packet.clone());
     }
 
     /// Release one held announce if the interface is currently able to
@@ -830,7 +830,7 @@ mod tests {
         assert!(state.try_transmit_announce(size, t0));
         // Budget spent: the next announce must be queued.
         assert!(!state.try_transmit_announce(size, t0 + Duration::from_millis(1)));
-        state.queue_announce(packet, t0 + Duration::from_millis(1));
+        state.queue_announce(packet.clone(), t0 + Duration::from_millis(1));
         assert_eq!(state.queued_announces_len(), 1);
 
         // After the wait time has elapsed the queued announce is released.

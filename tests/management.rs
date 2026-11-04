@@ -198,13 +198,13 @@ async fn drop_announce_queues_clears_queued_announces() {
         manager
             .send(TxMessage {
                 tx_type: TxMessageType::Broadcast(None),
-                packet: forwarded_announce(2),
+                packet: Box::new(forwarded_announce(2)),
             })
             .await;
         manager
             .send(TxMessage {
                 tx_type: TxMessageType::Broadcast(None),
-                packet: forwarded_announce(3),
+                packet: Box::new(forwarded_announce(3)),
             })
             .await;
     }

@@ -28,7 +28,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU32;
+#[cfg(target_has_atomic = "64")]
 use std::sync::atomic::AtomicU64;
+#[cfg(not(target_has_atomic = "64"))]
+use portable_atomic::AtomicU64;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -56,16 +59,16 @@ pub enum TxMessageType {
     Direct(AddressHash),
 }
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TxMessage {
     pub tx_type: TxMessageType,
-    pub packet: Packet,
+    pub packet: Box<Packet>,
 }
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct RxMessage {
     pub address: AddressHash, // Address of source interface
-    pub packet: Packet,       // Received packet
+    pub packet: Box<Packet>, // Received packet
 }
 
 /// Runtime counters for a single interface, shared between the
@@ -558,7 +561,9 @@ impl InterfaceManager {
     pub fn new_channel_named(&mut self, tx_cap: usize, name: &str, kind: &str) -> InterfaceChannel {
         self.counter += 1;
 
-        let counter_bytes = self.counter.to_le_bytes();
+        // u64 cast: usize is 4 bytes on 32-bit targets (Xtensa) and the
+        // seed prefix is always 8 bytes wide.
+        let counter_bytes = (self.counter as u64).to_le_bytes();
         let mut address_seed = [0u8; 16];
         rand_core::OsRng.fill_bytes(&mut address_seed);
         address_seed[..8].copy_from_slice(&counter_bytes[..8]);
@@ -1091,7 +1096,7 @@ impl InterfaceManager {
                 .tx_send
                 .send(TxMessage {
                     tx_type: TxMessageType::Direct(address),
-                    packet,
+                    packet: Box::new(packet),
                 })
                 .await;
         }
@@ -1359,7 +1364,7 @@ impl InterfaceManager {
                             control.sent_announce(now);
                             true
                         } else {
-                            control.queue_announce(message.packet, now);
+                            control.queue_announce((*message.packet).clone(), now);
                             false
                         }
                     });
@@ -1377,7 +1382,7 @@ impl InterfaceManager {
                     iface.stats.count_announce_tx(size);
                 }
 
-                let mut outbound = message;
+                let mut outbound = message.clone();
                 let local_client = self.is_local_client_iface(&iface.address);
                 if rewrite_hops
                     && outbound.packet.header.hops == 0
@@ -1521,11 +1526,11 @@ mod tests {
         loop {
             let packet = tokio::select! {
                 _ = stop.cancelled() => break,
-                Some(message) = tx_channel.recv() => message.packet,
+                Some(message) = tx_channel.recv() => *message.packet,
             };
 
             stats.count_tx(128);
-            let _ = rx_channel.send(RxMessage { address, packet }).await;
+            let _ = rx_channel.send(RxMessage { address, packet: Box::new(packet) }).await;
         }
     }
 
@@ -1549,7 +1554,7 @@ mod tests {
         manager
             .send(TxMessage {
                 tx_type: TxMessageType::Broadcast(None),
-                packet: Packet::default(),
+                packet: Box::new(Packet::default()),
             })
             .await;
 
@@ -1581,7 +1586,7 @@ mod tests {
         manager
             .send(TxMessage {
                 tx_type: TxMessageType::Broadcast(None),
-                packet,
+                packet: Box::new(packet),
             })
             .await;
 
