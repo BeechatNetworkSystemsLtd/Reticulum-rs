@@ -5,7 +5,7 @@ use reticulum_core::packet::PacketType;
 
 use crate::destination::link::LinkId;
 use crate::hash::AddressHash;
-use crate::packet::{Header, HeaderType, IfacFlag, Packet};
+use crate::packet::Packet;
 
 /// Time allowed for the proof of a link request to arrive, for each hop to the
 /// destination
@@ -40,24 +40,6 @@ pub struct LinkEntry {
     /// Only the first copy of a request is kept, later copies may be overheard from
     /// the next node on a shared interface and have the wrong hops.
     pending_route: Option<PendingRoute>,
-}
-
-fn send_backwards(packet: &Packet, entry: &LinkEntry) -> (Packet, AddressHash) {
-    let propagated = Packet {
-        header: Header {
-            ifac_flag: IfacFlag::Open,
-            header_type: HeaderType::Type2,
-            hops: packet.header.hops + 1,
-            .. packet.header
-        },
-        ifac: None,
-        destination: packet.destination,
-        transport: Some(entry.next_hop_id),
-        context: packet.context,
-        data: packet.data,
-    };
-
-    (propagated, entry.received_from)
 }
 
 pub struct LinkTable(HashMap<LinkId, LinkEntry>);
@@ -152,7 +134,12 @@ impl LinkTable {
                 entry.remaining_hops = proof.header.hops;
                 entry.validated = true;
 
-                Some(send_backwards(proof, entry))
+                // send proof back towards the initiator on; as in Python, only the hops are
+                // changed, the proof is not put in transport
+                let mut propagated = *proof;
+                propagated.header.hops += 1;
+
+                Some((propagated, entry.received_from))
             },
             None => None
         }

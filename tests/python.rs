@@ -830,3 +830,99 @@ async fn relay_to_python_destination() {
     node_a.send_to_out_links(&server_hash, b"test").await;
     assert_eq!(wait_link_data(&mut out_link_events).await, b"I received \"test\" over the link");
 }
+
+#[tokio::test]
+/// Python Link.py client links to Rust node b over a Rust relay, two hops away
+async fn python_initiator_through_rust_relay() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    use reticulum::iface::{tcp_client::TcpClient, tcp_server::TcpServer};
+
+    let _guard = TEST_MUTEX.lock().await;
+    setup();
+
+    // UDP relay <-> Python on 4244/4245, TCP relay <-> b on 4251
+    let relay = TransportConfig::new("relay", &PrivateIdentity::new_from_rand(rand_core::OsRng))
+        .set_retransmit(true)
+        .build();
+    relay.iface_manager().lock().await.spawn(
+        UdpInterface::new("127.0.0.1:4244", Some("127.0.0.1:4245"), false),
+        UdpInterface::spawn,
+    );
+    relay.iface_manager().lock().await.spawn(
+        TcpServer::new("127.0.0.1:4251", relay.iface_manager()),
+        TcpServer::spawn,
+    );
+
+    let mut node_b = TransportConfig::new("b", &PrivateIdentity::new_from_rand(rand_core::OsRng)).build();
+    node_b.iface_manager().lock().await
+        .spawn(TcpClient::new("127.0.0.1:4251"), TcpClient::spawn);
+
+    let destination = node_b
+        .add_destination(
+            PrivateIdentity::new_from_rand(rand_core::OsRng),
+            DestinationName::new("example_utilities", "linkexample"),
+        )
+        .await;
+    let address = destination.lock().await.desc.address_hash;
+
+    // announce once the TCP connection is up, so that the relay can answer the path
+    // request of Python
+    time::sleep(time::Duration::from_secs(1)).await;
+    node_b.send_announce(&destination, None).await;
+    time::sleep(time::Duration::from_secs(1)).await;
+
+    // reply to data received over the link
+    let mut in_link_events = node_b.in_link_events();
+    tokio::spawn(async move {
+        while let Ok(event) = in_link_events.recv().await {
+            if let LinkEvent::Data(payload) = event.event {
+                let payload = str::from_utf8(payload.as_slice()).unwrap().to_string();
+                let reply = format!("I received \"{payload}\" over the link");
+                node_b.send_to_in_links(&address, reply.as_bytes()).await;
+            }
+        }
+    });
+
+    let script_path = format!("{}/Examples/Link.py", *RETICULUM_PYTHON_DIR);
+    let mut client = Command::new("python3")
+        .arg("-u")
+        .arg(&script_path)
+        .arg("--config")
+        .arg("tests/rns-py-configs/client")
+        .arg(address.to_string().trim_matches('/'))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("failed to start Link.py");
+    let mut lines = tokio::io::BufReader::new(client.stdout.take().unwrap()).lines();
+    let mut stdin = client.stdin.take().unwrap();
+
+    // waits for a line of Link.py output containing `text`
+    async fn wait_line(
+        lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+        text: &str,
+    ) {
+        while let Some(line) = lines.next_line().await.expect("Link.py stdout") {
+            println!("{line}");
+            if line.contains(text) {
+                return;
+            }
+        }
+        panic!("Link.py exited before printing {text:?}");
+    }
+
+    time::timeout(time::Duration::from_secs(10), wait_line(&mut lines, "Link established with server"))
+        .await
+        .expect("link from Python not established");
+
+    stdin.write_all(b"test\n").await.expect("write to Link.py");
+    stdin.flush().await.expect("flush Link.py stdin");
+
+    time::timeout(
+        time::Duration::from_secs(10),
+        wait_line(&mut lines, "Received data on the link: I received \"test\" over the link"),
+    )
+    .await
+    .expect("reply not received by Python");
+}
