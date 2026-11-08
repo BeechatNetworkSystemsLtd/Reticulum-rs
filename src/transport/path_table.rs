@@ -99,23 +99,33 @@ impl PathTable {
         true
     }
 
+    /// Returns the packet in transport to forward towards its destination and the
+    /// interface of the path. On the last hop, when the next hop is the destination
+    /// itself, the packet is taken out of transport (header 1, without transport ID),
+    /// or otherwise the next hop is set as transport ID.
     pub fn handle_inbound_packet(&self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
         let entry = match self.map.get(&original_packet.destination) {
             Some(entry) => entry,
             None => return (*original_packet, None),
         };
 
+        let (header_type, transport) = if entry.hops <= 1 {
+            (HeaderType::Type1, None)
+        } else {
+            (HeaderType::Type2, Some(entry.received_from))
+        };
+
         (
             Packet {
                 header: Header {
                     ifac_flag: IfacFlag::Open,
-                    header_type: HeaderType::Type2,
+                    header_type,
                     hops: original_packet.header.hops + 1,
                     .. original_packet.header
                 },
                 ifac: None,
                 destination: original_packet.destination,
-                transport: Some(entry.received_from),
+                transport,
                 context: original_packet.context,
                 data: original_packet.data,
             },

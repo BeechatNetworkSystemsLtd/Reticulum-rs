@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::time::Duration;
 
 use rand_core::OsRng;
-use reticulum::packet::PacketType;
+use reticulum::packet::{HeaderType, PacketType};
 use reticulum::{
     destination::{
         link::{LinkEvent, LinkEventData, LinkId},
@@ -290,6 +290,40 @@ async fn link_send_on_path_interface() {
         }
     }
     assert!(off_path.is_empty(), "link packets received by node 2: {off_path:?}");
+}
+
+/// Nodes 0, 1 and 2 are on a line. When node 1 relays the link request from node 0 to
+/// node 2, the last hop, it sends the request out of transport, as type 1 header (without a
+/// transport id, as in Python).
+#[tokio::test]
+async fn last_hop_sent_without_transport_id() {
+    setup();
+
+    let mut transports = mesh(3, &[(0, 1), (1, 2)], TimerConfig::default(), true).await;
+    let mut node_2 = transports.pop().unwrap();
+    let node_0 = &transports[0];
+
+    let mut node_2_rx = node_2.iface_rx();
+
+    link_after_announce(node_0, &mut node_2).await;
+
+    let mut link_requests = Vec::new();
+    loop {
+        match node_2_rx.try_recv() {
+            Ok(message) if message.packet.header.packet_type == PacketType::LinkRequest => {
+                link_requests.push((message.packet.header.header_type, message.packet.transport));
+            }
+            Ok(_) | Err(TryRecvError::Lagged(_)) => continue,
+            Err(_) => break,
+        }
+    }
+    assert!(!link_requests.is_empty(), "no link request received by node 2");
+    for (header_type, transport) in link_requests {
+        assert!(
+            header_type == HeaderType::Type1 && transport.is_none(),
+            "link request received by node 2 with {header_type:?} and transport {transport:?}"
+        );
+    }
 }
 
 /// Short link timers, so that a link over a dropped relay goes stale and is

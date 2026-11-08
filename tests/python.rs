@@ -743,3 +743,90 @@ async fn python_relay() {
     node_b.send_to_in_links(&address, b"hello a").await;
     assert_eq!(wait_link_data(&mut out_link_events).await, b"hello a");
 }
+
+#[tokio::test]
+/// Rust node a links to a Python Link.py server over a Rust relay, two hops away
+async fn relay_to_python_destination() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    use reticulum::iface::{tcp_client::TcpClient, tcp_server::TcpServer};
+
+    let _guard = TEST_MUTEX.lock().await;
+    setup();
+
+    // UDP relay <-> Python on 4244/4245
+    let script_path = format!("{}/Examples/Link.py", *RETICULUM_PYTHON_DIR);
+    let mut server = Command::new("python3")
+        .arg("-u")
+        .arg(&script_path)
+        .arg("--server")
+        .arg("--config")
+        .arg("tests/rns-py-configs/destination")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("failed to start Link.py");
+
+    // parse the hash from:
+    // [2026-06-03 12:03:33] [Notice]   Link example <5d3a09e13b866e49624d1bb576c23976> running, waiting for a connection.
+    let mut lines = tokio::io::BufReader::new(server.stdout.take().unwrap()).lines();
+    let server_hash = time::timeout(time::Duration::from_secs(20), async {
+        while let Some(line) = lines.next_line().await.expect("Link.py stdout") {
+            println!("{line}");
+            if let Some((_, rest)) = line.split_once("Link example <") {
+                let hash = rest.split('>').next().unwrap();
+                return AddressHash::new_from_hex_string(hash).expect("server destination hash");
+            }
+        }
+        panic!("Link.py exited before printing its destination hash");
+    })
+    .await
+    .expect("Link.py did not print its destination hash");
+    tokio::spawn(async move {
+        while let Ok(Some(line)) = lines.next_line().await {
+            println!("{line}");
+        }
+    });
+    let mut stdin = server.stdin.take().unwrap();
+
+    let relay = TransportConfig::new("relay", &PrivateIdentity::new_from_rand(rand_core::OsRng))
+        .set_retransmit(true)
+        .build();
+    relay.iface_manager().lock().await.spawn(
+        UdpInterface::new("127.0.0.1:4244", Some("127.0.0.1:4245"), false),
+        UdpInterface::spawn,
+    );
+    relay.iface_manager().lock().await.spawn(
+        TcpServer::new("127.0.0.1:4250", relay.iface_manager()),
+        TcpServer::spawn,
+    );
+
+    let node_a = TransportConfig::new("a", &PrivateIdentity::new_from_rand(rand_core::OsRng)).build();
+    node_a.iface_manager().lock().await
+        .spawn(TcpClient::new("127.0.0.1:4250"), TcpClient::spawn);
+
+    let mut announces = node_a.recv_announces().await;
+    let mut out_link_events = node_a.out_link_events();
+
+    // Link.py announces when enter is hit, repeat until relayed to a
+    let desc = time::timeout(time::Duration::from_secs(30), async {
+        loop {
+            stdin.write_all(b"\n").await.expect("write to Link.py");
+            if let Ok(Ok(event)) = time::timeout(time::Duration::from_secs(2), announces.recv()).await {
+                let desc = event.destination.lock().await.desc;
+                if desc.address_hash == server_hash {
+                    return desc;
+                }
+            }
+        }
+    })
+    .await
+    .expect("announce of Link.py not relayed to a");
+
+    let link = node_a.link(desc).await;
+    let link_id = *link.lock().await.id();
+    wait_link_activated(&mut out_link_events, link_id).await;
+
+    node_a.send_to_out_links(&server_hash, b"test").await;
+    assert_eq!(wait_link_data(&mut out_link_events).await, b"I received \"test\" over the link");
+}
