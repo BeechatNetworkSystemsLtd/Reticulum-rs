@@ -14,7 +14,7 @@ use reticulum::{
     iface::{tcp_client::TcpClient, tcp_server::TcpServer},
     transport::{AnnounceEvent, TimerConfig, Transport, TransportConfig},
 };
-use tokio::sync::broadcast::{self, error::RecvError};
+use tokio::sync::broadcast::{self, error::{RecvError, TryRecvError}};
 use tokio::time;
 
 static INIT: Once = Once::new();
@@ -250,6 +250,48 @@ async fn link_across_mesh() {
         .expect("link reply not received by node 0");
 }
 
+/// Nodes 1 and 2 are both connected to node 0 and only through it. When node 0 links
+/// to node 1, link packets are only sent on the interface towards node 1, so node 2
+/// receives none of them.
+#[tokio::test]
+async fn link_send_on_path_interface() {
+    setup();
+
+    let mut transports = mesh(3, &[(0, 1), (0, 2)], TimerConfig::default(), true).await;
+    let node_2 = transports.pop().unwrap();
+    let mut node_1 = transports.pop().unwrap();
+    let node_0 = &transports[0];
+
+    let mut node_2_rx = node_2.iface_rx();
+    let mut in_link_events = node_1.in_link_events();
+
+    let (address, _) = link_after_announce(node_0, &mut node_1).await;
+
+    for i in 0..5 {
+        let message = format!("message {i}");
+        node_0.send_to_out_links(&address, message.as_bytes()).await;
+
+        time::timeout(Duration::from_secs(5), wait_data(&mut in_link_events, message.as_bytes()))
+            .await
+            .unwrap_or_else(|_| panic!("{message} not received by node 1"));
+    }
+
+    // let late copies arrive
+    time::sleep(Duration::from_secs(1)).await;
+
+    let mut off_path = Vec::new();
+    loop {
+        match node_2_rx.try_recv() {
+            Ok(message) if message.packet.header.packet_type != PacketType::Announce => {
+                off_path.push((message.packet.header.packet_type, message.packet.context));
+            }
+            Ok(_) | Err(TryRecvError::Lagged(_)) => continue,
+            Err(_) => break,
+        }
+    }
+    assert!(off_path.is_empty(), "link packets received by node 2: {off_path:?}");
+}
+
 /// Short link timers, so that a link over a dropped relay goes stale and is
 /// restarted quickly. The in-link of the destination is closed (after 4 s)
 /// before the out-link is restarted (after 8 s), otherwise the destination
@@ -296,9 +338,8 @@ async fn link_recovers_after_relay_drop(close_interfaces: bool, restart_outlinks
         .expect("announce of node 8 not received by node 0");
     let desc = event.destination.lock().await.desc;
 
-    // the link request is sent on all interfaces of node 0, but over TCP the proof
-    // is only sent back over the relays of the path, so the neighbour of node 0
-    // that receives it is on the path
+    // the proof is only sent back over the relays of the path, so the neighbour of
+    // node 0 that receives it is on the path
     let neighbours = [1, 3];
     let iface_rx: Vec<_> = neighbours
         .iter()

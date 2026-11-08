@@ -123,7 +123,10 @@ impl PathTable {
         )
     }
 
-    pub fn handle_packet(&mut self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
+    /// Returns the packet to send towards its destination and the interface of the path:
+    /// if the destination is more than one hop away, the packet is put in transport with
+    /// the next hop as transport id, otherwise it is sent as it is.
+    pub fn handle_packet(&self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
         if original_packet.header.header_type == HeaderType::Type2 {
             return (*original_packet, None);
         }
@@ -142,6 +145,10 @@ impl PathTable {
             Some(entry) => entry,
             None => return (*original_packet, None),
         };
+
+        if entry.hops <= 1 {
+            return (*original_packet, Some(entry.iface));
+        }
 
         (
             Packet {

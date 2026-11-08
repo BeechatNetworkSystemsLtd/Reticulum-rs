@@ -164,6 +164,10 @@ pub(crate) struct TransportHandler {
 
     out_links: HashMap<AddressHash, Arc<Mutex<Link>>>,
     in_links: HashMap<AddressHash, Arc<Mutex<Link>>>,
+    /// Interface of each local link, which all its packets are sent on: the
+    /// interface the link request was received on for in-links, and the one the
+    /// proof was received on for out-links
+    link_ifaces: HashMap<LinkId, AddressHash>,
 
     packet_cache: Mutex<PacketCache>,
 
@@ -292,6 +296,7 @@ impl Transport {
             announce_limits: AnnounceLimits::new(),
             out_links: HashMap::new(),
             in_links: HashMap::new(),
+            link_ifaces: HashMap::new(),
             packet_cache: Mutex::new(PacketCache::new()),
             path_requests,
             announce_tx,
@@ -653,10 +658,17 @@ impl Drop for Transport {
 }
 
 impl TransportHandler {
+    /// Sends a packet originating from this node: packets of a local link on the
+    /// interface of the link, packets for a destination with a known path on the
+    /// interface of the path, and any other packets are sent on all interfaces
     pub(crate) async fn send_packet(&self, packet: Packet) {
-        let message = TxMessage {
-            tx_type: TxMessageType::Broadcast(None),
-            packet,
+        let message = if let Some(iface) = self.link_ifaces.get(&packet.destination) {
+            TxMessage { tx_type: TxMessageType::Direct(*iface), packet }
+        } else {
+            match self.path_table.handle_packet(&packet) {
+                (packet, Some(iface)) => TxMessage { tx_type: TxMessageType::Direct(iface), packet },
+                (packet, None) => TxMessage { tx_type: TxMessageType::Broadcast(None), packet },
+            }
         };
 
         self.send(message).await;
@@ -771,6 +783,7 @@ async fn handle_proof<'a>(
         packet.destination
     );
 
+    let mut rtt_packets = Vec::new();
     for link in handler.out_links.values() {
         let mut link = link.lock().await;
         let link_id = *link.id();
@@ -781,9 +794,13 @@ async fn handle_proof<'a>(
             packet,
             true
         ) {
-            let rtt_packet = link.create_rtt();
-            handler.send_packet(rtt_packet).await;
+            rtt_packets.push((link_id, link.create_rtt()));
         }
+    }
+
+    for (link_id, rtt_packet) in rtt_packets {
+        handler.link_ifaces.insert(link_id, iface);
+        handler.send_packet(rtt_packet).await;
     }
 
     for link in handler.in_links.values() {
@@ -1182,6 +1199,7 @@ async fn handle_fixed_destinations<'a>(
 async fn handle_link_request_as_destination<'a>(
     destination: Arc<Mutex<SingleInputDestination>>,
     packet: &Packet,
+    iface: AddressHash,
     mut handler: MutexGuard<'a, TransportHandler>,
 ) {
     let mut destination = destination.lock().await;
@@ -1202,6 +1220,7 @@ async fn handle_link_request_as_destination<'a>(
                 );
 
                 if let Ok(mut link) = link {
+                    handler.link_ifaces.insert(*link.id(), iface);
                     handler.send_packet(link.prove(&handler.link_in_event_tx)).await;
 
                     log::debug!(
@@ -1236,7 +1255,7 @@ async fn handle_link_request<'a>(
             handler.config.name,
             packet.destination
         );
-        handle_link_request_as_destination(destination, packet, handler).await;
+        handle_link_request_as_destination(destination, packet, iface, handler).await;
     } else if let Some(entry) = handler.path_table.get(&packet.destination) {
         // handle link request as intermediate
         log::trace!(
@@ -1288,9 +1307,12 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
 
     for addr in &links_to_remove {
         handler.in_links.remove(addr);
+        handler.link_ifaces.remove(addr);
     }
 
     links_to_remove.clear();
+    // out-links are kept by destination, their interfaces by link id
+    let mut closed_link_ids = Vec::new();
 
     for link_entry in &handler.out_links {
         let mut link = link_entry.1.lock().await;
@@ -1315,6 +1337,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                         handler.send_packet(packet).await
                     }
                     links_to_remove.push(*link_entry.0);
+                    closed_link_ids.push(*link.id());
                 }
             }
             LinkStatus::Pending if link.elapsed() > timer_config.out_link_repeat => {
@@ -1328,6 +1351,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
             LinkStatus::Closed => {
                 link.close(&handler.link_out_event_tx);
                 links_to_remove.push(*link_entry.0);
+                closed_link_ids.push(*link.id());
             }
             _ => {}
         }
@@ -1335,6 +1359,10 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
 
     for addr in &links_to_remove {
         handler.out_links.remove(addr);
+    }
+
+    for link_id in &closed_link_ids {
+        handler.link_ifaces.remove(link_id);
     }
 }
 

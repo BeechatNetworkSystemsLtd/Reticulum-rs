@@ -643,3 +643,103 @@ async fn python_identify_server() {
         _ => panic!("Python did not exit cleanly after kill")
     }
 }
+
+/// Waits for `link_id` to be activated, failing after 10 seconds
+async fn wait_link_activated(
+    events: &mut broadcast::Receiver<reticulum::destination::link::LinkEventData>,
+    link_id: AddressHash,
+) {
+    time::timeout(time::Duration::from_secs(10), async {
+        loop {
+            let event = events.recv().await.expect("link event");
+            if event.id == link_id && matches!(event.event, LinkEvent::Activated) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("link not activated");
+}
+
+/// Waits for data over any link, failing after 10 seconds
+async fn wait_link_data(
+    events: &mut broadcast::Receiver<reticulum::destination::link::LinkEventData>,
+) -> Vec<u8> {
+    time::timeout(time::Duration::from_secs(10), async {
+        loop {
+            if let LinkEvent::Data(payload) = events.recv().await.expect("link event").event {
+                return payload.as_slice().to_vec();
+            }
+        }
+    })
+    .await
+    .expect("link data not received")
+}
+
+#[tokio::test]
+/// Rust node a links to Rust node b over a Python transport node, two hops away
+async fn python_relay() {
+    use reticulum::transport::Transport;
+
+    let _guard = TEST_MUTEX.lock().await;
+    setup();
+
+    // UDP a <-> Python on 4244/4245, b <-> Python on 4246/4247
+    let config = std::env::current_dir().unwrap().join("tests/rns-py-configs/relay");
+    let _relay = Command::new("python3")
+        .current_dir(&*RETICULUM_PYTHON_DIR)
+        .arg("-u")
+        .arg("-m")
+        .arg("RNS.Utilities.rnsd")
+        .arg("--config")
+        .arg(&config)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("failed to start rnsd");
+
+    let build = |name: &str, bind: &str, forward: &str| {
+        let transport: Transport =
+            TransportConfig::new(name, &PrivateIdentity::new_from_rand(rand_core::OsRng)).build();
+        (transport, bind.to_string(), forward.to_string())
+    };
+    let (node_a, bind, forward) = build("a", "127.0.0.1:4244", "127.0.0.1:4245");
+    node_a.iface_manager().lock().await
+        .spawn(UdpInterface::new(bind, Some(forward), false), UdpInterface::spawn);
+    let (mut node_b, bind, forward) = build("b", "127.0.0.1:4246", "127.0.0.1:4247");
+    node_b.iface_manager().lock().await
+        .spawn(UdpInterface::new(bind, Some(forward), false), UdpInterface::spawn);
+
+    let mut announces = node_a.recv_announces().await;
+    let mut out_link_events = node_a.out_link_events();
+    let mut in_link_events = node_b.in_link_events();
+
+    let destination = node_b
+        .add_destination(PrivateIdentity::new_from_rand(rand_core::OsRng), DestinationName::new("test", "relay"))
+        .await;
+    let address = destination.lock().await.desc.address_hash;
+
+    // announce until rnsd is up and relays it
+    let desc = time::timeout(time::Duration::from_secs(30), async {
+        loop {
+            node_b.send_announce(&destination, None).await;
+            if let Ok(Ok(event)) = time::timeout(time::Duration::from_secs(2), announces.recv()).await {
+                let desc = event.destination.lock().await.desc;
+                if desc.address_hash == address {
+                    return desc;
+                }
+            }
+        }
+    })
+    .await
+    .expect("announce of b not relayed by Python");
+
+    let link = node_a.link(desc).await;
+    let link_id = *link.lock().await.id();
+    wait_link_activated(&mut out_link_events, link_id).await;
+
+    node_a.send_to_out_links(&address, b"hello b").await;
+    assert_eq!(wait_link_data(&mut in_link_events).await, b"hello b");
+
+    node_b.send_to_in_links(&address, b"hello a").await;
+    assert_eq!(wait_link_data(&mut out_link_events).await, b"hello a");
+}
