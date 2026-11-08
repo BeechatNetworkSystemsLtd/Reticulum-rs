@@ -1495,18 +1495,12 @@ async fn manage_transport(
                         // circulate (e.g. LinkRequest ping-pong between originator and
                         // relay).
                         //
-                        // A node accepts an in-transit packet when the transport field
-                        // designates it as the next hop. For relay next hops this is the
-                        // node's own identity hash; for the final hop to a non-relay
-                        // destination host (whose announce carried no transport id) the
-                        // path table records the destination address itself, so we also
-                        // accept when it matches a locally hosted destination.
+                        // A packet in transport is only accepted by the node it is
+                        // addressed to, the next hop. Packets on the last hop to their
+                        // destination and link packets have no transport id.
                         if let Some(transport) = packet.transport {
-                            if packet.header.destination_type != DestinationType::Link
-                                && packet.header.packet_type != PacketType::Announce
-                                && packet.header.packet_type != PacketType::Proof
+                            if packet.header.packet_type != PacketType::Announce
                                 && transport != *handler.config.identity.address_hash()
-                                && !handler.has_destination(&transport)
                             {
                                 log::trace!(
                                     "tp({}): ignoring in-transit packet not addressed to this node: dst={}, type={:?}",

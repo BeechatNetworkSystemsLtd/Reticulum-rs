@@ -3,13 +3,13 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::time::Duration;
 
 use rand_core::OsRng;
-use reticulum::packet::{HeaderType, PacketType};
+use reticulum::packet::{DestinationType, HeaderType, Packet, PacketDataBuffer, PacketType};
 use reticulum::{
     destination::{
         link::{LinkEvent, LinkEventData, LinkId},
         DestinationName,
     },
-    hash::AddressHash,
+    hash::{AddressHash, Hash},
     identity::PrivateIdentity,
     iface::{tcp_client::TcpClient, tcp_server::TcpServer},
     transport::{AnnounceEvent, TimerConfig, Transport, TransportConfig},
@@ -324,6 +324,118 @@ async fn last_hop_sent_without_transport_id() {
             "link request received by node 2 with {header_type:?} and transport {transport:?}"
         );
     }
+}
+
+/// As in Python, a node drops packets with header 2 and a transport ID that is not its
+/// own. This is checked for link data, message proofs, and data for a local destination
+/// with the address of the destination as transport ID. Each is followed by the same kind
+/// of packet without transport ID, which must be received, so that the check doesn't pass
+/// because of how the packets are sent.
+#[tokio::test]
+async fn foreign_transport_id_ignored() {
+    setup();
+
+    let mut transports = mesh(2, &[(0, 1)], TimerConfig::default(), true).await;
+    let mut node_1 = transports.pop().unwrap();
+    let node_0 = &transports[0];
+
+    let mut in_link_events = node_1.in_link_events();
+    let mut received_data = node_1.received_data_events();
+
+    let mut announces = node_0.recv_announces().await;
+    let mut out_link_events = node_0.out_link_events();
+
+    let destination = node_1
+        .add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "mesh"))
+        .await;
+    let address = destination.lock().await.desc.address_hash;
+    node_1.send_announce(&destination, None).await;
+
+    let event = time::timeout(Duration::from_secs(10), recv_announce(&mut announces, address))
+        .await
+        .expect("announce not received");
+    let desc = event.destination.lock().await.desc;
+
+    let out_link = node_0.link(desc).await;
+    let link_id = *out_link.lock().await.id();
+    time::timeout(Duration::from_secs(10), wait_activated(&mut out_link_events, link_id))
+        .await
+        .expect("link not activated");
+
+    let foreign = AddressHash::new_from_rand(OsRng);
+    let in_transport = |mut packet: Packet, transport: AddressHash| {
+        packet.header.header_type = HeaderType::Type2;
+        packet.transport = Some(transport);
+        packet
+    };
+
+    // waits up to 1 s for a link event matching `matches`
+    async fn link_event(
+        events: &mut broadcast::Receiver<LinkEventData>,
+        matches: impl Fn(&LinkEvent) -> bool,
+    ) -> bool {
+        time::timeout(Duration::from_secs(1), async {
+            loop {
+                match events.recv().await {
+                    Ok(event) if matches(&event.event) => break,
+                    Ok(_) | Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => panic!("link event channel closed"),
+                }
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    let mut accepted = Vec::new();
+
+    // link data
+    let packet = out_link.lock().await.data_packet(b"foreign").unwrap();
+    node_0.send_broadcast(in_transport(packet, foreign), None).await;
+    if link_event(&mut in_link_events, |event| matches!(event, LinkEvent::Data(_))).await {
+        accepted.push("link data with a foreign transport id");
+    }
+    let packet = out_link.lock().await.data_packet(b"control").unwrap();
+    node_0.send_broadcast(packet, None).await;
+    assert!(
+        link_event(&mut in_link_events, |event| matches!(event, LinkEvent::Data(_))).await,
+        "link data without transport id not received"
+    );
+
+    // message proof
+    let packet = out_link.lock().await.message_proof(Hash::new_from_rand(OsRng));
+    node_0.send_broadcast(in_transport(packet, foreign), None).await;
+    if link_event(&mut in_link_events, |event| matches!(event, LinkEvent::Proof(_))).await {
+        accepted.push("message proof with a foreign transport id");
+    }
+    let packet = out_link.lock().await.message_proof(Hash::new_from_rand(OsRng));
+    node_0.send_broadcast(packet, None).await;
+    assert!(
+        link_event(&mut in_link_events, |event| matches!(event, LinkEvent::Proof(_))).await,
+        "message proof without transport id not received"
+    );
+
+    // data for the destination of node 1, with its address as transport id
+    let data_packet = |data: &[u8]| {
+        let mut packet = Packet::default();
+        packet.header.packet_type = PacketType::Data;
+        packet.header.destination_type = DestinationType::Single;
+        packet.destination = address;
+        packet.data = PacketDataBuffer::new_from_slice(data);
+        packet
+    };
+    node_0.send_broadcast(in_transport(data_packet(b"foreign"), address), None).await;
+    if time::timeout(Duration::from_secs(1), received_data.recv()).await.is_ok() {
+        accepted.push("data with the destination address as transport id");
+    }
+    node_0.send_broadcast(data_packet(b"control"), None).await;
+    let received = time::timeout(Duration::from_secs(1), received_data.recv())
+        .await
+        .expect("data without transport id not received")
+        .expect("received data");
+    assert_eq!(received.data.as_slice(), b"control");
+
+    assert!(accepted.is_empty(), "node 1 accepted packets in transport for another node: {accepted:?}");
 }
 
 /// Short link timers, so that a link over a dropped relay goes stale and is
