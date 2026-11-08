@@ -679,6 +679,12 @@ impl TransportHandler {
         self.iface_manager.lock().await.send(message).await;
     }
 
+    /// Whether the packet is in transport with this node as the next hop. Only such
+    /// packets are forwarded to remote destinations.
+    fn addressed_to_this_node(&self, packet: &Packet) -> bool {
+        packet.transport == Some(*self.config.identity.address_hash())
+    }
+
     fn has_destination(&self, address: &AddressHash) -> bool {
         self.single_in_destinations.contains_key(address)
     }
@@ -836,6 +842,15 @@ async fn send_to_next_hop<'a>(
     packet: &Packet,
     handler: &MutexGuard<'a, TransportHandler>,
 ) -> bool {
+    if !handler.addressed_to_this_node(packet) {
+        log::trace!(
+            "tp({}): not forwarding packet for {}, not addressed to this node",
+            handler.config.name,
+            packet.destination
+        );
+        return false;
+    }
+
     let (packet, maybe_iface) = handler.path_table.handle_inbound_packet(packet);
 
     if let Some(iface) = maybe_iface {
@@ -1256,6 +1271,12 @@ async fn handle_link_request<'a>(
             packet.destination
         );
         handle_link_request_as_destination(destination, packet, iface, handler).await;
+    } else if !handler.addressed_to_this_node(packet) {
+        log::trace!(
+            "tp({}): dropping link request for {}, not addressed to this node",
+            handler.config.name,
+            packet.destination
+        );
     } else if let Some(entry) = handler.path_table.get(&packet.destination) {
         // handle link request as intermediate
         log::trace!(

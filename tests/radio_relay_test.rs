@@ -237,3 +237,92 @@ async fn link_two_hops_over_radios() {
     relays.dedup();
     assert_eq!(relays.len(), 1, "link packets relayed by different nodes {relays:?}");
 }
+
+/// All radios are in range of each other, so node 5 is one hop from node 0 and no link
+/// packet needs to be relayed.
+#[tokio::test]
+async fn link_all_radios_in_range() {
+    setup();
+
+    const NODES: usize = 6;
+
+    let air: Vec<_> = (0..NODES).map(|_| broadcast::channel(1024).0).collect();
+    let transmissions = monitor(&air);
+
+    let mut transports = Vec::new();
+    for node in 0..NODES {
+        let in_range: Vec<_> = air.iter().enumerate()
+            .filter(|&(other, _)| other != node)
+            .map(|(_, air)| air)
+            .collect();
+        transports.push(
+            build_transport(&node.to_string(), Radio::new(&air[node], &in_range), true).await,
+        );
+    }
+    let mut node_5 = transports.pop().unwrap();
+    let node_0 = &transports[0];
+
+    let mut announces = node_0.recv_announces().await;
+    let mut out_link_events = node_0.out_link_events();
+    let mut in_link_events = node_5.in_link_events();
+
+    let destination = node_5
+        .add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "radio"))
+        .await;
+    let address = destination.lock().await.desc.address_hash;
+
+    node_5.send_announce(&destination, None).await;
+
+    let event = time::timeout(Duration::from_secs(5), announces.recv())
+        .await
+        .expect("announce not heard by node 0")
+        .expect("announce event");
+    let desc = event.destination.lock().await.desc;
+    assert_eq!(desc.address_hash, address);
+
+    let link = node_0.link(desc).await;
+    let link_id = *link.lock().await.id();
+
+    time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = out_link_events.recv().await.expect("link event");
+            if event.id == link_id && matches!(event.event, LinkEvent::Activated) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("link not activated");
+
+    for i in 0..5 {
+        let message = format!("message {i}");
+        node_0.send_to_out_links(&address, message.as_bytes()).await;
+
+        time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let LinkEvent::Data(payload) = in_link_events.recv().await.expect("link event").event {
+                    assert_eq!(payload.as_slice(), message.as_bytes());
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{message} not received by node 5"));
+    }
+
+    // let relayed copies be recorded
+    time::sleep(Duration::from_secs(1)).await;
+
+    // nodes that sent each link packet, in order
+    let mut senders: HashMap<_, Vec<_>> = HashMap::new();
+    for transmission in transmissions.lock().unwrap().iter() {
+        if transmission.packet.header.packet_type != PacketType::Announce {
+            senders.entry(transmission.packet.hash()).or_default().push(transmission.node);
+        }
+    }
+
+    // every link packet is only sent by the node that created it
+    for senders in senders.values() {
+        assert_eq!(senders.len(), 1, "link packet sent by nodes {senders:?}");
+    }
+}
