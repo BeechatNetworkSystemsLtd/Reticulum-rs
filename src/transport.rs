@@ -705,7 +705,18 @@ impl TransportHandler {
         let link = if let Some(link) = self.find_in_link(&link_id) {
             Some((link, &self.link_in_event_tx))
         } else {
-            self.find_out_link(&link_id).map(|link| (link, &self.link_out_event_tx))
+            // out-links are kept by destination, so look for the link id among them, then
+            // accept the destination address as before
+            let mut out_link = None;
+            for link in self.out_links.values() {
+                if *link.lock().await.id() == link_id {
+                    out_link = Some(link.clone());
+                    break;
+                }
+            }
+            out_link
+                .or_else(|| self.find_out_link(&link_id))
+                .map(|link| (link, &self.link_out_event_tx))
         };
         if let Some((link, event_tx)) = link {
             let mut link = link.lock().await;
