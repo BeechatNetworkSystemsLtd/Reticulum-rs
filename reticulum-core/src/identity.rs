@@ -7,7 +7,10 @@ use sha2::{Digest, Sha256};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret, StaticSecret};
 
 use crate::{
-    crypt::fernet::{Fernet, PlainText, Token},
+    crypt::{
+        fernet::{Fernet, PlainText, Token},
+        GroupKey,
+    },
     error::RnsError,
     hash::{AddressHash, Hash},
 };
@@ -394,7 +397,32 @@ impl DecryptIdentity for PrivateIdentity {
     }
 }
 
-pub struct GroupIdentity {}
+pub struct GroupIdentity {
+    /// Used to derive destination address
+    identity: Identity,
+    /// Shared symmetric encryption key
+    key: GroupKey,
+}
+
+impl GroupIdentity {
+    pub fn new(identity: Identity, key: GroupKey) -> Self {
+        Self { identity, key }
+    }
+
+    pub fn as_identity(&self) -> &Identity {
+        &self.identity
+    }
+
+    pub fn key(&self) -> &GroupKey {
+        &self.key
+    }
+}
+
+impl HashIdentity for GroupIdentity {
+    fn as_address_hash_slice(&self) -> &[u8] {
+        self.identity.address_hash.as_slice()
+    }
+}
 
 pub struct DerivedKey {
     key: [u8; DERIVED_KEY_LENGTH],

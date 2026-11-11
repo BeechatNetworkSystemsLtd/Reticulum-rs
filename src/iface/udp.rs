@@ -4,7 +4,6 @@ use tokio::net::UdpSocket;
 use tokio_util::sync::CancellationToken;
 
 use crate::buffer::{InputBuffer, OutputBuffer};
-use crate::error::RnsError;
 use crate::iface::RxMessage;
 use crate::packet::Packet;
 use crate::serde::Serialize;
@@ -46,20 +45,18 @@ impl UdpInterface {
                 break;
             }
 
-            let socket = UdpSocket::bind(bind_addr.clone())
-                .await
-                .map_err(|_| RnsError::ConnectionError);
-
-            if socket.is_err() {
-                log::info!("udp_interface: couldn't bind to <{}>", bind_addr);
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                continue;
-            }
+            let socket = match UdpSocket::bind(bind_addr.clone()).await {
+                Ok(socket) => socket,
+                Err(err) => {
+                    log::warn!("udp_interface: couldn't bind to <{}>: {}", bind_addr, err);
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
 
             let cancel = context.cancel.clone();
             let stop = CancellationToken::new();
 
-            let socket = socket.unwrap();
             let read_socket = Arc::new(socket);
             let write_socket = read_socket.clone();
             if context.inner.lock().unwrap().broadcast {
@@ -148,7 +145,9 @@ impl UdpInterface {
                                     }
                                     let mut output = OutputBuffer::new(&mut tx_buffer);
                                     if packet.serialize(&mut output).is_ok() {
-                                        let _ = socket.send_to(output.as_slice(), &forward_addr).await;
+                                        if let Err(err) = socket.send_to(output.as_slice(), &forward_addr).await {
+                                            log::warn!("udp_interface: couldn't send to <{}>: {}", forward_addr, err);
+                                        }
                                     }
                                 }
                             };

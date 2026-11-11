@@ -1,18 +1,26 @@
 use std::collections::HashMap;
 
 use crate::{
+    destination::{DestinationAnnounce, RAND_HASH_LENGTH},
     hash::AddressHash,
     packet::{DestinationType, Header, HeaderType, IfacFlag, Packet, PacketType},
 };
+
+/// Maximum number of announce random hashes kept per destination
+const MAX_RANDOM_BLOBS: usize = 64;
 
 pub struct PathEntry {
     pub received_from: AddressHash,
     pub hops: u8,
     pub iface: AddressHash,
+    /// Random hashes of the accepted announces for this destination, oldest first
+    pub random_blobs: Vec<[u8; RAND_HASH_LENGTH]>,
 }
 
 pub struct PathTable {
     map: HashMap<AddressHash, PathEntry>,
+    // unused since announces are accepted by random hash, to be removed
+    #[allow(dead_code)]
     reroute_eager: bool,
 }
 
@@ -32,21 +40,47 @@ impl PathTable {
         self.map.get(destination).map(|entry| (entry.received_from, entry.iface))
     }
 
+    /// Updates the path to the announced destination if the announce is new and returns
+    /// whether it was. An announce is new if the destination is unknown, or if its
+    /// random hash was not heard before and it was emitted after every announce heard
+    /// before. The first copy of the newest announce wins, even if a later copy has
+    /// fewer hops.
     pub fn handle_announce(
         &mut self,
         announce: &Packet,
         transport_id: Option<AddressHash>,
         iface: AddressHash,
-    ) {
+    ) -> bool {
+        let Some(random_hash) = DestinationAnnounce::random_hash(announce) else {
+            log::debug!("{} mising random hash", announce.destination);
+            return false;
+        };
+
         let hops = announce.header.hops + 1;
 
-        if let Some(existing_entry) = self.map.get(&announce.destination) {
-            if hops > existing_entry.hops {
-                return;
+        let mut random_blobs = match self.map.get(&announce.destination) {
+            Some(existing_entry) => {
+                let path_emitted = existing_entry
+                    .random_blobs
+                    .last()
+                    .map(DestinationAnnounce::emitted)
+                    .unwrap_or(0);
+
+                if existing_entry.random_blobs.contains(&random_hash)
+                    || DestinationAnnounce::emitted(&random_hash) <= path_emitted
+                {
+                    // already seen or not newer than previous announces
+                    return false;
+                }
+
+                existing_entry.random_blobs.clone()
             }
-            if !self.reroute_eager && hops == existing_entry.hops {
-                return;
-            }
+            None => Vec::new(),
+        };
+
+        random_blobs.push(random_hash);
+        if random_blobs.len() > MAX_RANDOM_BLOBS {
+            random_blobs.remove(0);
         }
 
         let received_from = transport_id.unwrap_or(announce.destination);
@@ -54,8 +88,9 @@ impl PathTable {
             received_from,
             hops,
             iface,
+            random_blobs,
         };
-
+        // updates existing entry if it exists
         self.map.insert(announce.destination, new_entry);
 
         log::info!(
@@ -64,6 +99,8 @@ impl PathTable {
             hops,
             received_from,
         );
+
+        true
     }
 
     pub fn handle_inbound_packet(

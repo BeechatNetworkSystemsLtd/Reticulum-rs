@@ -83,3 +83,7 @@ path = "examples/channel_server.rs"
 [[example]]
 name = "channel_client"
 path = "examples/channel_client.rs"
+
+[[example]]
+name = "group"
+path = "examples/group.rs"
