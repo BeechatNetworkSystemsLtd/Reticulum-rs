@@ -36,10 +36,6 @@ impl PathTable {
         self.map.get(destination)
     }
 
-    pub fn next_hop_full(&self, destination: &AddressHash) -> Option<(AddressHash, AddressHash)> {
-        self.map.get(destination).map(|entry| (entry.received_from, entry.iface))
-    }
-
     /// Updates the path to the announced destination if the announce is new and returns
     /// whether it was. An announce is new if the destination is unknown, or if its
     /// random hash was not heard before and it was emitted after every announce heard
@@ -103,29 +99,33 @@ impl PathTable {
         true
     }
 
-    pub fn handle_inbound_packet(
-        &self,
-        original_packet: &Packet,
-        lookup: Option<AddressHash>,
-    ) -> (Packet, Option<AddressHash>) {
-        let lookup = lookup.unwrap_or(original_packet.destination);
-
-        let entry = match self.map.get(&lookup) {
+    /// Returns the packet in transport to forward towards its destination and the
+    /// interface of the path. On the last hop, when the next hop is the destination
+    /// itself, the packet is taken out of transport (header 1, without transport ID),
+    /// or otherwise the next hop is set as transport ID.
+    pub fn handle_inbound_packet(&self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
+        let entry = match self.map.get(&original_packet.destination) {
             Some(entry) => entry,
             None => return (*original_packet, None),
+        };
+
+        let (header_type, transport) = if entry.hops <= 1 {
+            (HeaderType::Type1, None)
+        } else {
+            (HeaderType::Type2, Some(entry.received_from))
         };
 
         (
             Packet {
                 header: Header {
                     ifac_flag: IfacFlag::Open,
-                    header_type: HeaderType::Type2,
+                    header_type,
                     hops: original_packet.header.hops + 1,
                     .. original_packet.header
                 },
                 ifac: None,
                 destination: original_packet.destination,
-                transport: Some(entry.received_from),
+                transport,
                 context: original_packet.context,
                 data: original_packet.data,
             },
@@ -133,7 +133,10 @@ impl PathTable {
         )
     }
 
-    pub fn handle_packet(&mut self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
+    /// Returns the packet to send towards its destination and the interface of the path:
+    /// if the destination is more than one hop away, the packet is put in transport with
+    /// the next hop as transport id, otherwise it is sent as it is.
+    pub fn handle_packet(&self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
         if original_packet.header.header_type == HeaderType::Type2 {
             return (*original_packet, None);
         }
@@ -152,6 +155,10 @@ impl PathTable {
             Some(entry) => entry,
             None => return (*original_packet, None),
         };
+
+        if entry.hops <= 1 {
+            return (*original_packet, Some(entry.iface));
+        }
 
         (
             Packet {

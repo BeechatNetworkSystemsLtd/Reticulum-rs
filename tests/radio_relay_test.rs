@@ -1,12 +1,13 @@
-use std::sync::Once;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
 use rand_core::OsRng;
 use reticulum::{
-    destination::DestinationName,
+    destination::{link::LinkEvent, DestinationName},
     identity::PrivateIdentity,
     iface::{Interface, InterfaceContext, RxMessage},
-    packet::Packet,
+    packet::{Packet, PacketType},
     transport::{Transport, TransportConfig},
 };
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -113,4 +114,215 @@ async fn announce_relayed_over_single_radio() {
         .expect("announce not relayed over b's radio")
         .expect("announce event");
     assert_eq!(event.destination.lock().await.desc.address_hash, address);
+}
+
+/// A packet sent on the air of a node
+struct Transmission {
+    node: usize,
+    packet: Packet,
+}
+
+/// Records every packet sent on the air of each node
+fn monitor(air: &[broadcast::Sender<Packet>]) -> Arc<Mutex<Vec<Transmission>>> {
+    let transmissions = Arc::new(Mutex::new(Vec::new()));
+
+    for (node, air) in air.iter().enumerate() {
+        let mut rx = air.subscribe();
+        let transmissions = transmissions.clone();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(packet) => transmissions.lock().unwrap().push(Transmission { node, packet }),
+                    Err(RecvError::Lagged(n)) => panic!("air monitor missed {n} packets"),
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    transmissions
+}
+
+/// Nodes 0 and 5 are out of range of each other, nodes 1 to 4 are in range of all. One
+/// relay is enough for the link from node 0 to node 5, so the others must not repeat
+/// its packets.
+#[tokio::test]
+async fn link_two_hops_over_radios() {
+    setup();
+
+    const NODES: usize = 6;
+
+    let air: Vec<_> = (0..NODES).map(|_| broadcast::channel(1024).0).collect();
+    let transmissions = monitor(&air);
+
+    let ends = [0, NODES - 1];
+    let mut transports = Vec::new();
+    for node in 0..NODES {
+        let in_range: Vec<_> = air.iter().enumerate()
+            .filter(|&(other, _)| other != node && !(ends.contains(&node) && ends.contains(&other)))
+            .map(|(_, air)| air)
+            .collect();
+        transports.push(
+            build_transport(&node.to_string(), Radio::new(&air[node], &in_range), true).await,
+        );
+    }
+    let mut node_5 = transports.pop().unwrap();
+    let node_0 = &transports[0];
+
+    let mut announces = node_0.recv_announces().await;
+    let mut out_link_events = node_0.out_link_events();
+    let mut in_link_events = node_5.in_link_events();
+
+    let destination = node_5
+        .add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "radio"))
+        .await;
+    let address = destination.lock().await.desc.address_hash;
+
+    node_5.send_announce(&destination, None).await;
+
+    let event = time::timeout(Duration::from_secs(5), announces.recv())
+        .await
+        .expect("announce not heard by node 0")
+        .expect("announce event");
+    let desc = event.destination.lock().await.desc;
+    assert_eq!(desc.address_hash, address);
+
+    let link = node_0.link(desc).await;
+    let link_id = *link.lock().await.id();
+
+    time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = out_link_events.recv().await.expect("link event");
+            if event.id == link_id && matches!(event.event, LinkEvent::Activated) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("link not activated");
+
+    for i in 0..5 {
+        let message = format!("message {i}");
+        node_0.send_to_out_links(&address, message.as_bytes()).await;
+
+        time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let LinkEvent::Data(payload) = in_link_events.recv().await.expect("link event").event {
+                    assert_eq!(payload.as_slice(), message.as_bytes());
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{message} not received by node 5"));
+    }
+
+    // let relayed copies be recorded
+    time::sleep(Duration::from_secs(1)).await;
+
+    // nodes that sent each link packet, in order
+    let mut senders: HashMap<_, Vec<_>> = HashMap::new();
+    for transmission in transmissions.lock().unwrap().iter() {
+        if transmission.packet.header.packet_type != PacketType::Announce {
+            senders.entry(transmission.packet.hash()).or_default().push(transmission.node);
+        }
+    }
+
+    // every link packet is sent by the node that created it and by the same relay
+    let mut relays = Vec::new();
+    for senders in senders.values() {
+        assert_eq!(senders.len(), 2, "link packet sent by nodes {senders:?}");
+        relays.push(senders[1]);
+    }
+    relays.dedup();
+    assert_eq!(relays.len(), 1, "link packets relayed by different nodes {relays:?}");
+}
+
+/// All radios are in range of each other, so node 5 is one hop from node 0 and no link
+/// packet needs to be relayed.
+#[tokio::test]
+async fn link_all_radios_in_range() {
+    setup();
+
+    const NODES: usize = 6;
+
+    let air: Vec<_> = (0..NODES).map(|_| broadcast::channel(1024).0).collect();
+    let transmissions = monitor(&air);
+
+    let mut transports = Vec::new();
+    for node in 0..NODES {
+        let in_range: Vec<_> = air.iter().enumerate()
+            .filter(|&(other, _)| other != node)
+            .map(|(_, air)| air)
+            .collect();
+        transports.push(
+            build_transport(&node.to_string(), Radio::new(&air[node], &in_range), true).await,
+        );
+    }
+    let mut node_5 = transports.pop().unwrap();
+    let node_0 = &transports[0];
+
+    let mut announces = node_0.recv_announces().await;
+    let mut out_link_events = node_0.out_link_events();
+    let mut in_link_events = node_5.in_link_events();
+
+    let destination = node_5
+        .add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "radio"))
+        .await;
+    let address = destination.lock().await.desc.address_hash;
+
+    node_5.send_announce(&destination, None).await;
+
+    let event = time::timeout(Duration::from_secs(5), announces.recv())
+        .await
+        .expect("announce not heard by node 0")
+        .expect("announce event");
+    let desc = event.destination.lock().await.desc;
+    assert_eq!(desc.address_hash, address);
+
+    let link = node_0.link(desc).await;
+    let link_id = *link.lock().await.id();
+
+    time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = out_link_events.recv().await.expect("link event");
+            if event.id == link_id && matches!(event.event, LinkEvent::Activated) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("link not activated");
+
+    for i in 0..5 {
+        let message = format!("message {i}");
+        node_0.send_to_out_links(&address, message.as_bytes()).await;
+
+        time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let LinkEvent::Data(payload) = in_link_events.recv().await.expect("link event").event {
+                    assert_eq!(payload.as_slice(), message.as_bytes());
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{message} not received by node 5"));
+    }
+
+    // let relayed copies be recorded
+    time::sleep(Duration::from_secs(1)).await;
+
+    // nodes that sent each link packet, in order
+    let mut senders: HashMap<_, Vec<_>> = HashMap::new();
+    for transmission in transmissions.lock().unwrap().iter() {
+        if transmission.packet.header.packet_type != PacketType::Announce {
+            senders.entry(transmission.packet.hash()).or_default().push(transmission.node);
+        }
+    }
+
+    // every link packet is only sent by the node that created it
+    for senders in senders.values() {
+        assert_eq!(senders.len(), 1, "link packet sent by nodes {senders:?}");
+    }
 }

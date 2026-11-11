@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rand_core::OsRng;
 use reticulum::{
-    crypt::GroupKey,
+    crypt::group::GroupKey,
     destination::{DestinationName, GroupInputDestination},
     identity::{GroupIdentity, PrivateIdentity},
     iface::{Interface, InterfaceContext, RxMessage},

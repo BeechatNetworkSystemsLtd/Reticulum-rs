@@ -1,0 +1,20 @@
+[reticulum]
+  enable_transport = True
+  share_instance = No
+[logging]
+  loglevel = 5
+[interfaces]
+  [[UDP Interface a]]
+    type = UDPInterface
+    enabled = yes
+    listen_ip = 127.0.0.1
+    listen_port = 4245
+    forward_ip = 127.0.0.1
+    forward_port = 4244
+  [[UDP Interface b]]
+    type = UDPInterface
+    enabled = yes
+    listen_ip = 127.0.0.1
+    listen_port = 4247
+    forward_ip = 127.0.0.1
+    forward_port = 4246
