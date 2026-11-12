@@ -52,7 +52,7 @@ impl PathTable {
             return false;
         };
 
-        let hops = announce.header.hops + 1;
+        let hops = announce.header.hops.saturating_add(1);
 
         let mut random_blobs = match self.map.get(&announce.destination) {
             Some(existing_entry) => {
@@ -120,7 +120,7 @@ impl PathTable {
                 header: Header {
                     ifac_flag: IfacFlag::Open,
                     header_type,
-                    hops: original_packet.header.hops + 1,
+                    hops: original_packet.header.hops.saturating_add(1),
                     .. original_packet.header
                 },
                 ifac: None,

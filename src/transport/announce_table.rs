@@ -23,7 +23,12 @@ pub struct AnnounceEntry {
     pub response_to_iface: Option<AddressHash>,
     /// How many times this announce has been received at the same number of hops.
     pub local_rebroadcasts: u8,
+    /// The retry waits, so hearing another node's rebroadcast can cancel it.
+    pub retry_at: Instant,
 }
+
+const RETRY_GRACE: Duration = Duration::from_secs(5);
+const RETRY_JITTER_MS: u32 = 500;
 
 impl AnnounceEntry {
     pub fn retransmit(
@@ -35,6 +40,8 @@ impl AnnounceEntry {
         }
 
         self.retries = self.retries.saturating_sub(1);
+        let jitter = rand_core::RngCore::next_u32(&mut rand_core::OsRng) % RETRY_JITTER_MS;
+        self.retry_at = Instant::now() + RETRY_GRACE + Duration::from_millis(jitter as u64);
 
         Some(self.always_retransmit(transport_id))
     }
@@ -136,12 +143,13 @@ impl AnnounceTable {
         destination: AddressHash,
     ) {
         let now = Instant::now();
-        let hops = announce.header.hops + 1;
+        let hops = announce.header.hops.saturating_add(1);
 
         let entry = AnnounceEntry {
             packet: *announce,
             timeout: now + Duration::from_secs(60),
-            retries: 5, // TODO: make this configurable too?
+            retries: 2,
+            retry_at: now,
             hops,
             response_to_iface: None,
             local_rebroadcasts: 0,
@@ -232,6 +240,10 @@ impl AnnounceTable {
                 continue;
             }
 
+            if entry.retries > 0 && Instant::now() < entry.retry_at && Instant::now() < entry.timeout {
+                continue;
+            }
+
             if let Some(message) = entry.retransmit(transport_id) {
                 messages.push(message);
             } else {
@@ -296,5 +308,46 @@ impl AnnounceTable {
         }
 
         messages
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn announce(seed: u8) -> (Packet, AddressHash) {
+        let mut packet = Packet::default();
+        packet.header.packet_type = PacketType::Announce;
+        packet.destination = AddressHash::new([seed; 16]);
+        (packet, packet.destination)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rebroadcast_is_retried_once_after_the_grace_period() {
+        let transport_id = AddressHash::new([9; 16]);
+        let mut table = AnnounceTable::new();
+        let (packet, destination) = announce(1);
+        table.add(&packet, destination);
+
+        assert!(table.new_packet(&destination, &transport_id).is_some(), "the rebroadcast");
+        assert!(table.tx_to_retransmit(&transport_id).is_empty(), "no retry before the grace period");
+        tokio::time::advance(RETRY_GRACE + Duration::from_millis(RETRY_JITTER_MS as u64)).await;
+        assert_eq!(table.tx_to_retransmit(&transport_id).len(), 1, "one retry");
+        tokio::time::advance(RETRY_GRACE * 2).await;
+        assert!(table.tx_to_retransmit(&transport_id).is_empty(), "and no more");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hearing_the_announce_relayed_further_cancels_the_retry() {
+        let transport_id = AddressHash::new([9; 16]);
+        let mut table = AnnounceTable::new();
+        let (packet, destination) = announce(2);
+        table.add(&packet, destination);
+        assert!(table.new_packet(&destination, &transport_id).is_some());
+
+        // a neighbour relayed it one hop further than us
+        table.heard_rebroadcast(&destination, packet.header.hops + 2);
+        tokio::time::advance(RETRY_GRACE * 2).await;
+        assert!(table.tx_to_retransmit(&transport_id).is_empty());
     }
 }
