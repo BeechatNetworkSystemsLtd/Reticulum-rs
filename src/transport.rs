@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use alloc::sync::Arc;
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use tokio::sync::{broadcast, Mutex, MutexGuard};
 use tokio::time;
 use tokio_util::sync::CancellationToken;
@@ -10,9 +10,10 @@ use tokio_util::sync::CancellationToken;
 #[cfg(not(test))]
 use crate::channel::{self, Channel};
 use crate::destination::link::{Link, LinkEventData, LinkEventSink, LinkExt, LinkExtHandlePacket,
-    LinkHandleResult, LinkId, LinkPayload, LinkPayloadSink, LinkStatus};
+    LinkHandleResult, LinkId, LinkPayload, LinkPayloadSink, LinkStatus, validate_proof_packet};
 use crate::destination::{DestinationAnnounce, DestinationDesc, DestinationHandleStatus,
     DestinationName, GroupInputDestination, SingleInputDestination, SingleOutputDestination};
+use crate::crypt::group::GroupKey;
 use crate::error::RnsError;
 use crate::hash::{AddressHash, Hash};
 use crate::identity::{GroupIdentity, PrivateIdentity};
@@ -28,6 +29,7 @@ mod path_requests;
 mod path_table;
 
 use self::announce_limits::AnnounceLimits;
+pub use self::announce_limits::AnnounceRateLimit;
 use self::announce_table::AnnounceTable;
 use self::link_table::LinkTable;
 use self::packet_cache::PacketCache;
@@ -37,6 +39,9 @@ use self::path_table::PathTable;
 // TODO: Configure via features
 const PACKET_TRACE: bool = false;
 pub const PATHFINDER_M: usize = 128; // Max hops
+const REPROVE_WINDOW: Duration = Duration::from_secs(60);
+const REPROVE_GAP: Duration = Duration::from_secs(2);
+const PATH_ASK_GAP: Duration = Duration::from_secs(10);
 
 // Other constants
 const KEEP_ALIVE_REQUEST: u8 = 0xFF;
@@ -85,6 +90,73 @@ impl Default for TimerConfig {
     }
 }
 
+/// Sizes the transport's channels, see [`ChannelCapacity::for_network`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NetworkProfile {
+    /// Upstream capacities.
+    #[default]
+    Default,
+    /// Small buffers for memory-constrained leaf nodes.
+    Minimal,
+    /// Large buffers for relays in a busy multi-hop mesh.
+    MultiHop,
+}
+
+/// Capacities of the transport's channels, in messages (each at least 1). Broadcast channels
+/// preallocate their capacity; a subscriber further behind loses the oldest (`Lagged`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelCapacity {
+    pub announces: usize,
+    /// In-link and out-link events; they carry all link data, so too small loses data.
+    pub link_events: usize,
+    pub received_data: usize,
+    pub iface_messages: usize,
+    pub iface_rx: usize,
+    /// Per interface; 1 paces the transport by the interface instead of queueing stale packets.
+    pub iface_tx: usize,
+    pub link_payloads: usize,
+}
+
+impl ChannelCapacity {
+    pub const fn for_network(profile: NetworkProfile) -> Self {
+        match profile {
+            NetworkProfile::Default => Self {
+                announces: 16,
+                link_events: 16,
+                received_data: 16,
+                iface_messages: 16,
+                iface_rx: 16,
+                iface_tx: 1,
+                link_payloads: 16,
+            },
+            NetworkProfile::Minimal => Self {
+                announces: 8,
+                link_events: 32,
+                received_data: 8,
+                iface_messages: 4,
+                iface_rx: 8,
+                iface_tx: 1,
+                link_payloads: 8,
+            },
+            NetworkProfile::MultiHop => Self {
+                announces: 1024,
+                link_events: 8192,
+                received_data: 512,
+                iface_messages: 64,
+                iface_rx: 64,
+                iface_tx: 1,
+                link_payloads: 64,
+            },
+        }
+    }
+}
+
+impl Default for ChannelCapacity {
+    fn default() -> Self {
+        Self::for_network(NetworkProfile::Default)
+    }
+}
+
 pub struct TransportConfig {
     name: String,
     identity: PrivateIdentity,
@@ -109,13 +181,21 @@ pub struct TransportConfig {
     /// with Python nodes, which drop relayed GROUP packets. Off by default.
     group_forwarding: bool,
 
+    announce_rate_limit: Option<AnnounceRateLimit>,
+
     timer_config: TimerConfig,
+
+    channel_capacity: ChannelCapacity,
 }
 
 #[derive(Clone)]
 pub struct AnnounceEvent {
     pub destination: Arc<Mutex<SingleOutputDestination>>,
     pub app_data: PacketDataBuffer,
+    /// Hops the announce travelled to reach this node (0: a direct neighbour).
+    pub hops: u8,
+    /// The relaying node's transport identity, if relayed.
+    pub transport_id: Option<AddressHash>,
 }
 
 #[derive(Clone)]
@@ -158,7 +238,15 @@ pub(crate) struct TransportHandler {
     link_table: LinkTable,
     single_in_destinations: HashMap<AddressHash, Arc<Mutex<SingleInputDestination>>>,
     single_out_destinations: HashMap<AddressHash, Arc<Mutex<SingleOutputDestination>>>,
+    /// Copies of announced destinations, so relays verify proofs without locking them.
+    announced: HashMap<AddressHash, DestinationDesc>,
     group_in_destinations: HashMap<AddressHash, Arc<Mutex<GroupInputDestination>>>,
+    /// Previous key of a rotated GROUP destination, accepted until the instant.
+    group_previous_keys: HashMap<AddressHash, (GroupKey, time::Instant)>,
+    /// In-links we proved: first and last proof time.
+    proofs: HashMap<LinkId, (time::Instant, time::Instant)>,
+    /// Last path request per unknown destination we were asked to relay a link to.
+    path_asked: HashMap<AddressHash, time::Instant>,
 
     announce_limits: AnnounceLimits,
 
@@ -203,7 +291,9 @@ impl TransportConfig {
             restart_outlinks: false,
             announce_forever: false,
             group_forwarding: false,
+            announce_rate_limit: None,
             timer_config: TimerConfig::default(),
+            channel_capacity: ChannelCapacity::default(),
         }
     }
 
@@ -232,8 +322,24 @@ impl TransportConfig {
         self
     }
 
+    pub fn set_announce_rate_limit(mut self, rate_limit: Option<AnnounceRateLimit>) -> Self {
+        self.announce_rate_limit = rate_limit;
+        self
+    }
+
     pub fn set_timer_config(mut self, timer_config: TimerConfig) -> Self {
         self.timer_config = timer_config;
+        self
+    }
+
+    pub fn set_channel_capacity(mut self, channel_capacity: ChannelCapacity) -> Self {
+        self.channel_capacity = channel_capacity;
+        self
+    }
+
+    /// Same as `set_channel_capacity(ChannelCapacity::for_network(profile))`.
+    pub fn set_network_profile(mut self, profile: NetworkProfile) -> Self {
+        self.channel_capacity = ChannelCapacity::for_network(profile);
         self
     }
 
@@ -252,20 +358,23 @@ impl Default for TransportConfig {
             restart_outlinks: false,
             announce_forever: false,
             group_forwarding: false,
+            announce_rate_limit: None,
             timer_config: Default::default(),
+            channel_capacity: Default::default(),
         }
     }
 }
 
 impl Transport {
     pub fn new(config: TransportConfig) -> Self {
-        let (announce_tx, _) = tokio::sync::broadcast::channel(16);
-        let (link_in_event_tx, _) = tokio::sync::broadcast::channel(16);
-        let (link_out_event_tx, _) = tokio::sync::broadcast::channel(16);
-        let (received_data_tx, _) = tokio::sync::broadcast::channel(16);
-        let (iface_messages_tx, _) = tokio::sync::broadcast::channel(16);
+        let capacity = config.channel_capacity;
+        let (announce_tx, _) = tokio::sync::broadcast::channel(capacity.announces);
+        let (link_in_event_tx, _) = tokio::sync::broadcast::channel(capacity.link_events);
+        let (link_out_event_tx, _) = tokio::sync::broadcast::channel(capacity.link_events);
+        let (received_data_tx, _) = tokio::sync::broadcast::channel(capacity.received_data);
+        let (iface_messages_tx, _) = tokio::sync::broadcast::channel(capacity.iface_messages);
 
-        let iface_manager = InterfaceManager::new(16);
+        let iface_manager = InterfaceManager::with_tx_capacity(capacity.iface_rx, capacity.iface_tx);
 
         let rx_receiver = iface_manager.receiver();
 
@@ -283,6 +392,7 @@ impl Transport {
         let cancel = CancellationToken::new();
         let name = config.name.clone();
         let reroute_eager = config.reroute_eager;
+        let announce_rate_limit = config.announce_rate_limit;
         let handler = Arc::new(Mutex::new(TransportHandler {
             config,
             iface_manager: iface_manager.clone(),
@@ -292,8 +402,12 @@ impl Transport {
             path_table: PathTable::new(reroute_eager),
             single_in_destinations: HashMap::new(),
             single_out_destinations: HashMap::new(),
+            announced: HashMap::new(),
             group_in_destinations: HashMap::new(),
-            announce_limits: AnnounceLimits::new(),
+            group_previous_keys: HashMap::new(),
+            proofs: HashMap::new(),
+            path_asked: HashMap::new(),
+            announce_limits: AnnounceLimits::new(announce_rate_limit),
             out_links: HashMap::new(),
             in_links: HashMap::new(),
             link_ifaces: HashMap::new(),
@@ -412,14 +526,13 @@ impl Transport {
         let mut sent_packets = vec![];
         let handler = self.handler.lock().await;
         for link in handler.out_links.values() {
-            let mut link = link.lock().await;
+            let link = link.lock().await;
             if link.destination().address_hash == *destination
                 && link.status() == LinkStatus::Active
             {
                 let packet = link.data_packet(payload);
                 if let Ok(packet) = packet {
                     handler.send_packet(packet).await;
-                    link.touch();
                     sent_packets.push(packet.hash());
                 }
             }
@@ -440,7 +553,7 @@ impl Transport {
         let handler = self.handler.lock().await;
         let mut count = 0usize;
         for link in handler.in_links.values() {
-            let mut link = link.lock().await;
+            let link = link.lock().await;
 
             if link.destination().address_hash == *destination
                 && link.status() == LinkStatus::Active
@@ -448,7 +561,6 @@ impl Transport {
                 let packet = link.data_packet(payload);
                 if let Ok(packet) = packet {
                     handler.send_packet(packet).await;
-                    link.touch();
                     count += 1;
                 }
             }
@@ -464,7 +576,7 @@ impl Transport {
     }
 
     pub async fn find_out_link(&self, link_id: &AddressHash) -> Option<Arc<Mutex<Link>>> {
-        self.handler.lock().await.find_out_link(link_id)
+        self.handler.lock().await.find_out_link(link_id).await
     }
 
     pub async fn find_in_link(&self, link_id: &AddressHash) -> Option<Arc<Mutex<Link>>> {
@@ -614,6 +726,41 @@ impl Transport {
         destination
     }
 
+    /// Encrypts `data` for the group and sends it as one GROUP packet.
+    pub async fn send_group(
+        &self,
+        destination: &Arc<Mutex<GroupInputDestination>>,
+        data: &[u8],
+    ) -> Result<(), RnsError> {
+        let packet = destination.lock().await.data_packet(OsRng, data)?;
+        self.send_packet(packet).await;
+        Ok(())
+    }
+
+    /// Rotates a GROUP destination's key; the previous key is still accepted for
+    /// `keep_previous`. False if the destination is unknown.
+    pub async fn set_group_key(
+        &self,
+        address: &AddressHash,
+        key: GroupKey,
+        keep_previous: Duration,
+    ) -> bool {
+        let mut handler = self.handler.lock().await;
+        let now = time::Instant::now();
+        handler.group_previous_keys.retain(|_, (_, until)| *until > now);
+        let Some(destination) = handler.group_in_destinations.get(address).cloned() else {
+            return false;
+        };
+        let mut destination = destination.lock().await;
+        let previous = destination.identity.key().clone();
+        destination.identity.replace_key(key);
+        drop(destination);
+        handler
+            .group_previous_keys
+            .insert(*address, (previous, time::Instant::now() + keep_previous));
+        true
+    }
+
     pub async fn get_in_destination(
         &self,
         address: &AddressHash,
@@ -693,7 +840,13 @@ impl TransportHandler {
         self.single_out_destinations.contains_key(address)
     }
 
-    fn find_out_link(&self, link_id: &AddressHash) -> Option<Arc<Mutex<Link>>> {
+    /// By link id, falling back to the destination address (out-links are keyed by it).
+    async fn find_out_link(&self, link_id: &AddressHash) -> Option<Arc<Mutex<Link>>> {
+        for link in self.out_links.values() {
+            if link.lock().await.id() == link_id {
+                return Some(link.clone());
+            }
+        }
         self.out_links.get(link_id).cloned()
     }
 
@@ -705,18 +858,7 @@ impl TransportHandler {
         let link = if let Some(link) = self.find_in_link(&link_id) {
             Some((link, &self.link_in_event_tx))
         } else {
-            // out-links are kept by destination, so look for the link id among them, then
-            // accept the destination address as before
-            let mut out_link = None;
-            for link in self.out_links.values() {
-                if *link.lock().await.id() == link_id {
-                    out_link = Some(link.clone());
-                    break;
-                }
-            }
-            out_link
-                .or_else(|| self.find_out_link(&link_id))
-                .map(|link| (link, &self.link_out_event_tx))
+            self.find_out_link(&link_id).await.map(|link| (link, &self.link_out_event_tx))
         };
         if let Some((link, event_tx)) = link {
             let mut link = link.lock().await;
@@ -742,14 +884,22 @@ impl TransportHandler {
             }
             PacketType::Data => {
                 allow_duplicate = packet.context == PacketContext::KeepAlive;
+                if packet.header.destination_type == DestinationType::Link
+                    && self.link_table.relays(&packet.destination)
+                {
+                    return allow_duplicate || !self.packet_cache.lock().await.contains(packet);
+                }
             }
             PacketType::Proof => {
                 if packet.context == PacketContext::LinkRequestProof {
-                    if let Some(link) = self.in_links.get(&packet.destination) {
-                        if link.lock().await.status().not_yet_active() {
-                            allow_duplicate = true;
+                    let mut requester = false;
+                    for link in self.out_links.values() {
+                        let link = link.lock().await;
+                        if *link.id() == packet.destination && link.status().not_yet_active() {
+                            requester = true;
                         }
                     }
+                    allow_duplicate = requester || self.link_table.accepts_repeat_proof(packet);
                 }
             },
         }
@@ -782,7 +932,7 @@ impl TransportHandler {
             return Err(RnsError::ChannelError);
         }
 
-        let (tx, rx) = broadcast::channel(16);
+        let (tx, rx) = broadcast::channel(self.config.channel_capacity.link_payloads);
         self.channel_table.insert(id, tx.into());
 
         Ok(rx)
@@ -834,7 +984,13 @@ async fn handle_proof<'a>(
 
     // other proofs on a link (message proofs) are transported in both directions
     let maybe_packet = if packet.context == PacketContext::LinkRequestProof {
-        handler.link_table.handle_proof(packet)
+        // Relays forward only proofs the destination signed.
+        let genuine = handler
+            .link_table
+            .destination_of(&packet.destination)
+            .and_then(|destination| handler.announced.get(&destination))
+            .is_some_and(|desc| validate_proof_packet(desc, &packet.destination, packet).is_ok());
+        if genuine { handler.link_table.handle_proof(packet) } else { None }
     } else {
         handler.link_table.handle_link_packet(packet, iface)
     };
@@ -879,7 +1035,7 @@ async fn send_to_next_hop<'a>(
 async fn handle_data<'a>(
     packet: &Packet,
     iface: AddressHash,
-    handler: MutexGuard<'a, TransportHandler>,
+    mut handler: MutexGuard<'a, TransportHandler>,
 ) {
     let mut data_handled = false;
 
@@ -972,7 +1128,7 @@ async fn handle_data<'a>(
             // once, since copies already in the packet cache are dropped
             if handler.config.retransmit && (packet.header.hops as usize) + 1 < PATHFINDER_M {
                 let mut forwarded = *packet;
-                forwarded.header.hops += 1;
+                forwarded.header.hops = forwarded.header.hops.saturating_add(1);
 
                 log::trace!(
                     "tp({}): forwarding GROUP packet {} with {} hops",
@@ -1004,10 +1160,21 @@ async fn handle_data<'a>(
             data_handled = true;
 
             let mut buffer = [0u8; PACKET_MDU];
-            match destination
+            let mut previous_buffer = [0u8; PACKET_MDU];
+            let decrypted = destination
                 .lock()
                 .await
-                .decrypt(OsRng, packet.data.as_slice(), &mut buffer)
+                .decrypt(OsRng, packet.data.as_slice(), &mut buffer);
+            let decrypted = match decrypted {
+                Ok(plain_text) => Ok(plain_text),
+                Err(err) => match handler.group_previous_keys.get(&packet.destination) {
+                    Some((key, until)) if time::Instant::now() < *until => key
+                        .decrypt(OsRng, packet.data.as_slice(), &mut previous_buffer)
+                        .map_err(|_| err),
+                    _ => Err(err),
+                },
+            };
+            match decrypted
             {
                 Ok(plain_text) => {
                     handler.received_data_tx.send(ReceivedData {
@@ -1015,7 +1182,7 @@ async fn handle_data<'a>(
                         data: PacketDataBuffer::new_from_slice(plain_text),
                     }).ok();
                 }
-                Err(err) => log::error!(
+                Err(err) => log::debug!(
                     "tp({}): the GROUP destination {} could not decrypt data: {:?}",
                     handler.config.name,
                     packet.destination,
@@ -1072,7 +1239,7 @@ async fn handle_announce<'a>(
     let Ok((destination, app_data)) = DestinationAnnounce::validate(packet) else {
         return;
     };
-    let dest_hash = destination.identity.address_hash;
+    let dest_hash = packet.destination;
 
     // every copy heard from other nodes may complete a pending retransmission,
     // even if the announce itself is not new
@@ -1092,6 +1259,7 @@ async fn handle_announce<'a>(
         return;
     }
 
+    handler.announced.insert(packet.destination, destination.desc);
     let destination = Arc::new(Mutex::new(destination));
 
     if !handler
@@ -1131,6 +1299,8 @@ async fn handle_announce<'a>(
     let _ = handler.announce_tx.send(AnnounceEvent {
         destination,
         app_data: PacketDataBuffer::new_from_slice(app_data),
+        hops: packet.header.hops,
+        transport_id: packet.transport,
     });
 }
 
@@ -1248,6 +1418,8 @@ async fn handle_link_request_as_destination<'a>(
                 if let Ok(mut link) = link {
                     handler.link_ifaces.insert(*link.id(), iface);
                     handler.send_packet(link.prove(&handler.link_in_event_tx)).await;
+                    let now = time::Instant::now();
+                    handler.proofs.insert(*link.id(), (now, now));
 
                     log::debug!(
                         "tp({}): save input link {} for destination {}",
@@ -1259,6 +1431,23 @@ async fn handle_link_request_as_destination<'a>(
                     handler
                         .in_links
                         .insert(*link.id(), Arc::new(Mutex::new(link)));
+                }
+            } else if let Some(link) = handler.in_links.get(&link_id).cloned() {
+                // A repeated request means our proof was lost: prove again, within limits,
+                // and never for a closed link (requests can be replayed).
+                let now = time::Instant::now();
+                let allowed = handler.proofs.get(&link_id).is_some_and(|(first, last)| {
+                    now.duration_since(*first) < REPROVE_WINDOW && now.duration_since(*last) >= REPROVE_GAP
+                });
+                let mut link = link.lock().await;
+                if allowed && link.status() == LinkStatus::Active {
+                    let proof = link.prove(&handler.link_in_event_tx);
+                    drop(link);
+                    if let Some(entry) = handler.proofs.get_mut(&link_id) {
+                        entry.1 = now;
+                    }
+                    log::debug!("tp({}): repeated request, prove {link_id} again", handler.config.name);
+                    handler.send_packet(proof).await;
                 }
             }
         }
@@ -1305,11 +1494,18 @@ async fn handle_link_request<'a>(
         );
         send_to_next_hop(packet, &handler).await;
     } else {
-        log::trace!(
-            "tp({}): dropping link request to unknown destination {}",
+        // Addressed to us but no path (we restarted): ask for it, so the next repeat passes.
+        log::debug!(
+            "tp({}): link request to unknown destination {}, asking for its path",
             handler.config.name,
             packet.destination
         );
+        let now = time::Instant::now();
+        let asked = handler.path_asked.get(&packet.destination).is_some_and(|at| now.duration_since(*at) < PATH_ASK_GAP);
+        if !asked {
+            handler.path_asked.insert(packet.destination, now);
+            handler.request_path(&packet.destination, None, None).await;
+        }
     }
 }
 
@@ -1333,6 +1529,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                 }
                 links_to_remove.push(*link_entry.0);
             }
+            LinkStatus::Closed => links_to_remove.push(*link_entry.0),
             _ => {}
         }
     }
@@ -1341,6 +1538,9 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
         handler.in_links.remove(addr);
         handler.link_ifaces.remove(addr);
     }
+    let now = time::Instant::now();
+    handler.proofs.retain(|_, (first, _)| now.duration_since(*first) < REPROVE_WINDOW);
+    handler.path_asked.retain(|_, at| now.duration_since(*at) < PATH_ASK_GAP);
 
     links_to_remove.clear();
     // out-links are kept by destination, their interfaces by link id
@@ -1372,7 +1572,9 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                     closed_link_ids.push(*link.id());
                 }
             }
-            LinkStatus::Pending if link.elapsed() > timer_config.out_link_repeat => {
+            LinkStatus::Pending
+                if link.elapsed() > timer_config.out_link_repeat + Duration::from_millis(OsRng.next_u32() as u64 % 1000) =>
+            {
                 log::warn!(
                     "tp({}): repeat link request {}",
                     handler.config.name,
@@ -1402,7 +1604,7 @@ async fn handle_keep_links<'a>(handler: MutexGuard<'a, TransportHandler>) {
     for link in handler.out_links.values() {
         let link = link.lock().await;
 
-        if link.status() == LinkStatus::Active {
+        if matches!(link.status(), LinkStatus::Active | LinkStatus::Stale) {
             handler
                 .send_packet(link.keep_alive_packet(KEEP_ALIVE_REQUEST))
                 .await;
@@ -1489,17 +1691,7 @@ async fn manage_transport(
                             continue;
                         }
 
-                        if !handler.filter_duplicate_packets(&packet).await {
-                            log::debug!(
-                                "tp({}): dropping duplicate packet: dst={}, ctx={:?}, type={:?}",
-                                handler.config.name,
-                                packet.destination,
-                                packet.context,
-                                packet.header.packet_type
-                            );
-                            continue;
-                        }
-
+                        // Before the duplicate filter: an overheard copy must not hide ours.
                         // Only the designated next hop processes in-transit packets:
                         // nodes that merely overhear them on shared-medium (radio)
                         // interfaces must ignore them, otherwise forwarded packets
@@ -1521,6 +1713,17 @@ async fn manage_transport(
                                 );
                                 continue;
                             }
+                        }
+
+                        if !handler.filter_duplicate_packets(&packet).await {
+                            log::debug!(
+                                "tp({}): dropping duplicate packet: dst={}, ctx={:?}, type={:?}",
+                                handler.config.name,
+                                packet.destination,
+                                packet.context,
+                                packet.header.packet_type
+                            );
+                            continue;
                         }
 
                         match packet.header.packet_type {
@@ -1684,8 +1887,29 @@ async fn manage_transport(
 mod tests {
     use super::*;
 
-    use crate::crypt::group::GroupKey;
     use crate::packet::HeaderType;
+
+    #[tokio::test]
+    async fn the_network_profile_sizes_the_channels() {
+        assert_eq!(TransportConfig::default().channel_capacity, ChannelCapacity::for_network(NetworkProfile::Default));
+        for profile in [NetworkProfile::Default, NetworkProfile::Minimal, NetworkProfile::MultiHop] {
+            let capacity = ChannelCapacity::for_network(profile);
+            let transport = TransportConfig::default().set_network_profile(profile).build();
+            let handler = transport.handler.lock().await;
+            assert_eq!(handler.config.channel_capacity, capacity);
+            // one announce more than the capacity: the subscriber loses the oldest
+            let mut announces = handler.announce_tx.subscribe();
+            let destination = Arc::new(Mutex::new(SingleOutputDestination::new(
+                *PrivateIdentity::new_from_rand(OsRng).as_identity(),
+                DestinationName::new("test", "profile"),
+            )));
+            for _ in 0..=capacity.announces {
+                let event = AnnounceEvent { destination: destination.clone(), app_data: PacketDataBuffer::new(), hops: 0, transport_id: None };
+                handler.announce_tx.send(event).ok().expect("subscribed");
+            }
+            assert_eq!(announces.recv().await.err(), Some(broadcast::error::RecvError::Lagged(1)), "{profile:?}");
+        }
+    }
 
     #[tokio::test]
     async fn drop_duplicates() {
@@ -1772,6 +1996,133 @@ mod tests {
     fn group_identity(key: GroupKey) -> GroupIdentity {
         let identity = PrivateIdentity::new_from_name("group");
         GroupIdentity::new(*identity.as_identity(), key)
+    }
+
+    #[tokio::test]
+    async fn group_key_rotation_keeps_the_previous_key_for_a_while() {
+        let mut transport = TransportConfig::default().build();
+        let handler = transport.get_handler();
+        let mut received_data = transport.received_data_events();
+        let name = DestinationName::new("example", "group");
+        let old = GroupKey::new_rand(OsRng);
+        let new = GroupKey::new_rand(OsRng);
+
+        let destination = transport.add_group_destination(group_identity(old.clone()), name).await;
+        let address = destination.lock().await.desc.address_hash;
+        assert!(transport.set_group_key(&address, new.clone(), Duration::from_millis(200)).await);
+        assert_eq!(destination.lock().await.desc.address_hash, address);
+
+        let old_sender = GroupInputDestination::new(group_identity(old), name);
+        let new_sender = GroupInputDestination::new(group_identity(new), name);
+        for (sender, text) in [(&new_sender, &b"new"[..]), (&old_sender, &b"old"[..])] {
+            let packet = sender.data_packet(OsRng, text).unwrap();
+            handle_data(&packet, AddressHash::new_empty(), handler.lock().await).await;
+            assert_eq!(received_data.try_recv().expect("delivered").data.as_slice(), text);
+        }
+
+        // After the grace period the old key is refused.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let packet = old_sender.data_packet(OsRng, b"late").unwrap();
+        handle_data(&packet, AddressHash::new_empty(), handler.lock().await).await;
+        assert!(received_data.try_recv().is_err());
+
+        // What we send is encrypted with the new key.
+        let sent = destination.lock().await.data_packet(OsRng, b"mine").unwrap();
+        let mut buffer = [0u8; PACKET_MDU];
+        assert_eq!(new_sender.decrypt(OsRng, sent.data.as_slice(), &mut buffer).unwrap(), b"mine");
+        assert!(!transport.set_group_key(&AddressHash::new_empty(), GroupKey::new_rand(OsRng), Duration::ZERO).await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_repeated_link_request_is_proved_again_only_soon_and_never_revives_a_closed_link() {
+        let mut transport = TransportConfig::default().build();
+        let handler = transport.get_handler();
+        let destination = transport.add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "reprove")).await;
+        let desc = destination.lock().await.desc;
+        let request = Link::new(desc).request();
+        let link_id = LinkId::from(&request);
+        let iface = AddressHash::new([1; 16]);
+
+        handle_link_request_as_destination(destination.clone(), &request, iface, handler.lock().await).await;
+        let first = handler.lock().await.proofs[&link_id];
+        // Repeated at once: not proved again.
+        handle_link_request_as_destination(destination.clone(), &request, iface, handler.lock().await).await;
+        assert_eq!(handler.lock().await.proofs[&link_id].1, first.1);
+        // A gap later (a lost proof): proved again.
+        time::advance(REPROVE_GAP).await;
+        handle_link_request_as_destination(destination.clone(), &request, iface, handler.lock().await).await;
+        assert!(handler.lock().await.proofs[&link_id].1 > first.1);
+
+        // Closed: not proved nor revived. Once removed, the request makes a new link.
+        let link = handler.lock().await.in_links[&link_id].clone();
+        {
+            let handler = handler.lock().await;
+            link.lock().await.close(&handler.link_in_event_tx);
+        }
+        time::advance(REPROVE_GAP).await;
+        handle_link_request_as_destination(destination.clone(), &request, iface, handler.lock().await).await;
+        assert_eq!(link.lock().await.status(), LinkStatus::Closed);
+        handle_check_links(handler.lock().await).await;
+        assert!(!handler.lock().await.in_links.contains_key(&link_id));
+        handle_link_request_as_destination(destination.clone(), &request, iface, handler.lock().await).await;
+        let renewed = handler.lock().await.in_links[&link_id].clone();
+        assert_eq!(renewed.lock().await.status(), LinkStatus::Active, "a new link for the restarted request");
+    }
+
+    #[tokio::test]
+    async fn a_relay_without_a_path_asks_for_it_once_in_a_while() {
+        // A link request addressed through us to a destination we do not know (we restarted).
+        let relay = TransportConfig::default().set_retransmit(true).build();
+        let handler = relay.get_handler();
+        let relay_id = *handler.lock().await.config.identity.address_hash();
+        let mut elsewhere = TransportConfig::default().build();
+        let destination = elsewhere.add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "unknown")).await;
+        let desc = destination.lock().await.desc;
+        let mut request = Link::new(desc).request();
+        request.header.header_type = HeaderType::Type2;
+        request.transport = Some(relay_id);
+
+        handle_link_request(&request, AddressHash::new([1; 16]), handler.lock().await).await;
+        let first = handler.lock().await.path_asked.get(&desc.address_hash).copied().expect("asked for the path");
+        handle_link_request(&request, AddressHash::new([1; 16]), handler.lock().await).await;
+        assert_eq!(handler.lock().await.path_asked[&desc.address_hash], first, "not again at once");
+
+        // a request not addressed to us (overheard) asks nothing
+        let other = elsewhere.add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "other")).await;
+        let mut overheard = Link::new(other.lock().await.desc).request();
+        overheard.header.header_type = HeaderType::Type2;
+        overheard.transport = Some(AddressHash::new([7; 16]));
+        handle_link_request(&overheard, AddressHash::new([1; 16]), handler.lock().await).await;
+        assert!(!handler.lock().await.path_asked.contains_key(&other.lock().await.desc.address_hash));
+    }
+
+    #[tokio::test]
+    async fn a_relay_forwards_only_link_proofs_the_destination_signed() {
+        // The destination lives on another node; the relay knows it from its announce.
+        let mut elsewhere = TransportConfig::default().build();
+        let destination = elsewhere.add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "relayed")).await;
+        let (desc, sign_key) = {
+            let destination = destination.lock().await;
+            (destination.desc, destination.sign_key().clone())
+        };
+        let relay = TransportConfig::default().build();
+        let handler = relay.get_handler();
+        handler.lock().await.announced.insert(desc.address_hash, desc);
+
+        let request = Link::new(desc).request();
+        let (initiator_side, destination_side) = (AddressHash::new([1; 16]), AddressHash::new([2; 16]));
+        handler.lock().await.link_table.add(&request, initiator_side, AddressHash::new([3; 16]), destination_side, 1);
+        let genuine = {
+            let handler = handler.lock().await;
+            Link::new_from_request(&request, sign_key, desc).unwrap().prove(&handler.link_in_event_tx)
+        };
+        let mut forged = genuine;
+        forged.data.as_mut_slice()[0] ^= 1;
+
+        handle_proof(&forged, destination_side, handler.lock().await).await;
+        assert!(!handler.lock().await.link_table.validated(&genuine.destination), "a forged proof validates nothing");
+        handle_proof(&genuine, destination_side, handler.lock().await).await;
+        assert!(handler.lock().await.link_table.validated(&genuine.destination), "the genuine proof validates the link");
     }
 
     #[tokio::test]

@@ -416,6 +416,10 @@ impl GroupIdentity {
     pub fn key(&self) -> &GroupKey {
         &self.key
     }
+
+    pub fn replace_key(&mut self, key: GroupKey) {
+        self.key = key;
+    }
 }
 
 impl HashIdentity for GroupIdentity {

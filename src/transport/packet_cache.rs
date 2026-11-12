@@ -38,6 +38,10 @@ impl PacketCache {
         self.remove_cache.clear();
     }
 
+    pub fn contains(&self, packet: &Packet) -> bool {
+        self.map.contains_key(&packet.hash())
+    }
+
     pub fn update(&mut self, packet: &Packet) -> bool {
         let hash = packet.hash();
 

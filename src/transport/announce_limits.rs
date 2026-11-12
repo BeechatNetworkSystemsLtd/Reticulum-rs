@@ -5,6 +5,7 @@ use tokio::time::Instant;
 
 use crate::hash::AddressHash;
 
+#[derive(Clone, Copy, Debug)]
 pub struct AnnounceRateLimit {
   pub target: Duration,
   pub grace: u32,
@@ -73,22 +74,25 @@ impl AnnounceLimitEntry {
 }
 
 pub struct AnnounceLimits {
+    rate_limit: Option<AnnounceRateLimit>,
     limits: BTreeMap<AddressHash, AnnounceLimitEntry>
 }
 
 impl AnnounceLimits {
-    pub fn new() -> Self {
-        Self { limits: BTreeMap::new() }
+    pub fn new(rate_limit: Option<AnnounceRateLimit>) -> Self {
+        Self { rate_limit, limits: BTreeMap::new() }
     }
 
     pub fn check(&mut self, destination: &AddressHash) -> Option<Duration> {
+        self.rate_limit?;
+
         if let Some(entry) = self.limits.get_mut(destination) {
             return entry.handle_announce();
         }
 
         self.limits.insert(
             *destination,
-            AnnounceLimitEntry::new(Default::default())
+            AnnounceLimitEntry::new(self.rate_limit)
         );
 
         None

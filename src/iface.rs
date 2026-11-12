@@ -100,10 +100,15 @@ pub struct InterfaceManager {
     rx_send: InterfaceRxSender,
     cancel: CancellationToken,
     ifaces: Vec<LocalInterface>,
+    tx_cap: usize,
 }
 
 impl InterfaceManager {
     pub fn new(rx_cap: usize) -> Self {
+        Self::with_tx_capacity(rx_cap, 1)
+    }
+
+    pub fn with_tx_capacity(rx_cap: usize, tx_cap: usize) -> Self {
         let (rx_send, rx_recv) = InterfaceChannel::make_rx_channel(rx_cap);
         let rx_recv = Arc::new(tokio::sync::Mutex::new(rx_recv));
 
@@ -113,6 +118,7 @@ impl InterfaceManager {
             rx_send,
             cancel: CancellationToken::new(),
             ifaces: Vec::new(),
+            tx_cap,
         }
     }
 
@@ -143,7 +149,7 @@ impl InterfaceManager {
     }
 
     pub fn new_context<T: Interface>(&mut self, inner: T) -> InterfaceContext<T> {
-        let channel = self.new_channel(1);
+        let channel = self.new_channel(self.tx_cap);
 
         let inner = Arc::new(Mutex::new(inner));
 
