@@ -238,6 +238,10 @@ impl Link {
 
     pub fn touch(&mut self) {
         self.request_time = now();
+        if self.status == LinkStatus::Stale {
+            log::info!("link({}): active again", self.id);
+            self.status = LinkStatus::Active;
+        }
     }
 
     pub fn data_packet(&self, data: &[u8]) -> Result<Packet, RnsError> {
@@ -547,11 +551,19 @@ impl Link {
             }
             PacketContext::KeepAlive => {
                 if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFF {
+                    if out_link {
+                        log::trace!("link({}): own keep-alive request heard back", self.id);
+                        return LinkHandleResult::None;
+                    }
                     self.touch();
                     log::trace!("link({}): keep-alive request", self.id);
                     return LinkHandleResult::KeepAlive;
                 }
                 if !packet.data.is_empty() && packet.data.as_slice()[0] == 0xFE {
+                    if !out_link {
+                        log::trace!("link({}): own keep-alive response heard back", self.id);
+                        return LinkHandleResult::None;
+                    }
                     log::trace!("link({}): keep-alive response", self.id);
                     self.touch();
                     return LinkHandleResult::None;
@@ -643,9 +655,11 @@ impl Link {
             }
         }
 
-        if self.status == LinkStatus::Active && packet.context == PacketContext::None
+        if matches!(self.status, LinkStatus::Active | LinkStatus::Stale)
+            && packet.context == PacketContext::None
             && let Ok(hash) = validate_message_proof(&self.peer_identity, packet.data.as_slice())
         {
+            self.touch();
             self.post_event(event_tx, LinkEvent::Proof(hash));
         }
 
@@ -674,7 +688,7 @@ impl <E: LinkEventSink> LinkExt<E> for Link {
     fn prove(&mut self, event_tx: &E) -> Packet {
         log::debug!("link({}): prove", self.id);
 
-        if self.status != LinkStatus::Active {
+        if matches!(self.status, LinkStatus::Pending | LinkStatus::Handshake) {
             self.set_status(LinkStatus::Active);
             self.post_event(event_tx, LinkEvent::Activated);
         }
@@ -743,7 +757,7 @@ impl <E: LinkEventSink, P: LinkPayloadSink> LinkExtHandlePacket<E, P> for Link {
     }
 }
 
-fn validate_proof_packet(
+pub fn validate_proof_packet(
     destination: &DestinationDesc,
     id: &LinkId,
     packet: &Packet,
