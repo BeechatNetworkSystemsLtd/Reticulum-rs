@@ -45,6 +45,8 @@ const PATH_ASK_GAP: Duration = Duration::from_secs(10);
 /// Most remote destinations kept (paths, announces); the least recently heard goes, unless
 /// we have a link to it.
 pub const MAX_DESTINATIONS: usize = 1024;
+/// Most in-links at once; when full, the idlest is closed.
+const MAX_IN_LINKS: usize = 1024;
 
 // Other constants
 const KEEP_ALIVE_REQUEST: u8 = 0xFF;
@@ -878,6 +880,33 @@ impl TransportHandler {
         }
     }
 
+    /// Makes room for one more in-link within `MAX_IN_LINKS`: drops closed ones, then
+    /// closes the idlest.
+    async fn make_room_for_in_link(&mut self) {
+        let mut closed = Vec::new();
+        let mut idlest: Option<(Duration, LinkId)> = None;
+        for (link_id, link) in &self.in_links {
+            let link = link.lock().await;
+            if link.status() == LinkStatus::Closed {
+                closed.push(*link_id);
+            } else if idlest.map_or(true, |(idle, _)| link.elapsed() > idle) {
+                idlest = Some((link.elapsed(), *link_id));
+            }
+        }
+        if self.in_links.len() - closed.len() >= MAX_IN_LINKS {
+            if let Some((_, link_id)) = idlest {
+                log::debug!("tp({}): too many in-links, closing {}", self.config.name, link_id);
+                self.in_links[&link_id].lock().await.close(&self.link_in_event_tx);
+                closed.push(link_id);
+            }
+        }
+        for link_id in &closed {
+            self.in_links.remove(link_id);
+            self.link_ifaces.remove(link_id);
+            self.channel_table.remove(link_id);
+        }
+    }
+
     pub(crate) async fn link_close(&self, link_id: LinkId) -> Result<(), RnsError> {
         let link = if let Some(link) = self.find_in_link(&link_id) {
             Some((link, &self.link_in_event_tx))
@@ -1442,6 +1471,7 @@ async fn handle_link_request_as_destination<'a>(
                 );
 
                 if let Ok(mut link) = link {
+                    handler.make_room_for_in_link().await;
                     handler.link_ifaces.insert(*link.id(), iface);
                     handler.send_packet(link.prove(&handler.link_in_event_tx)).await;
                     let now = time::Instant::now();
@@ -2187,6 +2217,34 @@ mod tests {
         assert!(handler.knows_destination(&linked.address_hash), "linked: kept");
         assert!(!handler.knows_destination(&unlinked.address_hash), "least recently heard: forgotten");
         assert!(handler.knows_destination(&newest.unwrap()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn in_links_are_capped_and_the_idlest_goes() {
+        let mut transport = TransportConfig::default().set_network_profile(NetworkProfile::MultiHop).build();
+        let handler = transport.get_handler();
+        let destination = transport.add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "inlinks")).await;
+        let mut events = transport.in_link_events();
+        let iface = AddressHash::new([1; 16]);
+
+        let mut link_ids = Vec::new();
+        for _ in 0..(MAX_IN_LINKS + 5) {
+            let request = Link::new(destination.lock().await.desc).request();
+            handle_link_request_as_destination(destination.clone(), &request, iface, handler.lock().await).await;
+            link_ids.push(LinkId::from(&request));
+            time::advance(Duration::from_millis(1)).await;
+        }
+
+        let handler = handler.lock().await;
+        assert_eq!(handler.in_links.len(), MAX_IN_LINKS);
+        assert_eq!(handler.link_ifaces.len(), MAX_IN_LINKS);
+        assert!(!handler.in_links.contains_key(&link_ids[0]), "the idlest went");
+        assert!(handler.in_links.contains_key(link_ids.last().unwrap()));
+        let mut closed = 0;
+        while let Ok(event) = events.try_recv() {
+            closed += matches!(event.event, crate::destination::link::LinkEvent::Closed) as usize;
+        }
+        assert_eq!(closed, 5, "the apps hear the closed links");
     }
 
     #[tokio::test]
