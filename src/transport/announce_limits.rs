@@ -97,4 +97,8 @@ impl AnnounceLimits {
 
         None
     }
+
+    pub fn remove(&mut self, destination: &AddressHash) {
+        self.limits.remove(destination);
+    }
 }

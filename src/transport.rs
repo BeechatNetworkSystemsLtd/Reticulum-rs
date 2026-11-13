@@ -42,6 +42,9 @@ pub const PATHFINDER_M: usize = 128; // Max hops
 const REPROVE_WINDOW: Duration = Duration::from_secs(60);
 const REPROVE_GAP: Duration = Duration::from_secs(2);
 const PATH_ASK_GAP: Duration = Duration::from_secs(10);
+/// Most remote destinations kept (paths, announces); the least recently heard goes, unless
+/// we have a link to it.
+pub const MAX_DESTINATIONS: usize = 1024;
 
 // Other constants
 const KEEP_ALIVE_REQUEST: u8 = 0xFF;
@@ -396,7 +399,7 @@ impl Transport {
         let handler = Arc::new(Mutex::new(TransportHandler {
             config,
             iface_manager: iface_manager.clone(),
-            announce_table: AnnounceTable::new(),
+            announce_table: AnnounceTable::new(MAX_DESTINATIONS),
             channel_table: HashMap::new(),
             link_table: LinkTable::new(),
             path_table: PathTable::new(reroute_eager),
@@ -854,6 +857,27 @@ impl TransportHandler {
         self.in_links.get(link_id).cloned()
     }
 
+    /// Forgets the least recently heard remote destinations beyond `MAX_DESTINATIONS`,
+    /// except those we have an out-link to.
+    fn forget_destinations_over_cap(&mut self) {
+        while self.path_table.len() > MAX_DESTINATIONS {
+            let Some(destination) = self
+                .path_table
+                .least_recently_heard(|destination| !self.out_links.contains_key(destination))
+            else {
+                break;
+            };
+
+            log::debug!("tp({}): forgetting destination {}", self.config.name, destination);
+
+            self.path_table.remove(&destination);
+            self.announced.remove(&destination);
+            self.single_out_destinations.remove(&destination);
+            self.announce_table.remove(&destination);
+            self.announce_limits.remove(&destination);
+        }
+    }
+
     pub(crate) async fn link_close(&self, link_id: LinkId) -> Result<(), RnsError> {
         let link = if let Some(link) = self.find_in_link(&link_id) {
             Some((link, &self.link_in_event_tx))
@@ -1276,6 +1300,8 @@ async fn handle_announce<'a>(
             .single_out_destinations
             .insert(packet.destination, destination.clone());
     }
+
+    handler.forget_destinations_over_cap();
 
     // the rate limit only blocks retransmission, the path is updated anyway
     if let Some(blocked_until) = handler.announce_limits.check(&packet.destination) {
@@ -2124,6 +2150,43 @@ mod tests {
         assert!(!handler.lock().await.link_table.validated(&genuine.destination), "a forged proof validates nothing");
         handle_proof(&genuine, destination_side, handler.lock().await).await;
         assert!(handler.lock().await.link_table.validated(&genuine.destination), "the genuine proof validates the link");
+    }
+
+    fn announce_of_a_new_destination() -> (Packet, DestinationDesc) {
+        let destination = SingleInputDestination::new(
+            PrivateIdentity::new_from_rand(OsRng),
+            DestinationName::new("test", "flood"),
+        );
+        (destination.announce(OsRng, None).unwrap(), destination.desc)
+    }
+
+    #[tokio::test]
+    async fn remote_destinations_are_capped_and_linked_ones_kept() {
+        let transport = TransportConfig::default().build();
+        let handler = transport.get_handler();
+        let iface = AddressHash::new([1; 16]);
+
+        // heard first, so least recently, but we have a link to it
+        let (announce, linked) = announce_of_a_new_destination();
+        handle_announce(&announce, handler.lock().await, iface).await;
+        handler.lock().await.out_links.insert(linked.address_hash, Arc::new(Mutex::new(Link::new(linked))));
+        let (announce, unlinked) = announce_of_a_new_destination();
+        handle_announce(&announce, handler.lock().await, iface).await;
+
+        let mut newest = None;
+        for _ in 0..MAX_DESTINATIONS {
+            let (announce, desc) = announce_of_a_new_destination();
+            handle_announce(&announce, handler.lock().await, iface).await;
+            newest = Some(desc.address_hash);
+        }
+
+        let handler = handler.lock().await;
+        assert_eq!(handler.path_table.len(), MAX_DESTINATIONS);
+        assert_eq!(handler.announced.len(), MAX_DESTINATIONS);
+        assert_eq!(handler.single_out_destinations.len(), MAX_DESTINATIONS);
+        assert!(handler.knows_destination(&linked.address_hash), "linked: kept");
+        assert!(!handler.knows_destination(&unlinked.address_hash), "least recently heard: forgotten");
+        assert!(handler.knows_destination(&newest.unwrap()));
     }
 
     #[tokio::test]

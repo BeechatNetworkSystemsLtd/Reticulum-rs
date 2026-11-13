@@ -120,6 +120,18 @@ impl AnnounceCache {
 
         None
     }
+
+    fn remove(&mut self, destination: &AddressHash) {
+        self.newer.as_mut().unwrap().remove(destination);
+        if let Some(ref mut older) = self.older {
+            older.remove(destination);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.newer.as_ref().unwrap().len() + self.older.as_ref().map_or(0, |older| older.len())
+    }
 }
 
 pub struct AnnounceTable {
@@ -129,12 +141,20 @@ pub struct AnnounceTable {
 }
 
 impl AnnounceTable {
-    pub fn new() -> Self {
+    /// `capacity` bounds each of the two generations of the cache of completed announces.
+    pub fn new(capacity: usize) -> Self {
         Self {
             map: BTreeMap::new(),
             responses: BTreeMap::new(),
-            cache: AnnounceCache::new(100000), // TODO make capacity configurable
+            cache: AnnounceCache::new(capacity.max(1)),
         }
+    }
+
+    /// Forgets every announce of `destination`, e.g. when its path is dropped.
+    pub fn remove(&mut self, destination: &AddressHash) {
+        self.map.remove(destination);
+        self.responses.remove(destination);
+        self.cache.remove(destination);
     }
 
     pub fn add(
@@ -325,7 +345,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_rebroadcast_is_retried_once_after_the_grace_period() {
         let transport_id = AddressHash::new([9; 16]);
-        let mut table = AnnounceTable::new();
+        let mut table = AnnounceTable::new(16);
         let (packet, destination) = announce(1);
         table.add(&packet, destination);
 
@@ -340,7 +360,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn hearing_the_announce_relayed_further_cancels_the_retry() {
         let transport_id = AddressHash::new([9; 16]);
-        let mut table = AnnounceTable::new();
+        let mut table = AnnounceTable::new(16);
         let (packet, destination) = announce(2);
         table.add(&packet, destination);
         assert!(table.new_packet(&destination, &transport_id).is_some());
@@ -349,5 +369,22 @@ mod tests {
         table.heard_rebroadcast(&destination, packet.header.hops + 2);
         tokio::time::advance(RETRY_GRACE * 2).await;
         assert!(table.tx_to_retransmit(&transport_id).is_empty());
+    }
+
+    #[test]
+    fn the_cache_of_completed_announces_is_capped() {
+        let mut cache = AnnounceCache::new(8);
+        let (packet, _) = announce(0);
+        let now = Instant::now();
+        let entry = AnnounceEntry {
+            packet, timeout: now, retries: 0, hops: 1, response_to_iface: None,
+            local_rebroadcasts: 0, retry_at: now,
+        };
+        for seed in 0..100u8 {
+            cache.insert(AddressHash::new([seed; 16]), entry.clone());
+        }
+        assert!(cache.len() <= 2 * 8, "two generations of at most the capacity");
+        cache.remove(&AddressHash::new([99; 16]));
+        assert!(cache.get(&AddressHash::new([99; 16])).is_none());
     }
 }

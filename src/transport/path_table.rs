@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use tokio::time::Instant;
+
 use crate::{
     destination::{DestinationAnnounce, RAND_HASH_LENGTH},
     hash::AddressHash,
@@ -15,6 +17,8 @@ pub struct PathEntry {
     pub iface: AddressHash,
     /// Random hashes of the accepted announces for this destination, oldest first
     pub random_blobs: Vec<[u8; RAND_HASH_LENGTH]>,
+    /// When the last new announce for this destination was accepted.
+    pub last_heard: Instant,
 }
 
 pub struct PathTable {
@@ -34,6 +38,26 @@ impl PathTable {
 
     pub fn get(&self, destination: &AddressHash) -> Option<&PathEntry> {
         self.map.get(destination)
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn remove(&mut self, destination: &AddressHash) -> Option<PathEntry> {
+        self.map.remove(destination)
+    }
+
+    /// The destination heard least recently among those `evictable` accepts.
+    pub fn least_recently_heard(
+        &self,
+        evictable: impl Fn(&AddressHash) -> bool,
+    ) -> Option<AddressHash> {
+        self.map
+            .iter()
+            .filter(|(destination, _)| evictable(destination))
+            .min_by_key(|(_, entry)| entry.last_heard)
+            .map(|(destination, _)| *destination)
     }
 
     /// Updates the path to the announced destination if the announce is new and returns
@@ -85,6 +109,7 @@ impl PathTable {
             hops,
             iface,
             random_blobs,
+            last_heard: Instant::now(),
         };
         // updates existing entry if it exists
         self.map.insert(announce.destination, new_entry);
