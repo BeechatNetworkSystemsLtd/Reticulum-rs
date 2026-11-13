@@ -620,11 +620,12 @@ impl Transport {
 
         self.send_packet(packet).await;
 
-        self.handler
-            .lock()
-            .await
-            .out_links
-            .insert(destination.address_hash, link.clone());
+        let mut handler = self.handler.lock().await;
+        // the closed link it replaces is no longer seen by the link check: forget its iface here
+        if let Some(closed) = handler.out_links.insert(destination.address_hash, link.clone()) {
+            let closed_id = *closed.lock().await.id();
+            handler.link_ifaces.remove(&closed_id);
+        }
 
         link
     }
@@ -2245,6 +2246,22 @@ mod tests {
             closed += matches!(event.event, crate::destination::link::LinkEvent::Closed) as usize;
         }
         assert_eq!(closed, 5, "the apps hear the closed links");
+    }
+
+    #[tokio::test]
+    async fn relinking_a_closed_link_forgets_its_interface() {
+        let transport = TransportConfig::default().build();
+        let handler = transport.get_handler();
+        let (_, desc) = announce_of_a_new_destination();
+
+        let closed = transport.link(desc).await;
+        let closed_id = *closed.lock().await.id();
+        handler.lock().await.link_ifaces.insert(closed_id, AddressHash::new([1; 16]));
+        closed.lock().await.set_status(LinkStatus::Closed);
+
+        let renewed = transport.link(desc).await;
+        assert_ne!(*renewed.lock().await.id(), closed_id);
+        assert!(!handler.lock().await.link_ifaces.contains_key(&closed_id));
     }
 
     #[tokio::test]
