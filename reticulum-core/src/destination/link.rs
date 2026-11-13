@@ -440,7 +440,7 @@ impl Link {
     pub fn stale(&mut self) {
         self.status = LinkStatus::Stale;
 
-        log::warn!("link: stale {}", self.id);
+        log::debug!("link: stale {}", self.id);
     }
 
     pub fn restart(&mut self) {
@@ -485,7 +485,7 @@ impl Link {
         out_link: bool
     ) -> LinkHandleResult {
         if self.status != LinkStatus::Active {
-            log::warn!("link({}): handling data packet in inactive state", self.id);
+            log::debug!("link({}): handling data packet in inactive state", self.id);
         }
 
         match packet.context {
@@ -505,7 +505,7 @@ impl Link {
 
                     return LinkHandleResult::MessageReceived(proof);
                 } else {
-                    log::error!("link({}): can't decrypt packet", self.id);
+                    log::debug!("link({}): can't decrypt packet", self.id);
                 }
             }
             PacketContext::LinkIdentify => {
@@ -522,7 +522,7 @@ impl Link {
                         ) {
                             Ok(signature) => signature,
                             Err(err) => {
-                                log::warn!(
+                                log::debug!(
                                     "link({}): link identify packet invalid signature bytes: {err}",
                                     self.id());
                                 return LinkHandleResult::None
@@ -541,12 +541,12 @@ impl Link {
                                     self.post_event(event_tx, LinkEvent::RemoteIdentified(Box::new(identity)));
                                 }
                             }
-                            Err(err) => log::warn!(
+                            Err(err) => log::debug!(
                                 "link({}): identity verification failed: {err:?}", self.id())
                         }
                     }
                 } else {
-                    log::error!("link({}): can't decrypt link identify packet", self.id);
+                    log::debug!("link({}): can't decrypt link identify packet", self.id);
                 }
             }
             PacketContext::KeepAlive => {
@@ -575,10 +575,10 @@ impl Link {
                     if let Ok(rtt) = rmp::decode::read_f64(&mut &plain_text[..]) {
                         self.rtt = Duration::from_secs_f64(rtt);
                     } else {
-                        log::error!("link({}): failed to decode rtt", self.id);
+                        log::debug!("link({}): failed to decode rtt", self.id);
                     }
                 } else {
-                    log::error!("link({}): can't decrypt rtt packet", self.id);
+                    log::debug!("link({}): can't decrypt rtt packet", self.id);
                 }
             }
             PacketContext::LinkClose => {
@@ -586,7 +586,7 @@ impl Link {
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
                     match plain_text[..].try_into() {
                         Err(err) => {
-                            log::error!("link({}): invalid decode link close payload: {err}",
+                            log::debug!("link({}): invalid decode link close payload: {err}",
                                 self.id)
                         }
                         Ok(dest_bytes) => {
@@ -597,7 +597,7 @@ impl Link {
                         }
                     }
                 } else {
-                    log::error!("link({}): can't decrypt link close packet", self.id);
+                    log::debug!("link({}): can't decrypt link close packet", self.id);
                 }
             }
             PacketContext::Channel => {
@@ -616,10 +616,10 @@ impl Link {
 
                         return LinkHandleResult::MessageReceived(proof);
                     } else {
-                        log::error!("link({}): can't decrypt channel packet", self.id);
+                        log::debug!("link({}): can't decrypt channel packet", self.id);
                     }
                 } else {
-                    log::error!("link({}): received channel packet but have no channel", self.id);
+                    log::debug!("link({}): received channel packet but have no channel", self.id);
                 }
             }
             _ => {}
@@ -651,7 +651,7 @@ impl Link {
 
                 return LinkHandleResult::Activated;
             } else {
-                log::warn!("link({}): proof is not valid", self.id);
+                log::debug!("link({}): proof is not valid", self.id);
             }
         }
 
@@ -733,7 +733,7 @@ impl <E: LinkEventSink> LinkExt<E> for Link {
     fn close(&mut self, event_tx: &E) {
         self.status = LinkStatus::Closed;
         self.post_event(event_tx, LinkEvent::Closed);
-        log::warn!("link: close {}", self.id);
+        log::debug!("link: close {}", self.id);
     }
 }
 

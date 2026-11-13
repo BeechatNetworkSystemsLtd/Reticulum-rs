@@ -1337,7 +1337,7 @@ async fn handle_announce<'a>(
 
     // the rate limit only blocks retransmission, the path is updated anyway
     if let Some(blocked_until) = handler.announce_limits.check(&packet.destination) {
-        log::info!(
+        log::debug!(
             "tp({}): too many announces from {}, not retransmitted for {} seconds",
             handler.config.name,
             packet.destination,
@@ -1634,7 +1634,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
             LinkStatus::Pending
                 if link.elapsed() > timer_config.out_link_repeat + Duration::from_millis(OsRng.next_u32() as u64 % 1000) =>
             {
-                log::warn!(
+                log::debug!(
                     "tp({}): repeat link request {}",
                     handler.config.name,
                     link.id()

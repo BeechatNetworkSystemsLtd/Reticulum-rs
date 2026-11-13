@@ -114,7 +114,7 @@ impl PathTable {
         // updates existing entry if it exists
         self.map.insert(announce.destination, new_entry);
 
-        log::info!(
+        log::debug!(
             "{} is now reachable over {} hops through {}",
             announce.destination,
             hops,

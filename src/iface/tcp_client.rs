@@ -155,10 +155,10 @@ impl TcpClient {
                                                             }
                                                             let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
                                                         } else {
-                                                            log::warn!("tcp_client: couldn't decode packet");
+                                                            log::debug!("tcp_client: couldn't decode packet");
                                                         }
                                                     } else {
-                                                        log::warn!("tcp_client: couldn't decode hdlc frame");
+                                                        log::debug!("tcp_client: couldn't decode hdlc frame");
                                                     }
 
                                                     // Remove current HDLC frame data

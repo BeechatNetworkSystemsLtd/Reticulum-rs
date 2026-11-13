@@ -100,7 +100,7 @@ impl UdpInterface {
                                             }
                                             let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
                                         } else {
-                                            log::warn!("udp_interface: couldn't decode packet");
+                                            log::debug!("udp_interface: couldn't decode packet");
                                         }
                                     }
                                     Err(e) => {

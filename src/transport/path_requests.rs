@@ -46,7 +46,7 @@ pub struct PathRequest {
 impl PathRequest {
     fn decode(data: &[u8], transport_name: &str) -> Option<Self> {
         if data.len() <= ADDRESS_HASH_SIZE {
-            log::info!(
+            log::debug!(
                 "tp({}): ignoring malformed path request: no {}",
                 transport_name,
                 if data.len() < ADDRESS_HASH_SIZE { "destination" } else { "tag" }
@@ -119,7 +119,7 @@ impl PathRequests {
                     self.forget_oldest();
                 }
             } else {
-                log::info!(
+                log::debug!(
                     "tp({}): ignoring duplicate path request for destination {}",
                     self.name,
                     request.destination
@@ -191,7 +191,7 @@ impl PathRequests {
 
         if let Some(timeout) = self.discovery.get(destination) {
             if *timeout < now {
-                log::info!(
+                log::debug!(
                     "tp({}): rejecting discovery path request for destination {} as a request is already pending",
                     self.name,
                     destination
