@@ -89,7 +89,8 @@ impl Packet {
             data: StaticBuffer::new(),
         };
 
-        buffer.read(packet.data.accuire_buf(buffer.bytes_left()))?;
+        // A packet larger than its data buffer is refused, not sliced past the end.
+        buffer.read(packet.data.accuire_buf(buffer.bytes_left()).map_err(|_| RnsError::PacketError)?)?;
 
         Ok(packet)
     }
@@ -137,6 +138,20 @@ mod tests {
         packet.serialize(&mut buffer).expect("serialized packet");
 
         println!("{}", buffer);
+    }
+
+    #[test]
+    fn a_packet_too_large_for_its_buffer_is_refused() {
+        use crate::packet::PACKET_MDU;
+        // A header (2 bytes), a destination (16) and a context (1), then more data than fits.
+        let mut bytes = std::vec![0u8; 2 + 16 + 1 + PACKET_MDU + 600];
+        bytes[0] = 0;
+        let mut input = InputBuffer::new(&bytes);
+        assert!(Packet::deserialize(&mut input).is_err());
+        // Exactly as much as fits still decodes.
+        let fits = std::vec![0u8; 2 + 16 + 1 + PACKET_MDU];
+        let mut input = InputBuffer::new(&fits);
+        assert_eq!(Packet::deserialize(&mut input).unwrap().data.as_slice().len(), PACKET_MDU);
     }
 
     #[test]
