@@ -15,6 +15,9 @@ pub const VALIDATED_IDLE: Duration = Duration::from_secs(3600);
 
 const MAX_HOPS: u8 = 128;
 
+/// Most links relayed at once; when full, an unproved request (or else the idlest link) goes.
+const MAX_RELAYED_LINKS: usize = 1024;
+
 /// Route of a repeated link request for a validated link, e.g. of a restarted link
 /// after a path change
 struct PendingRoute {
@@ -100,8 +103,15 @@ impl LinkTable {
             return;
         }
 
+        if self.0.len() >= MAX_RELAYED_LINKS {
+            self.remove_stale();
+        }
+        if self.0.len() >= MAX_RELAYED_LINKS {
+            self.evict_one();
+        }
+
         let entry = LinkEntry {
-            proof_timeout: now + Duration::from_secs(600), // TODO
+            proof_timeout: now + PROOF_TIMEOUT_PER_HOP * remaining_hops.max(1) as u32,
             next_hop_id,
             next_hop_iface,
             received_from,
@@ -225,6 +235,21 @@ impl LinkTable {
         }
     }
 
+    /// Drops the unproved link closest to its proof timeout, or else the idlest proved link.
+    fn evict_one(&mut self) {
+        let unproved = self
+            .0
+            .iter()
+            .filter(|(_, entry)| !entry.validated)
+            .min_by_key(|(_, entry)| entry.proof_timeout);
+        let victim = unproved
+            .or_else(|| self.0.iter().min_by_key(|(_, entry)| entry.last_used))
+            .map(|(link_id, _)| *link_id);
+        if let Some(link_id) = victim {
+            self.0.remove(&link_id);
+        }
+    }
+
     pub fn remove_stale(&mut self) {
         let now = Instant::now();
 
@@ -275,6 +300,29 @@ mod tests {
         }
         assert!(table.destination_of(&busy_id).is_some());
         assert!(table.destination_of(&LinkId::from(&idle)).is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unproved_links_are_capped_and_expire_after_the_per_hop_timeout() {
+        let mut table = LinkTable::new();
+        let proved = request(0);
+        add(&mut table, &proved);
+        table.0.get_mut(&LinkId::from(&proved)).unwrap().validated = true;
+        for seed in 1..=(MAX_RELAYED_LINKS as u32 + 100) {
+            let mut forged = Packet::default();
+            forged.header.packet_type = PacketType::LinkRequest;
+            forged.destination = AddressHash::new([1; 16]);
+            forged.data.safe_write(&seed.to_be_bytes());
+            add(&mut table, &forged);
+            tokio::time::advance(Duration::from_millis(1)).await;
+        }
+        assert_eq!(table.0.len(), MAX_RELAYED_LINKS);
+        assert!(table.destination_of(&LinkId::from(&proved)).is_some(), "the proved link is kept");
+
+        // one hop to the destination: unproved links expire after one per-hop timeout
+        tokio::time::advance(PROOF_TIMEOUT_PER_HOP).await;
+        table.remove_stale();
+        assert_eq!(table.0.len(), 1);
     }
 
     #[test]
