@@ -1844,6 +1844,7 @@ async fn manage_transport(
                             .release(timer_config.keep_packet_cached);
 
                         handler.link_table.remove_stale();
+                        handler.path_requests.remove_stale();
                     },
                 }
             }

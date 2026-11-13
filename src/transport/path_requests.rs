@@ -1,8 +1,8 @@
-use alloc::collections::{BTreeSet, BTreeMap};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use rand_core::OsRng;
 
-use tokio::time::Instant;
+use tokio::time::{Duration, Instant};
 
 use crate::destination::DestinationName;
 use crate::destination::PlainInputDestination;
@@ -27,6 +27,11 @@ pub fn create_path_request_destination() -> PlainInputDestination {
 }
 
 pub type TagBytes = Vec<u8>;
+
+/// Most path request tags remembered for duplicate detection; the oldest is forgotten first.
+const TAG_CACHE_MAX: usize = 4096;
+/// Copies of a path request arrive within seconds, so its tag is forgotten after this.
+const TAG_CACHE_TTL: Duration = Duration::from_secs(120);
 
 pub fn create_random_tag() -> TagBytes {
     AddressHash::new_from_rand(OsRng).as_slice().into()
@@ -78,6 +83,8 @@ impl PathRequest {
 
 pub struct PathRequests {
     cache: BTreeSet<(AddressHash, TagBytes)>,
+    /// The cache entries in the order they were seen, oldest first.
+    cache_order: VecDeque<(Instant, AddressHash, TagBytes)>,
     name: String,
     transport_id: Option<AddressHash>,
     controlled_destination: PlainInputDestination,
@@ -88,6 +95,7 @@ impl PathRequests {
     pub fn new(name: &str, transport_id: Option<AddressHash>) -> Self {
         Self {
             cache: BTreeSet::new(),
+            cache_order: VecDeque::new(),
             name: name.into(),
             transport_id,
             controlled_destination: create_path_request_destination(),
@@ -103,7 +111,14 @@ impl PathRequests {
                 (request.destination, request.tag_bytes.clone())
             );
 
-            if !is_new {
+            if is_new {
+                self.cache_order.push_back(
+                    (Instant::now(), request.destination, request.tag_bytes.clone())
+                );
+                while self.cache_order.len() > TAG_CACHE_MAX {
+                    self.forget_oldest();
+                }
+            } else {
                 log::info!(
                     "tp({}): ignoring duplicate path request for destination {}",
                     self.name,
@@ -114,6 +129,24 @@ impl PathRequests {
         }
 
         path_request
+    }
+
+    fn forget_oldest(&mut self) {
+        if let Some((_, destination, tag)) = self.cache_order.pop_front() {
+            self.cache.remove(&(destination, tag));
+        }
+    }
+
+    /// Forgets the tags of path requests seen longer than `TAG_CACHE_TTL` ago.
+    pub fn remove_stale(&mut self) {
+        let now = Instant::now();
+        while self
+            .cache_order
+            .front()
+            .is_some_and(|(seen, _, _)| now.duration_since(*seen) >= TAG_CACHE_TTL)
+        {
+            self.forget_oldest();
+        }
     }
 
     pub fn generate(
@@ -207,5 +240,40 @@ mod tests {
         let decoded = testee.decode(encoded.data.as_slice()).unwrap();
 
         assert_eq!(decoded.destination, dest);
+    }
+
+    fn request(seed: u32) -> Vec<u8> {
+        let mut data = vec![7u8; ADDRESS_HASH_SIZE];
+        data.extend_from_slice(&seed.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn the_tag_cache_is_capped_and_forgets_the_oldest() {
+        let mut testee = PathRequests::new("", None);
+
+        for seed in 0..(TAG_CACHE_MAX as u32 + 100) {
+            assert!(testee.decode(&request(seed)).is_some());
+        }
+
+        assert_eq!(testee.cache.len(), TAG_CACHE_MAX);
+        assert_eq!(testee.cache_order.len(), TAG_CACHE_MAX);
+        assert!(testee.decode(&request(0)).is_some(), "the oldest tag was forgotten");
+        let newest = TAG_CACHE_MAX as u32 + 99;
+        assert!(testee.decode(&request(newest)).is_none(), "a recent tag is still a duplicate");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tags_are_forgotten_after_the_ttl() {
+        let mut testee = PathRequests::new("", None);
+        assert!(testee.decode(&request(1)).is_some());
+        tokio::time::advance(TAG_CACHE_TTL / 2).await;
+        assert!(testee.decode(&request(2)).is_some());
+
+        tokio::time::advance(TAG_CACHE_TTL / 2).await;
+        testee.remove_stale();
+        assert_eq!(testee.cache.len(), 1);
+        assert!(testee.decode(&request(1)).is_some(), "forgotten, so new again");
+        assert!(testee.decode(&request(2)).is_none(), "still remembered");
     }
 }
