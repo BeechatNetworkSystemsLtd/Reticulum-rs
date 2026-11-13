@@ -156,6 +156,14 @@ pub struct Link {
     proves_messages: bool,
 }
 
+/// Longest round-trip time a peer may report; above it the value is ignored.
+const MAX_RTT: Duration = Duration::from_secs(600);
+
+/// A round-trip time a peer reported, if it is a sane one.
+fn rtt_of(seconds: f64) -> Option<Duration> {
+    Duration::try_from_secs_f64(seconds).ok().filter(|rtt| *rtt <= MAX_RTT)
+}
+
 impl Link {
     pub fn new(destination: DestinationDesc) -> Self {
         Self {
@@ -573,7 +581,11 @@ impl Link {
                 let mut buffer = [0u8; PACKET_MDU];
                 if let Ok(plain_text) = self.decrypt(packet.data.as_slice(), &mut buffer[..]) {
                     if let Ok(rtt) = rmp::decode::read_f64(&mut &plain_text[..]) {
-                        self.rtt = Duration::from_secs_f64(rtt);
+                        // From the peer: negative, NaN or absurd values are ignored, never a panic.
+                        match rtt_of(rtt) {
+                            Some(rtt) => self.rtt = rtt,
+                            None => log::debug!("link({}): ignoring rtt {rtt}", self.id),
+                        }
                     } else {
                         log::debug!("link({}): failed to decode rtt", self.id);
                     }
@@ -825,5 +837,19 @@ fn validate_message_proof(
         Ok(Hash::new(hash_slice.try_into().unwrap()))
     } else {
         Err(RnsError::IncorrectSignature)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reported_rtt_that_is_not_sane_is_ignored() {
+        assert_eq!(rtt_of(0.25), Some(Duration::from_millis(250)));
+        assert_eq!(rtt_of(0.0), Some(Duration::ZERO));
+        for bad in [-1.0, -0.000_1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e12, 601.0] {
+            assert_eq!(rtt_of(bad), None, "{bad}");
+        }
     }
 }
