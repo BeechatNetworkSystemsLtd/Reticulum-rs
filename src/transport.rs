@@ -47,6 +47,8 @@ const PATH_ASK_GAP: Duration = Duration::from_secs(10);
 pub const MAX_DESTINATIONS: usize = 1024;
 /// Most in-links at once; when full, the idlest is closed.
 const MAX_IN_LINKS: usize = 1024;
+/// Link event slots of the multi-hop profile; a Data event pins up to ~2 KB until all lag past it.
+const MULTIHOP_LINK_EVENTS: usize = 2048;
 
 // Other constants
 const KEEP_ALIVE_REQUEST: u8 = 0xFF;
@@ -145,7 +147,7 @@ impl ChannelCapacity {
             },
             NetworkProfile::MultiHop => Self {
                 announces: 1024,
-                link_events: 8192,
+                link_events: MULTIHOP_LINK_EVENTS,
                 received_data: 512,
                 iface_messages: 64,
                 iface_rx: 64,
@@ -2181,6 +2183,20 @@ mod tests {
         assert!(!handler.lock().await.link_table.validated(&genuine.destination), "a forged proof validates nothing");
         handle_proof(&genuine, destination_side, handler.lock().await).await;
         assert!(handler.lock().await.link_table.validated(&genuine.destination), "the genuine proof validates the link");
+    }
+
+    #[tokio::test]
+    async fn multi_hop_link_events_lag_past_the_capacity() {
+        let transport = TransportConfig::default().set_network_profile(NetworkProfile::MultiHop).build();
+        let mut events = transport.in_link_events();
+        for _ in 0..=MULTIHOP_LINK_EVENTS {
+            transport.link_in_event_tx.send(LinkEventData {
+                id: AddressHash::new_empty(),
+                address_hash: AddressHash::new_empty(),
+                event: crate::destination::link::LinkEvent::Closed,
+            });
+        }
+        assert_eq!(events.recv().await.err(), Some(broadcast::error::RecvError::Lagged(1)));
     }
 
     fn announce_of_a_new_destination() -> (Packet, DestinationDesc) {
