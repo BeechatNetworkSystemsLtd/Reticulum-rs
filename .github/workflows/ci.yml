@@ -20,7 +20,7 @@ jobs:
 
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
@@ -52,7 +52,7 @@ jobs:
       RUSTFLAGS: "-D warnings -C link-arg=-Tlinkall.x"
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "firmware/c6l-modem"
@@ -74,7 +74,7 @@ jobs:
       PYTHONPATH: /opt/Reticulum
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
@@ -108,7 +108,7 @@ jobs:
 
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
@@ -129,7 +129,7 @@ jobs:
 
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"

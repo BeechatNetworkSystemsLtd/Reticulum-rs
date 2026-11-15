@@ -766,7 +766,7 @@ async fn python_relay() {
     let (node_a, bind, forward) = build("a", "127.0.0.1:4244", "127.0.0.1:4245");
     node_a.iface_manager().lock().await
         .spawn(UdpInterface::new(bind, Some(forward), false), UdpInterface::spawn);
-    let (mut node_b, bind, forward) = build("b", "127.0.0.1:4246", "127.0.0.1:4247");
+    let (node_b, bind, forward) = build("b", "127.0.0.1:4246", "127.0.0.1:4247");
     node_b.iface_manager().lock().await
         .spawn(UdpInterface::new(bind, Some(forward), false), UdpInterface::spawn);
 
@@ -914,7 +914,7 @@ async fn python_initiator_through_rust_relay() {
         TcpServer::spawn,
     );
 
-    let mut node_b = TransportConfig::new("b", &PrivateIdentity::new_from_rand(rand_core::OsRng)).build();
+    let node_b = TransportConfig::new("b", &PrivateIdentity::new_from_rand(rand_core::OsRng)).build();
     node_b.iface_manager().lock().await
         .spawn(TcpClient::new("127.0.0.1:4251"), TcpClient::spawn);
 
