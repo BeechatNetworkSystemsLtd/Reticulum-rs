@@ -23,31 +23,102 @@ reticulum-core = { version = "*", path = "reticulum-core" }
 # Random Number generator
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 
-# Async IO
-tokio = { version = "1.44.2", features = ["full"] }
+# Async IO (full minus signal/process, which esp-idf newlib lacks;
+# iface-pipe re-adds tokio/process, dev-dependents re-add signal/process)
+tokio = { version = "1.44.2", features = ["net","fs","io-std","io-util","macros","parking_lot","rt","rt-multi-thread","sync","time"] }
 tokio-util = "0.7.15"
 
 rmp = "0.8.14"
+rmpv = "1.3"
 serde = { version = "1.0.219", features = ["derive"] }
+
+# bzip2 compression for resource transfers (wire-compatible with Python bz2)
+bzip2 = { version = "0.4.4", optional = true }
+
+# hashing for resource engine and IFAC masks
+sha2 = "0.10.8"
+
+# HKDF for IFAC key derivation (same construction as RNS.Cryptography.hkdf)
+hkdf = "0.12"
+# AtomicU64 on targets without native 64-bit atomics (xtensa espidf)
+portable-atomic = "1"
+
+# serial ports for Serial/KISS/AX.25 KISS interfaces
+libc = { version = "0.2", optional = true }
+tokio-serial = { version = "5.4", default-features = false, features = ["rt"], optional = true }
+
+# socket setup for AutoInterface IPv6 multicast
+socket2 = { version = "0.6", optional = true }
+
+# RNode ble:// (Nordic UART). Off unless `iface-rnode-ble` is enabled.
+btleplug = { version = "0.11.8", optional = true }
+uuid = { version = "1", optional = true }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 
 # Logging
 log = "0.4.27"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+# Python's WinRT paired-address list. Not part of btleplug's properties.
+windows = { version = "0.61", optional = true, features = [
+    "Devices_Bluetooth",
+    "Devices_Enumeration",
+] }
+
+# BlueZ `Bonded`. btleplug's PeripheralProperties drops it. Linux only.
+# The bus connection is opened off the runtime and its driver task is aborted
+# when the lookup returns.
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = { version = "0.9.12", optional = true, features = ["futures"] }
+dbus-tokio = { version = "0.7.6", optional = true }
+
 [features]
-default = []
+default = ["bz2"]
 fernet-aes128 = ["reticulum-core/fernet-aes128"]
 python-tests = []
+bz2 = ["dep:bzip2"]
+# Serial-family interfaces (SerialInterface, KISSInterface, AX25KISSInterface)
+iface-serial = ["dep:tokio-serial", "dep:libc"]
+# PipeInterface (subprocess stdin/stdout)
+iface-pipe = ["tokio/process"]
+# AutoInterface (IPv6 link-local multicast peering)
+iface-auto = ["dep:socket2"]
+# I2PInterface (SAMv3 bridge sessions and streams)
+iface-i2p = []
+# RNodeInterface + RNodeMultiInterface (serial mode needs iface-serial)
+iface-rnode = []
+# RNode ble:// via btleplug. Default builds do not link a BLE stack.
+iface-rnode-ble = ["iface-rnode", "dep:btleplug", "dep:uuid", "dep:futures-util", "dep:dbus", "dep:dbus-tokio", "dep:windows"]
 
 [dev-dependencies]
+reticulum-discovery = { path = "reticulum-discovery" }
 env_logger = "0.10"
 serde_json = "1.0.150"
-tokio = { version = "1.44.2", features = ["test-util"] }
+criterion = "0.5"
+tokio = { version = "1.44.2", features = ["test-util", "signal", "process"] }
 
 [workspace]
 members = [
   "reticulum-core",
-  "reticulum-daemon"
+  "reticulum-daemon",
+  "reticulum-discovery",
+  "lxmf",
+  "lxst",
+  "reticulum-utils",
+  "reticulum-actor",
+  "reticulum-ffi",
+  "rnode-modem-core",
+  "uniffi-bindgen"
 ]
+
+# Embedded firmware crates pull esp-hal/esp-wifi and only build for their
+# MCU targets; keep them out of host workspace builds with their own lockfile.
+exclude = ["firmware"]
+
+[[bench]]
+name = "hot_paths"
+harness = false
 
 [[example]]
 name = "tcp_server"
@@ -68,6 +139,11 @@ path = "examples/link_client.rs"
 [[example]]
 name = "testnet_client"
 path = "examples/testnet_client.rs"
+
+[[example]]
+name = "rnode_listen"
+path = "examples/rnode_listen.rs"
+required-features = ["iface-rnode", "iface-serial"]
 
 [[example]]
 name = "multihop"

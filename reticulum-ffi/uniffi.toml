@@ -1,0 +1,7 @@
+[bindings.kotlin]
+package_name = "com.reticulum.ffi.rust"
+cdylib_name = "reticulum_ffi"
+
+[bindings.swift]
+module_name = "ReticulumFfi"
+cdylib_name = "reticulum_ffi"

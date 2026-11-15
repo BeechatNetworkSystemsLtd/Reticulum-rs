@@ -9,6 +9,52 @@ use crate::hash::Hash;
 pub const PACKET_MDU: usize = 2048usize;
 pub const PACKET_IFAC_MAX_LENGTH: usize = 64usize;
 
+/// The MTU that Reticulum adheres to by default. Changing this breaks
+/// compatibility with all other RNS networks (see Python `RNS.Reticulum.MTU`).
+pub const PROTOCOL_MTU: usize = 500;
+
+/// Minimum on-wire header size: flags, hops and a truncated destination hash
+/// (Python `RNS.Reticulum.HEADER_MINSIZE` = 2+1+16).
+pub const HEADER_MINSIZE: usize = 2 + 1 + (TRUNCATED_HASHLENGTH_BYTES);
+/// Maximum on-wire header size: flags, hops, transport id and destination
+/// hash (Python `RNS.Reticulum.HEADER_MAXSIZE` = 2+1+16*2 = 35).
+pub const HEADER_MAXSIZE: usize = 2 + 1 + (TRUNCATED_HASHLENGTH_BYTES * 2);
+/// Minimum size reserved for an interface access code.
+pub const IFAC_MIN_SIZE: usize = 1;
+/// Fernet token overhead (IV + HMAC, no version/timestamp fields).
+pub const TOKEN_OVERHEAD: usize = 48;
+/// AES block size in bytes.
+pub const AES128_BLOCKSIZE: usize = 16;
+
+/// Maximum payload of an unencrypted packet (`RNS.Packet.MDU`).
+pub const PACKET_PROTOCOL_MDU: usize = PROTOCOL_MTU - HEADER_MAXSIZE - IFAC_MIN_SIZE;
+/// Maximum plaintext payload of a link-encrypted packet (`RNS.Link.MDU`).
+pub const LINK_MDU: usize = (PROTOCOL_MTU - IFAC_MIN_SIZE - HEADER_MINSIZE - TOKEN_OVERHEAD)
+    / AES128_BLOCKSIZE
+    * AES128_BLOCKSIZE
+    - 1;
+/// Minimum nonzero negotiated link MTU that still leaves one full encrypted
+/// block after header, IFAC and token overhead.
+pub const LINK_MTU_MIN: usize = IFAC_MIN_SIZE + HEADER_MINSIZE + TOKEN_OVERHEAD + AES128_BLOCKSIZE;
+/// Maximum plaintext accepted for a SINGLE-destination packet. Besides normal
+/// packet overhead, SINGLE encryption adds an ephemeral public key.
+pub const SINGLE_PLAINTEXT_MDU: usize = (PROTOCOL_MTU
+    - HEADER_MAXSIZE
+    - IFAC_MIN_SIZE
+    - crate::identity::RATCHET_KEY_LENGTH
+    - TOKEN_OVERHEAD)
+    / AES128_BLOCKSIZE
+    * AES128_BLOCKSIZE
+    - 1;
+
+/// Number of bytes in a truncated hash (an address or link id).
+pub const TRUNCATED_HASHLENGTH_BYTES: usize = 16;
+/// Full hash length in bytes.
+pub const HASHLENGTH_BYTES: usize = 32;
+
+/// Python `RNS.Transport.PATHFINDER_M`. Unpack rejects a hop byte at or above this.
+pub(crate) const PATHFINDER_M: u8 = 128;
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum IfacFlag {
     Open = 0b0,
@@ -105,7 +151,7 @@ impl From<u8> for PacketType {
 pub enum PacketContext {
     None = 0x00,                    // Generic data packet
     Resource = 0x01,                // Packet is part of a resource
-    ResourceAdvertisement = 0x02,    // Packet is a resource advertisement
+    ResourceAdvertisement = 0x02,   // Packet is a resource advertisement
     ResourceRequest = 0x03,         // Packet is a resource part request
     ResourceHashUpdate = 0x04,      // Packet is a resource hashmap update
     ResourceProof = 0x05,           // Packet is a resource proof
@@ -156,7 +202,13 @@ impl From<u8> for PacketContext {
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Header {
+    /// Transport-level flag signalling an interface access code (IFAC).
+    /// Python sets this bit on the wire in `Transport.transmit` with
+    /// `raw[0] | 0x80`; `Packet.get_packed_flags` never sets it.
     pub ifac_flag: IfacFlag,
+    /// Packet context flag (Python `Packet.context_flag`, header bit 5).
+    /// Set on announces that carry a ratchet key.
+    pub context_flag: bool,
     pub header_type: HeaderType,
     pub propagation_type: PropagationType,
     pub destination_type: DestinationType,
@@ -168,6 +220,7 @@ impl Default for Header {
     fn default() -> Self {
         Self {
             ifac_flag: IfacFlag::Open,
+            context_flag: false,
             header_type: HeaderType::Type1,
             propagation_type: PropagationType::Broadcast,
             destination_type: DestinationType::Single,
@@ -178,9 +231,14 @@ impl Default for Header {
 }
 
 impl Header {
+    /// Packed header flags byte, byte-compatible with Python
+    /// `Packet.get_packed_flags`:
+    /// `(header_type << 6) | (context_flag << 5) | (transport_type << 4)
+    /// | (destination_type << 2) | packet_type`.
     pub fn to_meta(&self) -> u8 {
         (self.ifac_flag as u8) << 7
             | (self.header_type as u8) << 6
+            | ((self.context_flag as u8) << 5)
             | (self.propagation_type as u8) << 4
             | (self.destination_type as u8) << 2
             | (self.packet_type as u8) //<< 0
@@ -189,6 +247,7 @@ impl Header {
     pub fn from_meta(meta: u8) -> Self {
         Self {
             ifac_flag: IfacFlag::from(meta >> 7),
+            context_flag: (meta & 0b0010_0000) != 0,
             header_type: HeaderType::from(meta >> 6),
             propagation_type: PropagationType::from(meta >> 4),
             destination_type: DestinationType::from(meta >> 2),
@@ -202,9 +261,10 @@ impl fmt::Display for Header {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:b}{:b}{:0>2b}{:0>2b}{:0>2b}.{}",
+            "{:b}{:b}{:b}{:0>2b}{:0>2b}{:0>2b}.{}",
             self.ifac_flag as u8,
             self.header_type as u8,
+            self.context_flag as u8,
             self.propagation_type as u8,
             self.destination_type as u8,
             self.packet_type as u8,
@@ -236,7 +296,7 @@ impl PacketIfac {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Packet {
     pub header: Header,
     pub ifac: Option<PacketIfac>,
@@ -286,5 +346,34 @@ impl fmt::Display for Packet {
         write!(f, " 0x[{}]]", self.data.len())?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::buffer::InputBuffer;
+    use crate::error::RnsError;
+    use crate::packet::Packet;
+
+    /// Header type 1: flags, hops, 16-byte destination, context, one data byte.
+    fn wire(hops: u8) -> [u8; 20] {
+        let mut raw = [0u8; 20];
+        raw[1] = hops;
+        raw[19] = 1;
+        raw
+    }
+
+    #[test]
+    fn unpack_rejects_hop_128() {
+        let raw = wire(128);
+        let err = Packet::deserialize(&mut InputBuffer::new(&raw)).unwrap_err();
+        assert_eq!(err, RnsError::PacketError);
+    }
+
+    #[test]
+    fn unpack_accepts_hop_127() {
+        let raw = wire(127);
+        let packet = Packet::deserialize(&mut InputBuffer::new(&raw)).expect("hop 127 is valid");
+        assert_eq!(packet.header.hops, 127);
     }
 }

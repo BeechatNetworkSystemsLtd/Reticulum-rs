@@ -1,0 +1,24 @@
+[package]
+name = "rnode-modem-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = """
+Device-side RNode modem core: the KISS wire protocol, radio configuration
+model, flow control and telemetry, written link- and silicon-agnostic so it
+runs on any MCU (ESP32-C6/S3, ...) behind thin transport shims, and can be
+exercised on the host against the reticulum host-side client in tests.
+"""
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+log = { version = "0.4", default-features = false }
+
+[dev-dependencies]
+reticulum = { path = "..", features = ["iface-rnode", "iface-serial"] }
+tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
+env_logger = "0.10"

@@ -4,9 +4,8 @@ use std::time::Duration;
 
 use rand_core::OsRng;
 use reticulum::{
-    crypt::group::GroupKey,
-    destination::{DestinationName, GroupInputDestination},
-    identity::{GroupIdentity, PrivateIdentity},
+    destination::{DestinationName, GroupKey},
+    identity::PrivateIdentity,
     iface::{Interface, InterfaceContext, RxMessage},
     packet::{DestinationType, Packet},
     transport::{ReceivedData, Transport, TransportConfig},
@@ -50,7 +49,7 @@ impl Radio {
                 loop {
                     match rx.recv().await {
                         Ok(packet) => {
-                            let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
+                            let _ = rx_channel.send(RxMessage { address: iface_address, packet: Box::new(packet) }).await;
                         }
                         Err(RecvError::Lagged(_)) => continue,
                         Err(RecvError::Closed) => break,
@@ -60,7 +59,7 @@ impl Radio {
         }
 
         while let Some(message) = tx_channel.recv().await {
-            let _ = tx.send(message.packet);
+            let _ = tx.send(*message.packet);
         }
     }
 }
@@ -91,18 +90,17 @@ fn group_name() -> DestinationName {
     DestinationName::new("test", "group")
 }
 
-fn group_identity(key: &GroupKey) -> GroupIdentity {
-    GroupIdentity::new(*PrivateIdentity::new_from_name("group").as_identity(), key.clone())
-}
-
 async fn join(transport: &mut Transport, key: &GroupKey) -> broadcast::Receiver<ReceivedData> {
-    transport.add_group_destination(group_identity(key), group_name()).await;
+    let destination = transport.add_group_destination(group_name()).await;
+    destination.lock().await.load_group_key(*key.as_bytes());
     transport.received_data_events()
 }
 
 async fn send_group(transport: &Transport, key: &GroupKey, data: &[u8]) {
-    let sender = GroupInputDestination::new(group_identity(key), group_name());
-    transport.send_packet(sender.data_packet(OsRng, data).unwrap()).await;
+    transport
+        .send_to_group_destination(group_name(), data, Some(key.as_bytes()))
+        .await
+        .expect("group packet sent");
 }
 
 /// Counts the GROUP packets received on all interfaces of `transport`.
@@ -153,7 +151,7 @@ async fn line(group_forwarding: bool, b_retransmit: bool) -> (Transport, Transpo
 async fn group_forwarded_over_single_radio() {
     setup();
 
-    let key = GroupKey::new_rand(OsRng);
+    let key = GroupKey::generate(OsRng);
     let (transport_a, _transport_b, mut transport_c) = line(true, true).await;
     let mut received_c = join(&mut transport_c, &key).await;
 
@@ -170,7 +168,7 @@ async fn group_forwarded_over_single_radio() {
 async fn group_not_forwarded_without_retransmit() {
     setup();
 
-    let key = GroupKey::new_rand(OsRng);
+    let key = GroupKey::generate(OsRng);
     let (transport_a, _transport_b, mut transport_c) = line(true, false).await;
     let mut received_c = join(&mut transport_c, &key).await;
 
@@ -200,7 +198,7 @@ async fn group_forwarding_stops() {
     let mut transport_d =
         build_transport("d", Radio::new(&air_d, &[&air_b, &air_c]), true, true).await;
 
-    let key = GroupKey::new_rand(OsRng);
+    let key = GroupKey::generate(OsRng);
     let mut received_c = join(&mut transport_c, &key).await;
     let mut received_d = join(&mut transport_d, &key).await;
 

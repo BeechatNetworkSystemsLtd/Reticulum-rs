@@ -3,8 +3,8 @@ use alloc::string::String;
 use core::cmp;
 use core::fmt;
 
-use crypto_common::typenum::Unsigned;
 use crypto_common::OutputSizeUser;
+use crypto_common::typenum::Unsigned;
 use rand_core::CryptoRngCore;
 use sha2::{Digest, Sha256};
 
@@ -80,6 +80,15 @@ impl AddressHash {
         let mut hash = [0u8; ADDRESS_HASH_SIZE];
         create_hash(data, &mut hash);
         Self(hash)
+    }
+
+    /// Copy exactly `ADDRESS_HASH_SIZE` already-encoded address bytes into
+    /// an `AddressHash` without hashing. Returns `None` for wrong-length
+    /// input (wire fields carry ready-made address hashes; hashing them
+    /// again would produce unrelated addresses).
+    pub fn new_from_raw_slice(data: &[u8]) -> Option<Self> {
+        let bytes: [u8; ADDRESS_HASH_SIZE] = data.try_into().ok()?;
+        Some(Self(bytes))
     }
 
     pub fn new_from_hash(hash: &Hash) -> Self {
@@ -165,7 +174,7 @@ impl fmt::Display for Hash {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
 
     use rand_core::OsRng;

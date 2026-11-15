@@ -1,0 +1,750 @@
+{
+  "app_name": "lxmf",
+  "identities": {
+    "source": {
+      "private_hex": "f8953ffaf607627e615603ff1530c82c434cf87c07179dd7689ea776f30b964cfb7ba6164af00c5111a45e69e57d885e1285f8dbfe3a21e95ae17cf676b0f8b7",
+      "hash": "650b5d76b6bec0390d1f8cfca5bd33f9",
+      "public_hex": "4219d9ce29da42bc823b66b24a051c65b482f062a436bdeb3793bbfa629249301cd07b674027511e73469c4edec93634c2965fdeeae8e1c50db4b912c616501b",
+      "delivery_destination_hash": "37db3d4a55697ce40368bf880c560702"
+    },
+    "destination": {
+      "private_hex": "d85d036245436a3c33d3228affae06721f8203bc364ee0ee7556368ac62add650ebf8f926abf628da9d92baaa12db89bd6516ee92ec29765f3afafcb8622d697",
+      "hash": "1469e89450c361b253aefb0c606b6111",
+      "public_hex": "a6ad9609176a4c5012ae056539065be584d5dc92e78ee151dd64654ccf0cd63596103b09e36c0fb83596fb2a6139075d6510236e6a86129cfc1fd403f74c5b11",
+      "delivery_destination_hash": "c91daecfe31e8adfd57f3ce074fc4dc9"
+    },
+    "propagation_node": {
+      "private_hex": "8893e2bfd30fc08455997caf7abb7a6341716768dbbf9a91cc1455bd7eeaf74cdc10ec72a4d4179696040bac620ee97ebc861e2443e5270537ae766d91b58181",
+      "hash": "e5fe93ee4acba095b3b9b6541515ed3e",
+      "public_hex": "d095214af0bc8267aa9e658375e1bb775029f2f798254a07fd6ce620bb7a135b10e7d32e2d67aeb316515de2ee77e7097777b80edfe3b9173db0f5de320b88a2",
+      "propagation_destination_hash": "77bf7a246d4c9da84ab12791a6ddeb63"
+    }
+  },
+  "messages": [
+    {
+      "name": "small",
+      "destination_hash": "c91daecfe31e8adfd57f3ce074fc4dc9",
+      "source_hash": "37db3d4a55697ce40368bf880c560702",
+      "title": "54657374205469746c65",
+      "content": "48656c6c6f2066726f6d20746865204c584d46205275737420706f727421",
+      "fields": [
+        "map",
+        []
+      ],
+      "timestamp": 1735689600.5,
+      "stamp": null,
+      "ticket": null,
+      "packed": "c91daecfe31e8adfd57f3ce074fc4dc937db3d4a55697ce40368bf880c56070250403448f7e052a27db91a810e71735b8282f22699bfefdcb6b99a89a50b9ebd3a535b67896dd943d8e974c6223af5da8a0864643ef9573c7209d0461edaf40b94cb41d9dd2160200000c40a54657374205469746c65c41e48656c6c6f2066726f6d20746865204c584d46205275737420706f72742180",
+      "packed_size": 151,
+      "hash": "e79e2e2decc0bd8d18b722eed58c704229d999cfa5e445e429d1a5f931bd0632",
+      "signature": "50403448f7e052a27db91a810e71735b8282f22699bfefdcb6b99a89a50b9ebd3a535b67896dd943d8e974c6223af5da8a0864643ef9573c7209d0461edaf40b",
+      "method": 2,
+      "representation": 1,
+      "transport_encrypted": false,
+      "transport_encryption": null
+    },
+    {
+      "name": "empty",
+      "destination_hash": "c91daecfe31e8adfd57f3ce074fc4dc9",
+      "source_hash": "37db3d4a55697ce40368bf880c560702",
+      "title": "",
+      "content": "",
+      "fields": [
+        "map",
+        []
+      ],
+      "timestamp": 1735689600.5,
+      "stamp": null,
+      "ticket": null,
+      "packed": "c91daecfe31e8adfd57f3ce074fc4dc937db3d4a55697ce40368bf880c56070283f8ae28d8d5ba82abd43091e203b94a6b11c83b875824c1d1806361ec10457017c112b17c3156324373cea9c65c82865bd02d261af4d7bd51118ee1a9e30d0694cb41d9dd2160200000c400c40080",
+      "packed_size": 111,
+      "hash": "69230b4c2513ca979b4f004841702922337128966e3eec77a0a9dfbd7707d0d0",
+      "signature": "83f8ae28d8d5ba82abd43091e203b94a6b11c83b875824c1d1806361ec10457017c112b17c3156324373cea9c65c82865bd02d261af4d7bd51118ee1a9e30d06",
+      "method": 2,
+      "representation": 1,
+      "transport_encrypted": false,
+      "transport_encryption": null
+    },
+    {
+      "name": "fields",
+      "destination_hash": "c91daecfe31e8adfd57f3ce074fc4dc9",
+      "source_hash": "37db3d4a55697ce40368bf880c560702",
+      "title": "4669656c6473",
+      "content": "57697468206669656c6473",
+      "fields": [
+        "map",
+        [
+          [
+            [
+              "int",
+              1
+            ],
+            [
+              "bin",
+              "deadbeefdeadbeefdeadbeefdeadbeef"
+            ]
+          ],
+          [
+            [
+              "int",
+              2
+            ],
+            [
+              "map",
+              [
+                [
+                  [
+                    "int",
+                    0
+                  ],
+                  [
+                    "bin",
+                    "74656d70"
+                  ]
+                ],
+                [
+                  [
+                    "int",
+                    1
+                  ],
+                  [
+                    "float",
+                    21.5
+                  ]
+                ],
+                [
+                  [
+                    "int",
+                    2
+                  ],
+                  [
+                    "int",
+                    3
+                  ]
+                ]
+              ]
+            ]
+          ],
+          [
+            [
+              "int",
+              5
+            ],
+            [
+              "list",
+              [
+                [
+                  "list",
+                  [
+                    [
+                      "str",
+                      "report.txt"
+                    ],
+                    [
+                      "bin",
+                      "6c6f72656d20697073756d"
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ],
+          [
+            [
+              "int",
+              6
+            ],
+            [
+              "list",
+              [
+                [
+                  "int",
+                  1
+                ],
+                [
+                  "bin",
+                  "ffd8ffe000104a46494600"
+                ]
+              ]
+            ]
+          ],
+          [
+            [
+              "int",
+              8
+            ],
+            [
+              "bin",
+              "61d194b5da8ddba5a1f8788a12f21c68e1cf738f6c03621d78b6a1105f8a9b41"
+            ]
+          ],
+          [
+            [
+              "int",
+              48
+            ],
+            [
+              "bin",
+              "61d194b5da8ddba5a1f8788a12f21c68e1cf738f6c03621d78b6a1105f8a9b41"
+            ]
+          ],
+          [
+            [
+              "int",
+              64
+            ],
+            [
+              "map",
+              [
+                [
+                  [
+                    "int",
+                    0
+                  ],
+                  [
+                    "bin",
+                    "61d194b5da8ddba5a1f8788a12f21c68e1cf738f6c03621d78b6a1105f8a9b41"
+                  ]
+                ],
+                [
+                  [
+                    "int",
+                    1
+                  ],
+                  [
+                    "bin",
+                    "f09f918d"
+                  ]
+                ]
+              ]
+            ]
+          ],
+          [
+            [
+              "int",
+              251
+            ],
+            [
+              "str",
+              "application/x-test"
+            ]
+          ],
+          [
+            [
+              "int",
+              252
+            ],
+            [
+              "bin",
+              "00ff00ff00ff"
+            ]
+          ],
+          [
+            [
+              "int",
+              254
+            ],
+            [
+              "int",
+              24680
+            ]
+          ],
+          [
+            [
+              "int",
+              255
+            ],
+            [
+              "map",
+              [
+                [
+                  [
+                    "str",
+                    "debug_key"
+                  ],
+                  [
+                    "bool",
+                    true
+                  ]
+                ],
+                [
+                  [
+                    "str",
+                    "rounds"
+                  ],
+                  [
+                    "int",
+                    4
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ],
+      "timestamp": 1735689600.5,
+      "stamp": null,
+      "ticket": null,
+      "packed": "c91daecfe31e8adfd57f3ce074fc4dc937db3d4a55697ce40368bf880c5607023ac238caabc9e17298720a8af5fd8d507133d924403cef9a29bce7b220e3a4ab94d2f8d92acc6ef1d896e14995ed60c6b3f094eb02f53dc4528baca8cc08f70694cb41d9dd2160200000c4064669656c6473c40b57697468206669656c64738b01c410deadbeefdeadbeefdeadbeefdeadbeef028300c40474656d7001cb40358000000000000203059192aa7265706f72742e747874c40b6c6f72656d20697073756d069201c40bffd8ffe000104a4649460008c42061d194b5da8ddba5a1f8788a12f21c68e1cf738f6c03621d78b6a1105f8a9b4130c42061d194b5da8ddba5a1f8788a12f21c68e1cf738f6c03621d78b6a1105f8a9b41408200c42061d194b5da8ddba5a1f8788a12f21c68e1cf738f6c03621d78b6a1105f8a9b4101c404f09f918dccfbb26170706c69636174696f6e2f782d74657374ccfcc40600ff00ff00ffccfecd6068ccff82a964656275675f6b6579c3a6726f756e647304",
+      "packed_size": 383,
+      "hash": "668ad9c6229a224619ff41aa41445ceb252c34001657a06f5dd37595b5244407",
+      "signature": "3ac238caabc9e17298720a8af5fd8d507133d924403cef9a29bce7b220e3a4ab94d2f8d92acc6ef1d896e14995ed60c6b3f094eb02f53dc4528baca8cc08f706",
+      "method": 2,
+      "representation": 1,
+      "transport_encrypted": false,
+      "transport_encryption": null
+    },
+    {
+      "name": "large",
+      "destination_hash": "c91daecfe31e8adfd57f3ce074fc4dc9",
+      "source_hash": "37db3d4a55697ce40368bf880c560702",
+      "title": "4c61726765",
+      "content": "787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+      "fields": [
+        "map",
+        [
+          [
+            [
+              "int",
+              251
+            ],
+            [
+              "str",
+              "large"
+            ]
+          ]
+        ]
+      ],
+      "timestamp": 1735689600.5,
+      "stamp": null,
+      "ticket": null,
+      "packed": "c91daecfe31e8adfd57f3ce074fc4dc937db3d4a55697ce40368bf880c560702a09efeeb0ab52deab14f5ea55da660da650b6fa2b63eabdf7a83b5537dedee580c25140296632ef0e78788b3c92a53453a7b9c8dfe4f27fa1cf84290808f070294cb41d9dd2160200000c4054c61726765c5025878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787881ccfba56c61726765",
+      "packed_size": 725,
+      "hash": "112f909a660f1862c5c5300fa858e3033e472aa32364911826b488a9d58cc1ac",
+      "signature": "a09efeeb0ab52deab14f5ea55da660da650b6fa2b63eabdf7a83b5537dedee580c25140296632ef0e78788b3c92a53453a7b9c8dfe4f27fa1cf84290808f0702",
+      "method": 2,
+      "representation": 2,
+      "transport_encrypted": false,
+      "transport_encryption": null
+    },
+    {
+      "name": "stamp",
+      "destination_hash": "c91daecfe31e8adfd57f3ce074fc4dc9",
+      "source_hash": "37db3d4a55697ce40368bf880c560702",
+      "title": "5374616d706564",
+      "content": "57697468207374616d70",
+      "fields": [
+        "map",
+        []
+      ],
+      "timestamp": 1735689600.5,
+      "stamp": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+      "ticket": null,
+      "packed": "c91daecfe31e8adfd57f3ce074fc4dc937db3d4a55697ce40368bf880c5607026005ecc1002538a6f6595f73b194d26cab6d14240d6457d3325222f77b392381a34f3ad4251343e173a0249623c2a46994bdd10a8a9b872e8284376077f5790195cb41d9dd2160200000c4075374616d706564c40a57697468207374616d7080c42000112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+      "packed_size": 162,
+      "hash": "06918d51e45d83fd832995a6d6e73a42f9cb3c2687da92df7290d43c9f26eba9",
+      "signature": "6005ecc1002538a6f6595f73b194d26cab6d14240d6457d3325222f77b392381a34f3ad4251343e173a0249623c2a46994bdd10a8a9b872e8284376077f57901",
+      "method": 2,
+      "representation": 1,
+      "transport_encrypted": false,
+      "transport_encryption": null
+    },
+    {
+      "name": "ticket",
+      "destination_hash": "c91daecfe31e8adfd57f3ce074fc4dc9",
+      "source_hash": "37db3d4a55697ce40368bf880c560702",
+      "title": "5469636b6574",
+      "content": "57697468207469636b6574",
+      "fields": [
+        "map",
+        [
+          [
+            [
+              "int",
+              12
+            ],
+            [
+              "list",
+              [
+                [
+                  "float",
+                  2000000000.0
+                ],
+                [
+                  "bin",
+                  "000102030405060708090a0b0c0d0e0f"
+                ]
+              ]
+            ]
+          ]
+        ]
+      ],
+      "timestamp": 1735689600.5,
+      "stamp": "c88f0b69f775de08bb12390a368eef85",
+      "ticket": "000102030405060708090a0b0c0d0e0f",
+      "packed": "c91daecfe31e8adfd57f3ce074fc4dc937db3d4a55697ce40368bf880c560702902ad6fa4f39fe536043bd72c371213bfcebbf77ba15bab800cbd1cb7327ce7a6e874818a5bdfdf5cf5bfdc56575c72883b83ac291e657aaf441d10895e37d0395cb41d9dd2160200000c4065469636b6574c40b57697468207469636b6574810c92cb41ddcd6500000000c410000102030405060708090a0b0c0d0e0fc410c88f0b69f775de08bb12390a368eef85",
+      "packed_size": 175,
+      "hash": "d9f657a45967dce04cd20d76156f375d65f3727f30fe836b9e24473c50897721",
+      "signature": "902ad6fa4f39fe536043bd72c371213bfcebbf77ba15bab800cbd1cb7327ce7a6e874818a5bdfdf5cf5bfdc56575c72883b83ac291e657aaf441d10895e37d03",
+      "method": 2,
+      "representation": 1,
+      "transport_encrypted": false,
+      "transport_encryption": null
+    }
+  ],
+  "packed_container": {
+    "message": "small",
+    "bytes": "85a5737461746500aa6c786d665f6279746573c497c91daecfe31e8adfd57f3ce074fc4dc937db3d4a55697ce40368bf880c56070250403448f7e052a27db91a810e71735b8282f22699bfefdcb6b99a89a50b9ebd3a535b67896dd943d8e974c6223af5da8a0864643ef9573c7209d0461edaf40b94cb41d9dd2160200000c40a54657374205469746c65c41e48656c6c6f2066726f6d20746865204c584d46205275737420706f72742180b37472616e73706f72745f656e63727970746564c2b47472616e73706f72745f656e6372797074696f6ec0a66d6574686f6402"
+  },
+  "stamps": [
+    {
+      "message_id": "3fc2c8fb7ae15ecfd5b1c4d05b7614f011e5c11f24cdddd58ba4514a2f96c4db",
+      "expand_rounds": 3000,
+      "cost": 8,
+      "stamp": "2c6a7615a0d6f93f78cb1ab8ba0a35de964afbab69f4da8cc30936d689b4450f",
+      "value": 14,
+      "workblock_len": 768000,
+      "workblock_hash": "b8d3459eb5c5ee44369c2da50ff88eb2b6ab34e306ebdd14db7311b660bd725c"
+    },
+    {
+      "message_id": "3fc2c8fb7ae15ecfd5b1c4d05b7614f011e5c11f24cdddd58ba4514a2f96c4db",
+      "expand_rounds": 3000,
+      "cost": 10,
+      "stamp": "5c0918b06c45dfa0979c3f65c4177ea5e93adc16faf3d5dc1745ae489e73f826",
+      "value": 10,
+      "workblock_len": 768000,
+      "workblock_hash": "b8d3459eb5c5ee44369c2da50ff88eb2b6ab34e306ebdd14db7311b660bd725c"
+    },
+    {
+      "message_id": "3fc2c8fb7ae15ecfd5b1c4d05b7614f011e5c11f24cdddd58ba4514a2f96c4db",
+      "expand_rounds": 3000,
+      "cost": 12,
+      "stamp": "57ac9c2e6fd83b3810d68b682e05ed14fa86b04dbbffa7581c84343ea4139cc2",
+      "value": 12,
+      "workblock_len": 768000,
+      "workblock_hash": "b8d3459eb5c5ee44369c2da50ff88eb2b6ab34e306ebdd14db7311b660bd725c"
+    },
+    {
+      "message_id": "7a9e3f11d20c58b9e6a1f0c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708",
+      "expand_rounds": 1000,
+      "cost": 8,
+      "stamp": "d1f7aa0c3e42c6b20793c9e959cdacf3cd918cfbdab5747149b38cd2af841337",
+      "value": 11,
+      "workblock_len": 256000,
+      "workblock_hash": "2aeeb0d38b510e1f282e99ffbc075d68d82bb4eebd63abf620d03d26772329cd"
+    },
+    {
+      "message_id": "00aa11bb22cc33dd44ee55ff6600112233445566778899aabbccddeeff001122",
+      "expand_rounds": 25,
+      "cost": 12,
+      "stamp": "9e369d64bbc038f2482ea8cb0b5c9cb23f95438cd1c86e0713ae7c645dacf4ea",
+      "value": 12
+    }
+  ],
+  "paper": {
+    "destination_hash": "c91daecfe31e8adfd57f3ce074fc4dc9",
+    "source_hash": "37db3d4a55697ce40368bf880c560702",
+    "title": "5061706572",
+    "content": "5061706572206d657373616765",
+    "fields": [
+      "map",
+      []
+    ],
+    "timestamp": 1735689600.5,
+    "paper_packed": "c91daecfe31e8adfd57f3ce074fc4dc9ed4e110577b6d97f42f5a3c4b64ba71f52d4dc0972f6d9889c0b68eafe1a3227f1bd63814228c35825ece776e05bcc9da8f19b7295d4cda9b5bc8501a4dd5e024a6f07fad5a2190d18990f88dc352ecc296329c76d5ec7692fe1201f5b7cfc130d5014e3fe39de774af77ae6ca9688b97cc609141845d4be596a4fee5252c8ff98e37cf0e48073db7da746bd5db0bfac9d5846be2d9d110ed28d79450901c3ca84ce3155d7eeca4186172bfb0a08d050622c3f99c865a7b99df945823b872c8a9d181a14d210588292fd6c1c5f9c1104",
+    "transient_id": "4c016c404f6dc9eaf48c0748aedc94d73771c75332304ed4ad472f06f19cb19e",
+    "uri": "lxm://yR2uz-Meit_VfzzgdPxNye1OEQV3ttl_QvWjxLZLpx9S1NwJcvbZiJwLaOr-GjIn8b1jgUIow1gl7Od24FvMnajxm3KV1M2ptbyFAaTdXgJKbwf61aIZDRiZD4jcNS7MKWMpx21ex2kv4SAfW3z8Ew1QFOP-Od53Svd65sqWiLl8xgkUGEXUvllqT-5SUsj_mON88OSAc9t9p0a9XbC_rJ1YRr4tnREO0o15RQkBw8qEzjFV1-7KQYYXK_sKCNBQYiw_mchlp7md-UWCO4csip0YGhTSEFiCkv1sHF-cEQQ",
+    "method": 5,
+    "representation": 5
+  },
+  "propagation": {
+    "destination_hash": "c91daecfe31e8adfd57f3ce074fc4dc9",
+    "transient_id": "21ac0de82b995b5516f517bd5039df201587782cf7bd712f9a4e11d5f50fa687",
+    "packed": "c91daecfe31e8adfd57f3ce074fc4dc937db3d4a55697ce40368bf880c560702729728a3d86d387a9ecb09cf648ac6fe0b82f8c35a5b0b1479daed8e0b88662b31405f3e7ea22ceb4e540d1e7b76c5c170f8df94895125022048531c51bbb00f94cb41d9dd2160200000c40450726f70c41250726f70616761746564206d65737361676580",
+    "propagation_packed": "92cb41daa0823a3ed6cd91c4e0c91daecfe31e8adfd57f3ce074fc4dc9e6b23f953a07650bdffd2c50884405f97d4e4cb3a083575f816c3ff8f4e89029bc42a64904f11e99e141785f1eb1f687633caf545bd5eb01e8e0b33af9750a7f789e584a2ac723e0a30b3b1f9f9154b14fa43995d2ed22e6f20321da1250bfb957d47a9860b5ab717cc4f365688d7fef0f6f07c5c1c5ef341e494a269504e2daf70cd37a0aa550efcdc8753f79531e8621927d4630ba7f6b3113ac6ea5817bb810a8a4460b0c7261e157afa047041836e625e7bff5d18d381291dd1003578ec7ebc6e9354799de2144d7b9c0f872d9b3",
+    "propagation_lxmf_data": "c91daecfe31e8adfd57f3ce074fc4dc9e6b23f953a07650bdffd2c50884405f97d4e4cb3a083575f816c3ff8f4e89029bc42a64904f11e99e141785f1eb1f687633caf545bd5eb01e8e0b33af9750a7f789e584a2ac723e0a30b3b1f9f9154b14fa43995d2ed22e6f20321da1250bfb957d47a9860b5ab717cc4f365688d7fef0f6f07c5c1c5ef341e494a269504e2daf70cd37a0aa550efcdc8753f79531e8621927d4630ba7f6b3113ac6ea5817bb810a8a4460b0c7261e157afa047041836e625e7bff5d18d381291dd1003578ec7ebc6e9354799de2144d7b9c0f872d9b3",
+    "method": 3,
+    "representation": 1
+  },
+  "peer": {
+    "bytes": "de0016b070656572696e675f74696d6562617365ce67748580a5616c697665c3a86d657461646174618101c40954657374204e6f6465aa6c6173745f6865617264cb41d9dd2160200000ad73796e635f737472617465677902ab70656572696e675f6b657992c42000112233445566778899aabbccddeeff00112233445566778899aabbccddeeff0cb064657374696e6174696f6e5f68617368c41077bf7a246d4c9da84ab12791a6ddeb63b76c696e6b5f65737461626c6973686d656e745f72617465cb4090000000000000b273796e635f7472616e736665725f72617465cb4080040000000000ba70726f7061676174696f6e5f7472616e736665725f6c696d6974cb4070000000000000b670726f7061676174696f6e5f73796e635f6c696d6974cd0400b670726f7061676174696f6e5f7374616d705f636f737410d92270726f7061676174696f6e5f7374616d705f636f73745f666c65786962696c69747903ac70656572696e675f636f737412b16c6173745f73796e635f617474656d7074cb41d9dd2160200000a76f6666657265640ca86f7574676f696e6708a8696e636f6d696e6703a872785f6279746573cd3039a874785f6279746573ce00010932ab68616e646c65645f69647392c4201111111111111111111111111111111111111111111111111111111111111111c4202222222222222222222222222222222222222222222222222222222222222222ad756e68616e646c65645f69647391c4203333333333333333333333333333333333333333333333333333333333333333",
+    "fields": [
+      "map",
+      [
+        [
+          [
+            "str",
+            "peering_timebase"
+          ],
+          [
+            "int",
+            1735689600
+          ]
+        ],
+        [
+          [
+            "str",
+            "alive"
+          ],
+          [
+            "bool",
+            true
+          ]
+        ],
+        [
+          [
+            "str",
+            "metadata"
+          ],
+          [
+            "map",
+            [
+              [
+                [
+                  "int",
+                  1
+                ],
+                [
+                  "bin",
+                  "54657374204e6f6465"
+                ]
+              ]
+            ]
+          ]
+        ],
+        [
+          [
+            "str",
+            "last_heard"
+          ],
+          [
+            "float",
+            1735689600.5
+          ]
+        ],
+        [
+          [
+            "str",
+            "sync_strategy"
+          ],
+          [
+            "int",
+            2
+          ]
+        ],
+        [
+          [
+            "str",
+            "peering_key"
+          ],
+          [
+            "list",
+            [
+              [
+                "bin",
+                "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+              ],
+              [
+                "int",
+                12
+              ]
+            ]
+          ]
+        ],
+        [
+          [
+            "str",
+            "destination_hash"
+          ],
+          [
+            "bin",
+            "77bf7a246d4c9da84ab12791a6ddeb63"
+          ]
+        ],
+        [
+          [
+            "str",
+            "link_establishment_rate"
+          ],
+          [
+            "float",
+            1024.0
+          ]
+        ],
+        [
+          [
+            "str",
+            "sync_transfer_rate"
+          ],
+          [
+            "float",
+            512.5
+          ]
+        ],
+        [
+          [
+            "str",
+            "propagation_transfer_limit"
+          ],
+          [
+            "float",
+            256.0
+          ]
+        ],
+        [
+          [
+            "str",
+            "propagation_sync_limit"
+          ],
+          [
+            "int",
+            1024
+          ]
+        ],
+        [
+          [
+            "str",
+            "propagation_stamp_cost"
+          ],
+          [
+            "int",
+            16
+          ]
+        ],
+        [
+          [
+            "str",
+            "propagation_stamp_cost_flexibility"
+          ],
+          [
+            "int",
+            3
+          ]
+        ],
+        [
+          [
+            "str",
+            "peering_cost"
+          ],
+          [
+            "int",
+            18
+          ]
+        ],
+        [
+          [
+            "str",
+            "last_sync_attempt"
+          ],
+          [
+            "float",
+            1735689600.5
+          ]
+        ],
+        [
+          [
+            "str",
+            "offered"
+          ],
+          [
+            "int",
+            12
+          ]
+        ],
+        [
+          [
+            "str",
+            "outgoing"
+          ],
+          [
+            "int",
+            8
+          ]
+        ],
+        [
+          [
+            "str",
+            "incoming"
+          ],
+          [
+            "int",
+            3
+          ]
+        ],
+        [
+          [
+            "str",
+            "rx_bytes"
+          ],
+          [
+            "int",
+            12345
+          ]
+        ],
+        [
+          [
+            "str",
+            "tx_bytes"
+          ],
+          [
+            "int",
+            67890
+          ]
+        ],
+        [
+          [
+            "str",
+            "handled_ids"
+          ],
+          [
+            "list",
+            [
+              [
+                "bin",
+                "1111111111111111111111111111111111111111111111111111111111111111"
+              ],
+              [
+                "bin",
+                "2222222222222222222222222222222222222222222222222222222222222222"
+              ]
+            ]
+          ]
+        ],
+        [
+          [
+            "str",
+            "unhandled_ids"
+          ],
+          [
+            "list",
+            [
+              [
+                "bin",
+                "3333333333333333333333333333333333333333333333333333333333333333"
+              ]
+            ]
+          ]
+        ]
+      ]
+    ]
+  },
+  "announce_app_data": {
+    "delivery": "93c40c446973706c6179204e616d650c9100",
+    "delivery_display_name": "Display Name",
+    "delivery_stamp_cost": 12,
+    "delivery_compression_support": true,
+    "legacy_delivery": "4c6567616379204e616d65",
+    "legacy_delivery_display_name": "Legacy Name",
+    "legacy_delivery_stamp_cost": null,
+    "propagation_node": "97c2ce67748580c3cd0100cd0400931003128101c40954657374204e6f6465",
+    "pn_valid": true,
+    "pn_name": "Test Node",
+    "pn_stamp_cost": 16,
+    "pn_timebase": 1735689600,
+    "pn_node_state": true,
+    "pn_transfer_limit": 256,
+    "pn_sync_limit": 1024,
+    "pn_stamp_cost_flexibility": 3,
+    "pn_peering_cost": 18
+  }
+}

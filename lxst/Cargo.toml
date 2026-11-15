@@ -1,0 +1,64 @@
+[package]
+name = "lxst"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "LXST - low-latency audio streaming, calls and telephony over Reticulum"
+
+[dependencies]
+reticulum = { version = "*", path = ".." }
+reticulum-core = { version = "*", path = "../reticulum-core" }
+
+# Wire protocol (msgpack, byte-compatible with RNS.vendor.umsgpack for LXST packets)
+rmp = "0.8"
+
+# Async runtime primitives
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+tokio-util = "0.7"
+
+# Audio helpers
+half = "2"      # float16 for the Raw codec
+hound = "3"     # WAV files for sources/sinks
+
+# Logging (mirrors RNS.log usage in the Python package)
+log = "0.4"
+
+[features]
+default = []
+
+# Opus codec, requires libopus at build time (pkg-config Opus, or autotools so
+# audiopus can build the bundled sources).
+opus = ["dep:audiopus"]
+
+# Codec2 codec, pure-Rust port (only the 2400 and 3200 bit/s modes are
+# implemented by the upstream `codec2` crate).
+codec2 = ["dep:codec2"]
+
+[dependencies.audiopus]
+version = "0.2"
+optional = true
+
+[dependencies.codec2]
+version = "0.3"
+optional = true
+
+[dev-dependencies]
+serde_json = "1"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+
+[[test]]
+name = "reference_fixtures"
+path = "tests/reference_fixtures.rs"
+
+[[test]]
+name = "network_framing"
+path = "tests/network_framing.rs"
+
+[[test]]
+name = "pipeline_flow"
+path = "tests/pipeline_flow.rs"
+
+[[test]]
+name = "call_loopback"
+path = "tests/call_loopback.rs"

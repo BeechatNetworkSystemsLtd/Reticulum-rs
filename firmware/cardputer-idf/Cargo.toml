@@ -1,0 +1,34 @@
+[package]
+name = "cardputer-idf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+esp-idf-sys = { version = "0.38", features = ["binstart"] }
+esp-idf-hal = { version = "0.47", features = ["critical-section"] }
+esp-println = { version = "0.13", features = ["esp32s3"] }
+anyhow = "1"
+rnode-modem-core = { path = "../../rnode-modem-core" }
+reticulum = { path = "../../", default-features = false, features = ["iface-rnode"] }
+# default-features=false: no bzip2 on ESP; lxmf then omits SF_COMPRESSION.
+lxmf = { path = "../../lxmf", default-features = false }
+# =1.44.2: 1.5x crashes at runtime on xtensa-espidf (deterministic
+# LoadProhibited reading FreeRTOS stack poison inside
+# current_thread::CurrentThread::new, main-task too). Matches the host
+# workspace's tested line.
+tokio = { version = "=1.44.2", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "io-util"] }
+mipidsi = "0.10.0"
+embedded-graphics = "0.8.2"
+display-interface-spi = "0.5.0"
+embedded-hal = "1.0.0"
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "joltwallet/littlefs", version = "^1" }
+
+[build-dependencies]
+embuild = "0.33"
+
+[workspace]
+
+[profile.release]
+debug = 1

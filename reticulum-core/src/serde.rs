@@ -2,7 +2,7 @@ use crate::{
     buffer::{InputBuffer, OutputBuffer, StaticBuffer},
     error::RnsError,
     hash::AddressHash,
-    packet::{Header, HeaderType, Packet, PacketContext},
+    packet::{Header, HeaderType, PACKET_MDU, Packet, PacketContext},
 };
 
 pub trait Serialize {
@@ -30,7 +30,9 @@ impl Serialize for Packet {
     fn serialize(&self, buffer: &mut OutputBuffer) -> Result<usize, RnsError> {
         self.header.serialize(buffer)?;
 
-        if self.header.header_type == HeaderType::Type2 && let Some(transport) = &self.transport {
+        if self.header.header_type == HeaderType::Type2
+            && let Some(transport) = &self.transport
+        {
             transport.serialize(buffer)?;
         }
 
@@ -46,6 +48,10 @@ impl Header {
     pub fn deserialize(buffer: &mut InputBuffer) -> Result<Header, RnsError> {
         let mut header = Header::from_meta(buffer.read_byte()?);
         header.hops = buffer.read_byte()?;
+        // Python Packet.unpack rejects hops >= Transport.PATHFINDER_M.
+        if header.hops >= crate::packet::PATHFINDER_M {
+            return Err(RnsError::PacketError);
+        }
 
         Ok(header)
     }
@@ -89,13 +95,20 @@ impl Packet {
             data: StaticBuffer::new(),
         };
 
-        buffer.read(packet.data.accuire_buf(buffer.bytes_left()))?;
+        // Hostile inputs may claim more payload than the protocol MTU
+        // allows; reject instead of panicking on the capacity slice.
+        let remaining = buffer.bytes_left();
+        if remaining > PACKET_MDU {
+            return Err(RnsError::OutOfMemory);
+        }
+
+        buffer.read(packet.data.accuire_buf(remaining))?;
 
         Ok(packet)
     }
 }
 
-#[cfg(all(test, feature="std"))]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use rand_core::OsRng;
 
@@ -121,6 +134,7 @@ mod tests {
         let packet = Packet {
             header: Header {
                 ifac_flag: IfacFlag::Open,
+                context_flag: false,
                 header_type: HeaderType::Type1,
                 propagation_type: PropagationType::Broadcast,
                 destination_type: DestinationType::Single,
@@ -148,6 +162,7 @@ mod tests {
         let mut packet = Packet {
             header: Header {
                 ifac_flag: IfacFlag::Open,
+                context_flag: false,
                 header_type: HeaderType::Type1,
                 propagation_type: PropagationType::Broadcast,
                 destination_type: DestinationType::Single,

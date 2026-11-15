@@ -16,11 +16,11 @@ jobs:
   check:
     runs-on: ubuntu-latest
     container: rust:1.95
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
@@ -30,29 +30,56 @@ jobs:
           toolchain: 1.95
           components: clippy
       - name: install build dependencies
-        run: apt-get update && apt-get install -y protobuf-compiler
+        run: apt-get update && apt-get install -y protobuf-compiler libdbus-1-dev pkg-config
       - name: clippy
         run: |
           cargo clippy --workspace --all-targets
           cargo clippy -p reticulum --all-targets --all-features
           cargo clippy -p reticulum-core --no-default-features --features="no_std"
+      - name: no_std bare-metal check
+        run: |
+          rustup target add thumbv7em-none-eabihf
+          cargo check -p reticulum-core --no-default-features --features no_std --target thumbv7em-none-eabihf
+
+  embedded-firmware:
+    runs-on: ubuntu-latest
+    container: rust:1.95
+    timeout-minutes: 15
+    # Workflow-level RUSTFLAGS replaces the target rustflags in
+    # firmware/c6l-modem/.cargo/config.toml, so the linker script must be
+    # repeated here or the firmware fails to link (-Tlinkall.x).
+    env:
+      RUSTFLAGS: "-D warnings -C link-arg=-Tlinkall.x"
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "firmware/c6l-modem"
+      - name: install riscv target
+        run: rustup target add riscv32imac-unknown-none-elf
+      - name: build c6l modem firmware
+        # must run inside firmware/c6l-modem: its .cargo/config.toml pins the
+        # riscv32imac build target and is only read from that directory
+        working-directory: firmware/c6l-modem
+        run: cargo build --release
+      - name: modem-core no_std check
+        run: cargo check -p rnode-modem-core --no-default-features --target riscv32imac-unknown-none-elf
 
   test:
     runs-on: ubuntu-latest
-    container: rust:1.95
-    needs: check
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       RETICULUM_TEST_PYTHON_DIR: /opt/Reticulum
       PYTHONPATH: /opt/Reticulum
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - uses: Swatinem/rust-cache@v2
         with:
           cache-all-crates: "true"
       - name: install dependencies
-        run: apt-get update && apt-get install -y git protobuf-compiler python3
+        run: sudo apt-get update && sudo apt-get install -y git protobuf-compiler python3
       - name: checkout Reticulum
         run: |
           git clone https://github.com/markqvist/Reticulum.git "$RETICULUM_TEST_PYTHON_DIR"
@@ -61,5 +88,58 @@ jobs:
         run: python3 -c "import RNS; print(RNS.__file__)"
       - name: test
         run: |
-          cargo test --workspace --all-targets --features="python-tests" -- --no-capture
+          cargo test --workspace --lib --bins --tests --examples \
+            --features="python-tests" -- --no-capture
+          cargo bench --workspace --no-run
           cargo test -p reticulum-core --all-targets --no-default-features --features="no_std"
+          # bzip2 compression matrix for resources
+          cargo test -p reticulum --features bz2 --test resource_transfer
+      - name: binding snapshot drift check
+        run: |
+          cargo build -p reticulum-ffi
+          cargo run -p uniffi-bindgen -- generate --no-format --library target/debug/libreticulum_ffi.so --language kotlin --out-dir reticulum-ffi/bindings/kotlin
+          cargo run -p uniffi-bindgen -- generate --no-format --library target/debug/libreticulum_ffi.so --language swift --out-dir reticulum-ffi/bindings/swift
+          test -z "$(git status --porcelain -- reticulum-ffi/bindings)"
+
+  windows-storage:
+    runs-on: windows-latest
+    needs: check
+    timeout-minutes: 10
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: "true"
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95
+      - name: install protoc
+        uses: arduino/setup-protoc@v3
+      - name: test atomic storage replacement
+        run: cargo test -p reticulum --lib storage::tests::filesystem_writes_replace_existing_files_and_clean_temporaries
+
+  benchmarks:
+    runs-on: ubuntu-latest
+    container: rust:1.95
+    needs: check
+    timeout-minutes: 20
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: "true"
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95
+      - name: install build dependencies
+        run: apt-get update && apt-get install -y protobuf-compiler
+      - name: throughput floors (fail on regressions)
+        run: cargo test -p reticulum-actor --test perf_floor --release -- --nocapture
+      - name: criterion benchmarks (compile + run)
+        run: cargo bench -p reticulum-actor --bench actor -- --quick

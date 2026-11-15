@@ -4,15 +4,27 @@ use std::process::Stdio;
 use std::sync::{atomic, Arc, LazyLock, Once};
 
 use tokio::process::Command;
+
+/// Copy the fixture config into a fresh temp directory per test so
+/// concurrent suites never share Python-side storage (identities,
+/// ratchets) or corrupt each other.
+fn isolated_config(name: &str) -> String {
+    let fixture = format!("{}/tests/rns-py-configs/udp", env!("CARGO_MANIFEST_DIR"));
+    let dir = std::env::temp_dir().join(format!("rn-pyex-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(format!("{fixture}/config"), dir.join("config")).unwrap();
+    dir.to_str().unwrap().to_string()
+}
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time;
 
+use reticulum::destination::link::LinkEvent;
+use reticulum::destination::DestinationName;
 use reticulum::hash::AddressHash;
 use reticulum::identity::{Identity, PrivateIdentity};
 use reticulum::iface::udp::UdpInterface;
-use reticulum::destination::DestinationName;
-use reticulum::destination::link::LinkEvent;
 use reticulum::transport::TransportConfig;
 
 static RETICULUM_PYTHON_DIR: LazyLock<String> =
@@ -23,9 +35,9 @@ static INIT: Once = Once::new();
 static TEST_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn setup() {
-    INIT.call_once(||
+    INIT.call_once(|| {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init()
-    );
+    });
 }
 
 #[tokio::test]
@@ -42,28 +54,31 @@ async fn python_announce() {
     let get_list = |name| -> Vec<String> {
         let starts_with = format!("{name} = ");
         let content = std::fs::read_to_string(&script_path).expect("failed to read Python script");
-        let line = content.lines()
+        let line = content
+            .lines()
             .find(|l| l.starts_with(&starts_with))
             .expect("could not find fruits list in script");
         let json = &line[starts_with.len()..];
         serde_json::from_str(json).expect("failed to parse fruits list as JSON")
     };
-    let fruits = get_list ("fruits");
-    let noble_gases = get_list ("noble_gases");
+    let fruits = get_list("fruits");
+    let noble_gases = get_list("noble_gases");
 
     let mut child = Command::new("python3")
-        .arg("-u")  // make sure output is not buffered
+        .arg("-u") // make sure output is not buffered
         .arg(script_path)
         .arg("--config")
-        .arg("tests/rns-py-configs/udp")
-        .stdin(Stdio::piped())  // to be able to send to stdin
+        .arg(isolated_config("announce"))
+        .stdin(Stdio::piped()) // to be able to send to stdin
+        .env("PYTHONPATH", RETICULUM_PYTHON_DIR.as_str())
         .spawn()
         .expect("failed to start {script_path}");
 
     let transport = TransportConfig::default().build();
     let _ = transport.iface_manager().lock().await.spawn(
         UdpInterface::new("0.0.0.0:4242", Some("127.0.0.1:4243"), false),
-        UdpInterface::spawn);
+        UdpInterface::spawn,
+    );
     let mut recv_announces = transport.recv_announces().await;
     let handle = tokio::spawn(async move {
         let mut counter = 0;
@@ -72,9 +87,13 @@ async fn python_announce() {
             let result = time::timeout(time::Duration::from_secs(10), recv_announces.recv()).await;
             match result {
                 Ok(Ok(announce)) => {
-                    let app_data = str::from_utf8(announce.app_data.as_slice()).unwrap().to_string();
-                    log::info!("got announce {}: {app_data}",
-                        announce.destination.lock().await.desc.address_hash);
+                    let app_data = str::from_utf8(announce.app_data.as_slice())
+                        .unwrap()
+                        .to_string();
+                    log::info!(
+                        "got announce {}: {app_data}",
+                        announce.destination.lock().await.desc.address_hash
+                    );
                     if counter == 0 {
                         assert!(fruits.contains(&app_data));
                     } else {
@@ -109,7 +128,7 @@ async fn python_announce() {
     let _ = child.start_kill();
     match tokio::time::timeout(time::Duration::from_secs(5), child.wait()).await {
         Ok(Ok(status)) => log::debug!("Python exited with: {status}"),
-        _ => panic!("Python did not exit cleanly after kill")
+        _ => panic!("Python did not exit cleanly after kill"),
     }
 }
 
@@ -123,13 +142,14 @@ async fn python_link_client() {
     let script_path = format!("{}/Examples/Link.py", *RETICULUM_PYTHON_DIR);
 
     let mut child = Command::new("python3")
-        .arg("-u")  // make sure output is not buffered
+        .arg("-u") // make sure output is not buffered
         .arg(script_path)
         .arg("--server")
         .arg("--config")
-        .arg("tests/rns-py-configs/udp")
-        .stdin(Stdio::piped())  // we do not send to stdin in this example but to prevent EOF error
-        .stdout(Stdio::piped())  // to be able to process stdout lines
+        .arg(isolated_config("link-client"))
+        .stdin(Stdio::piped()) // we do not send to stdin in this example but to prevent EOF error
+        .stdout(Stdio::piped()) // to be able to process stdout lines
+        .env("PYTHONPATH", RETICULUM_PYTHON_DIR.as_str())
         .spawn()
         .expect("failed to start {script_path}");
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -138,7 +158,7 @@ async fn python_link_client() {
     let stdout_handle = tokio::spawn(async move {
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         // when the child process is killed next_line() will return None
-        while let Some(line) = lines.next_line().await.map_err(|err|{
+        while let Some(line) = lines.next_line().await.map_err(|err| {
             let err = format!("error iterating over child stdout lines: {err}");
             log::error!("{err}");
             err
@@ -146,20 +166,20 @@ async fn python_link_client() {
             println!("{line}");
             // parse the hash from:
             // [2026-06-03 12:03:33] [Notice]   Link example <5d3a09e13b866e49624d1bb576c23976> running, waiting for a connection.
-            if let Some ((index, _)) = line.match_indices(']').nth(1) {
-                let msg = line.split_at(index+1).1.trim();
+            if let Some((index, _)) = line.match_indices(']').nth(1) {
+                let msg = line.split_at(index + 1).1.trim();
                 if let Some(hash_start) = msg.strip_prefix("Link example <") {
                     if let Some(hash_end) = hash_start.find('>') {
                         let hash = AddressHash::new_from_hex_string(&hash_start[..hash_end])
                             .expect("failed to parse server destination hash");
                         if tx.send(hash).is_err() {
                             log::debug!("child process hash channel closed");
-                            break
+                            break;
                         }
                     } else {
                         let err = "could not parse server destination hash".to_string();
                         log::error!("{err}");
-                        return Err(err)
+                        return Err(err);
                     }
                 }
             }
@@ -171,7 +191,8 @@ async fn python_link_client() {
     let transport = TransportConfig::default().build();
     let _ = transport.iface_manager().lock().await.spawn(
         UdpInterface::new("0.0.0.0:4242", Some("127.0.0.1:4243"), false),
-        UdpInterface::spawn);
+        UdpInterface::spawn,
+    );
     let mut recv_announces = transport.recv_announces().await;
     // request announce
     transport.request_path(&server_hash, None, None).await;
@@ -180,9 +201,12 @@ async fn python_link_client() {
     let server_dest = match result {
         Ok(Ok(announce)) => announce.destination.clone(),
         Ok(Err(err)) => panic!("error waiting for announce: {err}"),
-        Err(_) => panic!("error waiting for announce: timeout")
+        Err(_) => panic!("error waiting for announce: timeout"),
     };
-    log::debug!("got server destination: {}", server_dest.lock().await.desc.address_hash);
+    log::debug!(
+        "got server destination: {}",
+        server_dest.lock().await.desc.address_hash
+    );
     // create link
     let mut out_link_events = transport.out_link_events();
     let link = transport.link(server_dest.lock().await.desc).await;
@@ -194,7 +218,7 @@ async fn python_link_client() {
                     log::debug!("link activated: sending data");
                     let packet = match link.lock().await.data_packet(b"test") {
                         Ok(packet) => packet,
-                        Err(err) => panic!("error creating data packet: {err:?}")
+                        Err(err) => panic!("error creating data packet: {err:?}"),
                     };
                     transport.send_packet(packet).await;
                 }
@@ -202,26 +226,26 @@ async fn python_link_client() {
                     log::debug!("got payload: {:?}", str::from_utf8(payload.as_slice()));
                     assert_eq!(payload.as_slice(), b"I received \"test\" over the link");
                     // succeeded: shut down
-                    break
+                    break;
                 }
                 LinkEvent::Proof(_) => {}
                 LinkEvent::RemoteIdentified(_) => panic!("error: unexpected remote identified"),
-                LinkEvent::Closed => panic!("error: link closed unexpectedly")
-            }
+                LinkEvent::Closed => panic!("error: link closed unexpectedly"),
+            },
             Ok(Err(err)) => panic!("error receiving out link events: {err}"),
-            Err(err) => panic!("timed out recieving out link events: {err}")
+            Err(err) => panic!("timed out recieving out link events: {err}"),
         }
     }
     // shutdown
     let _ = child.start_kill();
     match tokio::time::timeout(time::Duration::from_secs(5), child.wait()).await {
         Ok(Ok(status)) => log::debug!("Python exited with: {status}"),
-        _ => panic!("Python did not exit cleanly after kill")
+        _ => panic!("Python did not exit cleanly after kill"),
     }
     match stdout_handle.await {
         Ok(Ok(())) => log::debug!("child stdout task finished normally"),
         Ok(Err(err)) => panic!("error in child stdout task: {err}"),
-        Err(err) => panic!("child stdout task failed to join: {err:?}")
+        Err(err) => panic!("child stdout task failed to join: {err:?}"),
     }
 }
 
@@ -234,28 +258,36 @@ async fn python_link_server() {
 
     let server_identity = PrivateIdentity::new_from_rand(rand_core::OsRng);
     //let server_identity = PrivateIdentity::new_from_name("test-python-link-server");
-    let mut transport = TransportConfig::default().build();
+    let transport = TransportConfig::default().build();
     let _ = transport.iface_manager().lock().await.spawn(
         UdpInterface::new("0.0.0.0:4242", Some("127.0.0.1:4243"), false),
-        UdpInterface::spawn);
+        UdpInterface::spawn,
+    );
     let destination = transport
-        .add_destination(server_identity, DestinationName::new("example_utilities", "linkexample"))
+        .add_destination(
+            server_identity,
+            DestinationName::new("example_utilities", "linkexample"),
+        )
         .await;
     let destination_hash = destination.lock().await.desc.address_hash;
     log::info!("created server destination: {destination_hash}");
-    log::info!("created server destination: {:?}", destination_hash.as_slice());
+    log::info!(
+        "created server destination: {:?}",
+        destination_hash.as_slice()
+    );
     let mut in_link_events = transport.in_link_events();
 
     let script_path = format!("{}/Examples/Link.py", *RETICULUM_PYTHON_DIR);
 
     let mut child = Command::new("python3")
-        .arg("-u")  // make sure output is not buffered
+        .arg("-u") // make sure output is not buffered
         .arg(script_path)
         .arg("--config")
-        .arg("tests/rns-py-configs/udp")
+        .arg(isolated_config("link-server"))
         .arg(destination_hash.to_string().trim_matches('/'))
-        .stdin(Stdio::piped())   // to be able to send to stdin
-        .stdout(Stdio::piped())  // to be able to process stdout lines
+        .stdin(Stdio::piped()) // to be able to send to stdin
+        .stdout(Stdio::piped()) // to be able to process stdout lines
+        .env("PYTHONPATH", RETICULUM_PYTHON_DIR.as_str())
         .spawn()
         .expect("failed to start {script_path}");
     let stdout = child.stdout.take().expect("child process has no stdout");
@@ -265,7 +297,7 @@ async fn python_link_server() {
     let stdout_handle: JoinHandle<Result<(), String>> = tokio::spawn(async move {
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         // when the child process is killed next_line() will return None
-        while let Some(line) = lines.next_line().await.map_err(|err|{
+        while let Some(line) = lines.next_line().await.map_err(|err| {
             let err = format!("error iterating over child stdout lines: {err}");
             log::error!("{err}");
             err
@@ -273,16 +305,18 @@ async fn python_link_server() {
             println!("{line}");
             // test complete when client outputs:
             // [2026-06-05 23:03:30] [Notice]   Received data on the link: I received "test" over the link
-            if let Some ((index, _)) = line.match_indices(']').nth(1) {
-                let msg = line.split_at(index+1).1.trim();
-                if msg == "Link established with server, enter some text to send, or \"quit\" to quit" {
+            if let Some((index, _)) = line.match_indices(']').nth(1) {
+                let msg = line.split_at(index + 1).1.trim();
+                if msg
+                    == "Link established with server, enter some text to send, or \"quit\" to quit"
+                {
                     // ready to send message
                     READY_TO_SEND.store(true, atomic::Ordering::SeqCst);
                 } else if msg == "Received data on the link: I received \"test\" over the link" {
                     // test complete
                     log::info!("client got reply, breaking stdout loop");
                     RUNNING.store(false, atomic::Ordering::SeqCst);
-                    break
+                    break;
                 }
             }
         }
@@ -298,20 +332,22 @@ async fn python_link_server() {
                         log::info!("got payload: {payload:?}");
                         // send reply
                         let msg = format!("I received \"{payload}\" over the link");
-                        let link = transport.find_in_link(&event.id).await
+                        let link = transport
+                            .find_in_link(&event.id)
+                            .await
                             .expect("couldn't find in link");
                         let packet = match link.lock().await.data_packet(msg.as_bytes()) {
                             Ok(packet) => packet,
-                            Err(err) => panic!("error creating data packet: {err:?}")
+                            Err(err) => panic!("error creating data packet: {err:?}"),
                         };
                         transport.send_packet(packet).await;
                     }
                     LinkEvent::Proof(_) => {}
                     LinkEvent::RemoteIdentified(_) => panic!("error: unexpected remote identified"),
-                    LinkEvent::Closed => panic!("error: link closed unexpectedly")
-                }
+                    LinkEvent::Closed => panic!("error: link closed unexpectedly"),
+                },
                 Err(broadcast::error::TryRecvError::Empty) => {}
-                Err(err) => panic!("error receiving in link events: {err}")
+                Err(err) => panic!("error receiving in link events: {err}"),
             }
             time::sleep(time::Duration::from_millis(100)).await;
         }
@@ -342,18 +378,18 @@ async fn python_link_server() {
     match stdout_handle.await {
         Ok(Ok(())) => log::debug!("child stdout task finished normally"),
         Ok(Err(err)) => panic!("error in child stdout task: {err}"),
-        Err(err) => panic!("child stdout task failed to join: {err:?}")
+        Err(err) => panic!("child stdout task failed to join: {err:?}"),
     }
     match tokio::time::timeout(time::Duration::from_secs(5), link_task).await {
         Ok(Ok(())) => log::debug!("link task finished normally"),
         Ok(Err(err)) => panic!("link task failed to join: {err:?}"),
-        Err(err) => panic!("timed out waiting for link task: {err:?}")
+        Err(err) => panic!("timed out waiting for link task: {err:?}"),
     }
     // shutdown
     let _ = child.start_kill();
     match tokio::time::timeout(time::Duration::from_secs(5), child.wait()).await {
         Ok(Ok(status)) => log::debug!("Python exited with: {status}"),
-        _ => panic!("Python did not exit cleanly after kill")
+        _ => panic!("Python did not exit cleanly after kill"),
     }
 }
 
@@ -367,27 +403,33 @@ async fn python_identify_client() {
     let script_path = format!("{}/Examples/Identify.py", *RETICULUM_PYTHON_DIR);
 
     let mut child = Command::new("python3")
-        .arg("-u")  // make sure output is not buffered
+        .arg("-u") // make sure output is not buffered
         .arg(script_path)
         .arg("--server")
         .arg("--config")
-        .arg("tests/rns-py-configs/udp")
-        .stdin(Stdio::piped())  // we do not send to stdin in this example but to prevent EOF error
-        .stdout(Stdio::piped())  // to be able to process stdout lines
+        .arg(isolated_config("identify-client"))
+        .stdin(Stdio::piped()) // we do not send to stdin in this example but to prevent EOF error
+        .stdout(Stdio::piped()) // to be able to process stdout lines
+        .env("PYTHONPATH", RETICULUM_PYTHON_DIR.as_str())
         .spawn()
         .expect("failed to start {script_path}");
     let client_identity = PrivateIdentity::new_from_rand(rand_core::OsRng);
-    log::info!("created client identity: <{}>", client_identity.address_hash().to_hex_string());
+    log::info!(
+        "created client identity: <{}>",
+        client_identity.address_hash().to_hex_string()
+    );
     let (tx, mut rx) = mpsc::unbounded_channel();
     // forward stdout and return server destination hash
     let stdout = child.stdout.take().expect("child process has no stdout");
-    let remote_identified_msg =
-        format!("Remote identified as: <{}>", client_identity.address_hash().to_hex_string());
+    let remote_identified_msg = format!(
+        "Remote identified as: <{}>",
+        client_identity.address_hash().to_hex_string()
+    );
     static READY_TO_SEND: atomic::AtomicBool = atomic::AtomicBool::new(false);
     let stdout_handle = tokio::spawn(async move {
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         // when the child process is killed next_line() will return None
-        while let Some(line) = lines.next_line().await.map_err(|err|{
+        while let Some(line) = lines.next_line().await.map_err(|err| {
             let err = format!("error iterating over child stdout lines: {err}");
             log::error!("{err}");
             err
@@ -395,20 +437,20 @@ async fn python_identify_client() {
             println!("{line}");
             // parse the hash from:
             // [2026-06-03 12:03:33] [Notice]   Link identification example <5d3a09e13b866e49624d1bb576c23976> running, waiting for a connection.
-            if let Some ((index, _)) = line.match_indices(']').nth(1) {
-                let msg = line.split_at(index+1).1.trim();
+            if let Some((index, _)) = line.match_indices(']').nth(1) {
+                let msg = line.split_at(index + 1).1.trim();
                 if let Some(hash_start) = msg.strip_prefix("Link identification example <") {
                     if let Some(hash_end) = hash_start.find('>') {
                         let hash = AddressHash::new_from_hex_string(&hash_start[..hash_end])
                             .expect("failed to parse server destination hash");
                         if tx.send(hash).is_err() {
                             log::debug!("child process hash channel closed");
-                            break
+                            break;
                         }
                     } else {
                         let err = "could not parse server destination hash".to_string();
                         log::error!("{err}");
-                        return Err(err)
+                        return Err(err);
                     }
                 } else if msg == remote_identified_msg {
                     // ready to send message
@@ -423,7 +465,8 @@ async fn python_identify_client() {
     let transport = TransportConfig::default().build();
     let _ = transport.iface_manager().lock().await.spawn(
         UdpInterface::new("0.0.0.0:4242", Some("127.0.0.1:4243"), false),
-        UdpInterface::spawn);
+        UdpInterface::spawn,
+    );
     let mut recv_announces = transport.recv_announces().await;
     // request announce
     transport.request_path(&server_hash, None, None).await;
@@ -432,9 +475,12 @@ async fn python_identify_client() {
     let server_dest = match result {
         Ok(Ok(announce)) => announce.destination.clone(),
         Ok(Err(err)) => panic!("error waiting for announce: {err}"),
-        Err(_) => panic!("error waiting for announce: timeout")
+        Err(_) => panic!("error waiting for announce: timeout"),
     };
-    log::debug!("got server destination: {}", server_dest.lock().await.desc.address_hash);
+    log::debug!(
+        "got server destination: {}",
+        server_dest.lock().await.desc.address_hash
+    );
     // create link
     let mut out_link_events = transport.out_link_events();
     let link = transport.link(server_dest.lock().await.desc).await;
@@ -446,7 +492,7 @@ async fn python_identify_client() {
                     log::debug!("link activated: identifying to remote peer");
                     let packet = match link.lock().await.identify(&client_identity) {
                         Ok(packet) => packet,
-                        Err(err) => panic!("error creating identity packet: {err:?}")
+                        Err(err) => panic!("error creating identity packet: {err:?}"),
                     };
                     transport.send_packet(packet).await;
                     // wait until identified
@@ -462,37 +508,41 @@ async fn python_identify_client() {
                     log::debug!("link activated: sending data");
                     let packet = match link.lock().await.data_packet(b"test") {
                         Ok(packet) => packet,
-                        Err(err) => panic!("error creating data packet: {err:?}")
+                        Err(err) => panic!("error creating data packet: {err:?}"),
                     };
                     transport.send_packet(packet).await;
                 }
                 LinkEvent::Data(payload) => {
                     log::debug!("got payload: {:?}", str::from_utf8(payload.as_slice()));
-                    assert_eq!(payload.as_slice(),
-                        &format!("I received \"test\" over the link from <{}>",
+                    assert_eq!(
+                        payload.as_slice(),
+                        &format!(
+                            "I received \"test\" over the link from <{}>",
                             client_identity.address_hash().to_hex_string()
-                        ).into_bytes());
+                        )
+                        .into_bytes()
+                    );
                     // succeeded: shut down
-                    break
+                    break;
                 }
                 LinkEvent::Proof(_) => {}
                 LinkEvent::RemoteIdentified(_) => panic!("error: unexpected remote identified"),
-                LinkEvent::Closed => panic!("error: link closed unexpectedly")
-            }
+                LinkEvent::Closed => panic!("error: link closed unexpectedly"),
+            },
             Ok(Err(err)) => panic!("error receiving out link events: {err}"),
-            Err(err) => panic!("timed out recieving out link events: {err}")
+            Err(err) => panic!("timed out recieving out link events: {err}"),
         }
     }
     // shutdown
     let _ = child.start_kill();
     match tokio::time::timeout(time::Duration::from_secs(5), child.wait()).await {
         Ok(Ok(status)) => log::debug!("Python exited with: {status}"),
-        _ => panic!("Python did not exit cleanly after kill")
+        _ => panic!("Python did not exit cleanly after kill"),
     }
     match stdout_handle.await {
         Ok(Ok(())) => log::debug!("child stdout task finished normally"),
         Ok(Err(err)) => panic!("error in child stdout task: {err}"),
-        Err(err) => panic!("child stdout task failed to join: {err:?}")
+        Err(err) => panic!("child stdout task failed to join: {err:?}"),
     }
 }
 
@@ -505,30 +555,36 @@ async fn python_identify_server() {
 
     let server_identity = PrivateIdentity::new_from_rand(rand_core::OsRng);
     //let server_identity = PrivateIdentity::new_from_name("test-python-link-server");
-    let mut transport = TransportConfig::default().build();
+    let transport = TransportConfig::default().build();
     let _ = transport.iface_manager().lock().await.spawn(
         UdpInterface::new("0.0.0.0:4242", Some("127.0.0.1:4243"), false),
-        UdpInterface::spawn);
+        UdpInterface::spawn,
+    );
     let destination = transport
         .add_destination(
             server_identity,
-            DestinationName::new("example_utilities", "identifyexample"))
+            DestinationName::new("example_utilities", "identifyexample"),
+        )
         .await;
     let destination_hash = destination.lock().await.desc.address_hash;
     log::info!("created server destination: {destination_hash}");
-    log::info!("created server destination: {:?}", destination_hash.as_slice());
+    log::info!(
+        "created server destination: {:?}",
+        destination_hash.as_slice()
+    );
     let mut in_link_events = transport.in_link_events();
 
     let script_path = format!("{}/Examples/Identify.py", *RETICULUM_PYTHON_DIR);
 
     let mut child = Command::new("python3")
-        .arg("-u")  // make sure output is not buffered
+        .arg("-u") // make sure output is not buffered
         .arg(script_path)
         .arg("--config")
-        .arg("tests/rns-py-configs/udp")
+        .arg(isolated_config("identify-server"))
         .arg(destination_hash.to_string().trim_matches('/'))
-        .stdin(Stdio::piped())   // to be able to send to stdin
-        .stdout(Stdio::piped())  // to be able to process stdout lines
+        .stdin(Stdio::piped()) // to be able to send to stdin
+        .stdout(Stdio::piped()) // to be able to process stdout lines
+        .env("PYTHONPATH", RETICULUM_PYTHON_DIR.as_str())
         .spawn()
         .expect("failed to start {script_path}");
     let stdout = child.stdout.take().expect("child process has no stdout");
@@ -540,7 +596,7 @@ async fn python_identify_server() {
     let stdout_handle: JoinHandle<Result<(), String>> = tokio::spawn(async move {
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         // when the child process is killed next_line() will return None
-        while let Some(line) = lines.next_line().await.map_err(|err|{
+        while let Some(line) = lines.next_line().await.map_err(|err| {
             let err = format!("error iterating over child stdout lines: {err}");
             log::error!("{err}");
             err
@@ -549,16 +605,17 @@ async fn python_identify_server() {
             if let Some(remote_id) = remote_id.lock().await.as_ref() {
                 // test complete when client outputs:
                 // [2026-07-29 05:13:45] [Notice]   Received data on the link: I received "test" over the link from <client-id>
-                if let Some ((index, _)) = line.match_indices(']').nth(1) {
-                    let msg = line.split_at(index+1).1.trim();
-                    let received_data_msg =
-                        format!("Received data on the link: I received \"test\" over the link from <{}>",
-                            remote_id.address_hash.to_hex_string());
+                if let Some((index, _)) = line.match_indices(']').nth(1) {
+                    let msg = line.split_at(index + 1).1.trim();
+                    let received_data_msg = format!(
+                        "Received data on the link: I received \"test\" over the link from <{}>",
+                        remote_id.address_hash.to_hex_string()
+                    );
                     if msg == received_data_msg {
                         // test complete
                         log::info!("client got reply, breaking stdout loop");
                         RUNNING.store(false, atomic::Ordering::SeqCst);
-                        break
+                        break;
                     }
                 }
             }
@@ -574,15 +631,19 @@ async fn python_identify_server() {
                         let payload = str::from_utf8(payload.as_slice()).unwrap();
                         log::info!("got payload: {payload:?}");
                         // send reply
-                        let link = transport.find_in_link(&event.id).await
+                        let link = transport
+                            .find_in_link(&event.id)
+                            .await
                             .expect("couldn't find in link");
                         let remote_id = link.lock().await.remote_identity();
                         if let Some(remote_id) = remote_id {
-                            let msg = format!("I received \"{payload}\" over the link from <{}>",
-                                remote_id.address_hash.to_hex_string());
+                            let msg = format!(
+                                "I received \"{payload}\" over the link from <{}>",
+                                remote_id.address_hash.to_hex_string()
+                            );
                             let packet = match link.lock().await.data_packet(msg.as_bytes()) {
                                 Ok(packet) => packet,
-                                Err(err) => panic!("error creating data packet: {err:?}")
+                                Err(err) => panic!("error creating data packet: {err:?}"),
                             };
                             transport.send_packet(packet).await;
                         } else {
@@ -595,10 +656,10 @@ async fn python_identify_server() {
                         // ready to send message
                         READY_TO_SEND.store(true, atomic::Ordering::SeqCst);
                     }
-                    LinkEvent::Closed => panic!("error: link closed unexpectedly")
-                }
+                    LinkEvent::Closed => panic!("error: link closed unexpectedly"),
+                },
                 Err(broadcast::error::TryRecvError::Empty) => {}
-                Err(err) => panic!("error receiving in link events: {err}")
+                Err(err) => panic!("error receiving in link events: {err}"),
             }
             time::sleep(time::Duration::from_millis(100)).await;
         }
@@ -629,18 +690,18 @@ async fn python_identify_server() {
     match stdout_handle.await {
         Ok(Ok(())) => log::debug!("child stdout task finished normally"),
         Ok(Err(err)) => panic!("error in child stdout task: {err}"),
-        Err(err) => panic!("child stdout task failed to join: {err:?}")
+        Err(err) => panic!("child stdout task failed to join: {err:?}"),
     }
     match tokio::time::timeout(time::Duration::from_secs(5), link_task).await {
         Ok(Ok(())) => log::debug!("link task finished normally"),
         Ok(Err(err)) => panic!("link task failed to join: {err:?}"),
-        Err(err) => panic!("timed out waiting for link task: {err:?}")
+        Err(err) => panic!("timed out waiting for link task: {err:?}"),
     }
     // shutdown
     let _ = child.start_kill();
     match tokio::time::timeout(time::Duration::from_secs(5), child.wait()).await {
         Ok(Ok(status)) => log::debug!("Python exited with: {status}"),
-        _ => panic!("Python did not exit cleanly after kill")
+        _ => panic!("Python did not exit cleanly after kill"),
     }
 }
 
@@ -705,7 +766,7 @@ async fn python_relay() {
     let (node_a, bind, forward) = build("a", "127.0.0.1:4244", "127.0.0.1:4245");
     node_a.iface_manager().lock().await
         .spawn(UdpInterface::new(bind, Some(forward), false), UdpInterface::spawn);
-    let (mut node_b, bind, forward) = build("b", "127.0.0.1:4246", "127.0.0.1:4247");
+    let (node_b, bind, forward) = build("b", "127.0.0.1:4246", "127.0.0.1:4247");
     node_b.iface_manager().lock().await
         .spawn(UdpInterface::new(bind, Some(forward), false), UdpInterface::spawn);
 
@@ -853,7 +914,7 @@ async fn python_initiator_through_rust_relay() {
         TcpServer::spawn,
     );
 
-    let mut node_b = TransportConfig::new("b", &PrivateIdentity::new_from_rand(rand_core::OsRng)).build();
+    let node_b = TransportConfig::new("b", &PrivateIdentity::new_from_rand(rand_core::OsRng)).build();
     node_b.iface_manager().lock().await
         .spawn(TcpClient::new("127.0.0.1:4251"), TcpClient::spawn);
 

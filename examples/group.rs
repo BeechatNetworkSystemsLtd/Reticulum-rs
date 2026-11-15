@@ -22,9 +22,8 @@ use rand_core::OsRng;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 
-use reticulum::crypt::group::{GroupKey, GROUP_KEY_LENGTH};
-use reticulum::destination::DestinationName;
-use reticulum::identity::{GroupIdentity, PrivateIdentity, PUBLIC_KEY_LENGTH};
+use reticulum::destination::{DestinationName, GroupKey, GROUP_KEY_SIZE};
+use reticulum::identity::{PrivateIdentity, PUBLIC_KEY_LENGTH};
 use reticulum::iface::tcp_client::TcpClient;
 use reticulum::iface::udp::UdpInterface;
 use reticulum::transport::{Transport, TransportConfig};
@@ -33,7 +32,7 @@ const APP_NAME: &str = "example_utilities";
 const DEFAULT_CHANNEL: &str = "default";
 
 const IDENTITY_LENGTH: usize = PUBLIC_KEY_LENGTH * 2;
-const KEY_LENGTH: usize = GROUP_KEY_LENGTH;
+const KEY_LENGTH: usize = GROUP_KEY_SIZE;
 
 fn usage() -> ! {
     eprintln!("usage: group --create <group keys file>");
@@ -44,7 +43,7 @@ fn usage() -> ! {
 
 fn create_group_keys(path: &str) {
     let identity = PrivateIdentity::new_from_rand(OsRng);
-    let key = GroupKey::new_rand(OsRng);
+    let key = GroupKey::generate(OsRng);
     let mut group_keys: Vec<u8> = {
       // private keys are only available as a hex string
       let hex = identity.to_hex_string();
@@ -72,7 +71,7 @@ fn create_group_keys(path: &str) {
     }
 }
 
-fn load_group_keys(path: &str) -> GroupIdentity {
+fn load_group_keys(path: &str) -> GroupKey {
     let group_keys = match std::fs::read(path) {
         Ok(data) => data,
         Err(err) => {
@@ -84,17 +83,18 @@ fn load_group_keys(path: &str) -> GroupIdentity {
         log::error!("Invalid group keys file {}", path);
         exit(1);
     }
+    // The identity is kept in the keys file for Python compatibility, but
+    // group addresses here are derived from the destination name alone.
     let identity_hex: String = group_keys[..IDENTITY_LENGTH].iter()
       .map(|byte| format!("{:02x}", byte)).collect();
-    let identity = match PrivateIdentity::new_from_hex_string(&identity_hex) {
-        Ok(identity) => identity,
-        Err(_) => {
-            log::error!("Could not load identity from group keys file {}", path);
-            exit(1);
-        }
-    };
-    let key = GroupKey::new_from_slice(&group_keys[IDENTITY_LENGTH..]).expect("valid group key");
-    GroupIdentity::new(*identity.as_identity(), key)
+    if PrivateIdentity::new_from_hex_string(&identity_hex).is_err() {
+        log::error!("Could not load identity from group keys file {}", path);
+        exit(1);
+    }
+    let key: [u8; GROUP_KEY_SIZE] = group_keys[IDENTITY_LENGTH..]
+        .try_into()
+        .expect("valid group key length");
+    GroupKey::from_bytes(key)
 }
 
 #[tokio::main]
@@ -123,7 +123,7 @@ async fn main() {
         }
     }
 
-    let group_identity = load_group_keys(group_path);
+    let group_key = load_group_keys(group_path);
     let mut transport = Transport::new(TransportConfig::default());
     {
         let iface_manager = transport.iface_manager();
@@ -139,11 +139,9 @@ async fn main() {
     }
 
     let destination = transport
-        .add_group_destination(
-            group_identity,
-            DestinationName::new(APP_NAME, &format!("group.{}", channel)),
-        )
+        .add_group_destination(DestinationName::new(APP_NAME, &format!("group.{}", channel)))
         .await;
+    destination.lock().await.load_group_key(*group_key.as_bytes());
 
     let address = destination.lock().await.desc.address_hash;
 
@@ -181,9 +179,15 @@ async fn main() {
             line = lines.recv(), if stdin_open => match line {
                 Some(line) => {
                     if !line.is_empty() {
-                        match destination.lock().await.data_packet(OsRng, line.as_bytes()) {
-                            Ok(packet) => transport.send_packet(packet).await,
-                            Err(err) => log::error!("Could not send message: {:?}", err),
+                        if let Err(err) = transport
+                            .send_to_group_destination(
+                                DestinationName::new(APP_NAME, &format!("group.{}", channel)),
+                                line.as_bytes(),
+                                Some(group_key.as_bytes()),
+                            )
+                            .await
+                        {
+                            log::error!("Could not send message: {:?}", err);
                         }
                     }
                     prompt();

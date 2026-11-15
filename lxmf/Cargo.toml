@@ -1,0 +1,34 @@
+[package]
+name = "lxmf"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[features]
+# bz2 forwards to reticulum's bzip2 support; advertised as SF_COMPRESSION.
+default = ["bz2"]
+bz2 = ["reticulum/bz2"]
+
+[dependencies]
+reticulum = { version = "*", path = "..", default-features = false }
+reticulum-core = { version = "*", path = "../reticulum-core" }
+
+# MessagePack wire format (same low-level encoder as the reticulum crates,
+# byte-compatible with RNS' vendored umsgpack for the types LXMF uses)
+rmp = "0.8.14"
+
+# Cryptography for stamps, signatures and single-destination encryption
+sha2 = "0.10.8"
+hkdf = "0.12.4"
+ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+
+# Async runtime for the router
+tokio = { version = "1.44.2", features = ["sync", "rt", "macros", "time"] }
+
+log = "0.4.27"
+
+[dev-dependencies]
+serde_json = "1.0"
+tokio = { version = "1.44.2", features = ["full"] }

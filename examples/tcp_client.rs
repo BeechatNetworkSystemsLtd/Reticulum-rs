@@ -22,13 +22,12 @@ async fn main() {
 
     let id = PrivateIdentity::new_from_rand(OsRng);
 
-    let destination = SingleInputDestination::new(id, DestinationName::new("example", "app"));
+    let mut destination = SingleInputDestination::new(id, DestinationName::new("example", "app"));
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    transport
-        .send_direct(client_addr, destination.announce(OsRng, None).unwrap())
-        .await;
+    let announce = destination.announce(OsRng, None).unwrap();
+    transport.send_direct(client_addr, announce).await;
 
     let _ = tokio::signal::ctrl_c().await;
 

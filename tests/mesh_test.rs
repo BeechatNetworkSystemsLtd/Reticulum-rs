@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::time::Duration;
 
 use rand_core::OsRng;
-use reticulum::packet::{DestinationType, HeaderType, Packet, PacketDataBuffer, PacketType};
+use reticulum::packet::{DestinationType, HeaderType, Packet, PacketDataBuffer, PacketType, PACKET_MDU};
 use reticulum::{
     destination::{
         link::{LinkEvent, LinkEventData, LinkId},
@@ -203,7 +203,7 @@ async fn link_after_announce(
 async fn announce_reaches_all_nodes() {
     setup();
 
-    let mut transports = mesh(9, &grid(), TimerConfig::default(), true).await;
+    let transports = mesh(9, &grid(), TimerConfig::default(), true).await;
 
     let mut announces = Vec::new();
     for transport in &transports[1..] {
@@ -336,7 +336,7 @@ async fn foreign_transport_id_ignored() {
     setup();
 
     let mut transports = mesh(2, &[(0, 1)], TimerConfig::default(), true).await;
-    let mut node_1 = transports.pop().unwrap();
+    let node_1 = transports.pop().unwrap();
     let node_0 = &transports[0];
 
     let mut in_link_events = node_1.in_link_events();
@@ -415,13 +415,20 @@ async fn foreign_transport_id_ignored() {
         "message proof without transport id not received"
     );
 
-    // data for the destination of node 1, with its address as transport id
+    // data for the destination of node 1, with its address as transport id.
+    // SINGLE payloads are encrypted to the destination identity; this
+    // transport only delivers what decrypts.
     let data_packet = |data: &[u8]| {
+        let mut buffer = [0u8; PACKET_MDU];
+        let token = desc
+            .identity
+            .encrypt(OsRng, data, None, &mut buffer)
+            .expect("destination token");
         let mut packet = Packet::default();
         packet.header.packet_type = PacketType::Data;
         packet.header.destination_type = DestinationType::Single;
         packet.destination = address;
-        packet.data = PacketDataBuffer::new_from_slice(data);
+        packet.data = PacketDataBuffer::new_from_slice(token);
         packet
     };
     node_0.send_broadcast(in_transport(data_packet(b"foreign"), address), None).await;
@@ -463,7 +470,7 @@ async fn link_recovers_after_relay_drop(close_interfaces: bool, restart_outlinks
     setup();
 
     let mut transports = mesh(9, &grid(), fast_timers(), restart_outlinks).await;
-    let mut node_8 = transports.pop().unwrap();
+    let node_8 = transports.pop().unwrap();
     let node_0 = transports.remove(0);
     // relays: nodes 1 to 7
     let mut relays: Vec<_> = transports.into_iter().map(Some).collect();

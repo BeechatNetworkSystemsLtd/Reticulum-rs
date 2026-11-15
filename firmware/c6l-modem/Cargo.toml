@@ -1,0 +1,58 @@
+[package]
+name = "c6l-modem"
+version = "0.4.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "c6l-modem"
+path = "src/main.rs"
+
+[dependencies]
+rnode-modem-core = { path = "../../rnode-modem-core", default-features = false }
+log = "0.4"
+
+# April-2026 esp-hal release train: the WiFi driver is esp-radio and the
+# preempt scheduler lives in esp-rtos (extracted from esp-wifi, which
+# froze at connect on the 0.12 generation).
+esp-hal = { version = "1.1.2", features = ["esp32c6", "unstable"] }
+# Local fork for executor debugging
+esp-rtos = { path = "../patches/esp-rtos", features = ["esp32c6", "esp-radio", "embassy", "log-04"] }
+esp-radio = { version = "0.18.0", default-features = false, features = ["esp32c6", "wifi", "log-04"] }
+esp-alloc = "0.10"
+esp-backtrace = { version = "0.20", features = ["esp32c6", "panic-handler", "println"] }
+esp-println = { version = "0.18", features = ["esp32c6", "log-04"] }
+esp-bootloader-esp-idf = { version = "0.5", features = ["esp32c6"] }
+
+# embassy-executor 0.10: the arena is sized by the build (config), not a feature
+embassy-executor = "0.10"
+embassy-time = "0.5"
+# Patched for accept-waker debugging
+embassy-net  = { path = "../patches/embassy-net", features = ["dhcpv4", "medium-ethernet", "tcp", "log"] }
+embassy-sync = "0.8"
+embassy-futures = "0.1"
+futures-util = { version = "0.3", default-features = false }
+
+embedded-hal = "1"
+embedded-hal-bus = "0.3"
+embedded-hal-nb = "1.0"
+embedded-io = "0.6"
+embedded-io-async = "0.6"
+embedded-hal-async = "1.0"
+static_cell = "2"
+nb = "1"
+
+# esp-radio documents opt-level >= 2 (README); the app itself is proven
+# at "s".
+[profile.dev]
+opt-level = 2
+
+[profile.release]
+opt-level = 2
+lto = "off"
+
+[profile.release.package.esp-radio]
+opt-level = 2
+
+
+[workspace]

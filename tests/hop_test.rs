@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use rand_core::OsRng;
 use reticulum::{
-    destination::DestinationName,
     destination::link::LinkEvent,
+    destination::DestinationName,
     identity::PrivateIdentity,
     iface::{tcp_client::TcpClient, tcp_server::TcpServer},
     transport::{Transport, TransportConfig},
@@ -15,9 +15,7 @@ static INIT: Once = Once::new();
 
 fn setup() {
     INIT.call_once(|| {
-        env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or("trace")
-        ).init()
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init()
     });
 }
 
@@ -25,7 +23,7 @@ async fn build_transport_full(
     name: &str,
     server_addr: &str,
     client_addr: &[&str],
-    retransmit: bool
+    retransmit: bool,
 ) -> Transport {
     let transport = TransportConfig::new(name, &PrivateIdentity::new_from_rand(OsRng))
         .set_retransmit(retransmit)
@@ -57,10 +55,10 @@ async fn build_transport(name: &str, server_addr: &str, client_addr: &[&str]) ->
 async fn calculate_hop_distance() {
     setup();
 
-    let mut transport_a = build_transport("a", "127.0.0.1:8081", &[]).await;
-    let transport_b = build_transport("b", "127.0.0.1:8082", &["127.0.0.1:8081"]).await;
+    let transport_a = build_transport("a", "127.0.0.1:18081", &[]).await;
+    let transport_b = build_transport("b", "127.0.0.1:18082", &["127.0.0.1:18081"]).await;
     let transport_c =
-        build_transport("c", "127.0.0.1:8083", &["127.0.0.1:8081", "127.0.0.1:8082"]).await;
+        build_transport("c", "127.0.0.1:18083", &["127.0.0.1:18081", "127.0.0.1:18082"]).await;
 
     let id_a = PrivateIdentity::new_from_name("a");
 
@@ -84,7 +82,7 @@ async fn direct_path_request_and_response() {
     setup();
 
     let transport_a = build_transport("a", "127.0.0.1:8181", &[]).await;
-    let mut transport_b = build_transport("b", "127.0.0.1:8182", &["127.0.0.1:8181"]).await;
+    let transport_b = build_transport("b", "127.0.0.1:8182", &["127.0.0.1:8181"]).await;
 
     let id_b = PrivateIdentity::new_from_name("b");
 
@@ -107,13 +105,8 @@ async fn remote_path_request_and_response() {
     setup();
 
     let transport_a = build_transport("a", "127.0.0.1:8281", &[]).await;
-    let mut transport_b = build_transport_full(
-        "b",
-        "127.0.0.1:8282",
-        &["127.0.0.1:8281"],
-        true
-    ).await;
-    let mut transport_c = build_transport("c", "127.0.0.1:8283", &["127.0.0.1:8282"]).await;
+    let transport_b = build_transport_full("b", "127.0.0.1:8282", &["127.0.0.1:8281"], true).await;
+    let transport_c = build_transport("c", "127.0.0.1:8283", &["127.0.0.1:8282"]).await;
 
     let id_c = PrivateIdentity::new_from_name("c");
     let dest_c = transport_c
@@ -139,11 +132,21 @@ async fn remote_path_request_and_response() {
     time::pause();
     time::advance(time::Duration::from_secs(3600)).await;
 
-    transport_b.send_announce(&dest_b, None).await; 
+    transport_b.send_announce(&dest_b, None).await;
     transport_a.recv_announces().await;
     transport_a.request_path(&dest_c_hash, None, None).await;
 
-    assert!(transport_a.knows_destination(&dest_c_hash).await);
+    // The path response is grace-delayed and transmitted by the announce
+    // retransmit job (Python rebroadcasts path responses after a short
+    // grace period), so poll for the learned path.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
+        if transport_a.knows_destination(&dest_c_hash).await {
+            return;
+        }
+        time::sleep(Duration::from_millis(200)).await;
+    }
+    panic!("path request response for C never arrived at A");
 }
 
 #[tokio::test]
@@ -151,25 +154,26 @@ async fn message_proof_over_remote_link() {
     setup();
 
     let transport_a = build_transport("a", "127.0.0.1:8381", &[]).await;
-    let _transport_b =
-        build_transport_full("b", "127.0.0.1:8382", &["127.0.0.1:8381"], true)
-        .await;
-    let mut transport_c =
-        build_transport("c", "127.0.0.1:8383", &["127.0.0.1:8382"])
-        .await;
+    let _transport_b = build_transport_full("b", "127.0.0.1:8382", &["127.0.0.1:8381"], true).await;
+    let transport_c = build_transport("c", "127.0.0.1:8383", &["127.0.0.1:8382"]).await;
 
     let id_c = PrivateIdentity::new_from_name("c");
     let dest_c = transport_c
         .add_destination(id_c, DestinationName::new("test", "link_to"))
         .await;
+    dest_c.lock().await.proof_strategy = reticulum::destination::ProofStrategy::All;
     let dest_c_hash = dest_c.lock().await.desc.address_hash;
-    // NOTE: we have to wait before sending announce because if the TCP client has not yet
-    // connected, the outgoing packet will be dropped
-    // TODO: can we do this without waiting?
-    time::sleep(Duration::from_millis(100)).await;
-    transport_c.send_announce(&dest_c, None).await;
-
-    transport_a.recv_announces().await.recv().await.unwrap();
+    // Re-announce until A hears it: announces sent before the TCP clients
+    // along the chain are connected are dropped.
+    let mut announces = transport_a.recv_announces().await;
+    let deadline = time::Instant::now() + Duration::from_secs(15);
+    loop {
+        transport_c.send_announce(&dest_c, None).await;
+        if let Ok(Ok(_)) = time::timeout(Duration::from_secs(1), announces.recv()).await {
+            break;
+        }
+        assert!(time::Instant::now() < deadline, "announce from C never reached A");
+    }
     let link = transport_a.link(dest_c.lock().await.desc).await;
     let link_id = *link.lock().await.id();
 
@@ -183,7 +187,9 @@ async fn message_proof_over_remote_link() {
 
     let message = "foo";
 
-    let sent = transport_a.send_to_out_links(&dest_c_hash, message.as_bytes()).await;
+    let sent = transport_a
+        .send_to_out_links(&dest_c_hash, message.as_bytes())
+        .await;
     let expected_hash = sent[0];
 
     tokio::select! {

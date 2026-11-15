@@ -1,0 +1,22 @@
+[package]
+name = "reticulum-ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = []
+iface-auto = ["reticulum-actor/iface-auto"]
+iface-serial = ["reticulum-actor/iface-serial"]
+iface-pipe = ["reticulum-actor/iface-pipe"]
+iface-i2p = ["reticulum-actor/iface-i2p"]
+iface-rnode = ["reticulum-actor/iface-rnode"]
+iface-backbone = ["reticulum-actor/iface-backbone"]
+
+[dependencies]
+reticulum-actor = { path = "../reticulum-actor" }
+uniffi = "0.31.0"
+flume = "0.11"

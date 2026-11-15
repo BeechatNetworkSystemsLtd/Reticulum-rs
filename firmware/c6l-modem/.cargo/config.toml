@@ -1,0 +1,9 @@
+[target.riscv32imac-unknown-none-elf]
+runner = "probe-rs run --chip esp32c6"
+
+
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[target.'cfg(target_arch = "riscv32")']
+rustflags = ["-C", "link-arg=-Tlinkall.x"]

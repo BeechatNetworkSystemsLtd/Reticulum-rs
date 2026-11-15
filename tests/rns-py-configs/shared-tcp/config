@@ -1,0 +1,20 @@
+# Python Reticulum config used by tests/python_shared_instance.rs:
+# a shared instance over TCP (shared_instance_type = tcp) on port 42840
+# plus a UDP interface for external connectivity.
+[reticulum]
+  enable_transport = Yes
+  share_instance = Yes
+  shared_instance_type = tcp
+  shared_instance_port = 42840
+
+[logging]
+  loglevel = 4
+
+[interfaces]
+  [[UDP Interface]]
+    type = UDPInterface
+    enabled = yes
+    listen_ip = 127.0.0.1
+    listen_port = 42843
+    forward_ip = 127.0.0.1
+    forward_port = 42842

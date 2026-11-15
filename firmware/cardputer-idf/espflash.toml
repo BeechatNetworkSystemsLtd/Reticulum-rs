@@ -1,0 +1,6 @@
+# esp-idf-sys 0.38 does NOT support CONFIG_PARTITION_TABLE_CUSTOM (see
+# its README: the IDF build would look for the csv inside the build
+# dir and fail; the generated partition-table.bin is ignored anyway).
+# Custom layout is handed to the flasher instead:
+[idf_format_args]
+partition_table = "partitions.csv"

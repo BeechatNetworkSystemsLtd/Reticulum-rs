@@ -1,0 +1,12 @@
+[reticulum]
+  enable_transport = Yes
+  share_instance = No
+
+[interfaces]
+  [[TCP Server]]
+    type = TCPServerInterface
+    enabled = yes
+    listen_ip = 127.0.0.1
+    listen_port = 4381
+    ifac_size = 64
+    passphrase = interop-secret

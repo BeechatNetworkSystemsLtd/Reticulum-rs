@@ -1,18 +1,20 @@
 use core::cmp::min;
 use core::fmt;
 
+use alloc::boxed::Box;
+
 use crate::error::RnsError;
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct StaticBuffer<const N: usize> {
-    buffer: [u8; N],
+    buffer: Box<[u8; N]>,
     len: usize,
 }
 
 impl<const N: usize> StaticBuffer<N> {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            buffer: [0u8; N],
+            buffer: Box::new([0u8; N]),
             len: 0,
         }
     }
@@ -114,10 +116,7 @@ impl<const N: usize> StaticBuffer<N> {
 
 impl<const N: usize> Default for StaticBuffer<N> {
     fn default() -> Self {
-        Self {
-            buffer: [0u8; N],
-            len: 0,
-        }
+        Self::new()
     }
 }
 

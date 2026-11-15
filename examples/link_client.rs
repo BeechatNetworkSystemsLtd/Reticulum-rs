@@ -9,7 +9,7 @@ use reticulum::transport::{Transport, TransportConfig};
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
 
-    let mut transport = Transport::new(TransportConfig::default());
+    let transport = Transport::new(TransportConfig::default());
 
     log::info!("start tcp app");
 
@@ -30,9 +30,8 @@ async fn main() {
         )
         .await;
 
-    transport
-        .send_packet(in_destination.lock().await.announce(OsRng, None).unwrap())
-        .await;
+    let announce = in_destination.lock().await.announce(OsRng, None).unwrap();
+    transport.send_packet(announce).await;
 
     tokio::spawn(async move {
         let recv = transport.recv_announces();
@@ -48,7 +47,6 @@ async fn main() {
             }
         }
     });
-
 
     let _ = tokio::signal::ctrl_c().await;
 }

@@ -1,0 +1,66 @@
+{
+  "announce_plain": {
+    "app_data": "706c61696e20616e6e6f756e63652066697874757265",
+    "context_flag": 0,
+    "destination_hash": "2da0b52e6b3ac4be099359691f115ecd",
+    "name": "example_utilities.parity.650b5d76b6bec0390d1f8cfca5bd33f9"
+  },
+  "announce_ratchet": {
+    "app_data": "7261746368657420616e6e6f756e63652066697874757265",
+    "context_flag": 1,
+    "destination_hash": "cc0c245419a109fbf721f92d96533846",
+    "name": "example_utilities.ratcheted.650b5d76b6bec0390d1f8cfca5bd33f9",
+    "ratchet_pub_hex": "a2a34df0b31dd95e599e4057e1890517660c49e3d2673fb0e8b73824a65f5839"
+  },
+  "encrypt": {
+    "ephemeral_prv_hex": "9988776655443322119988776655443322119988776655443322119988776655",
+    "ephemeral_pub_hex": "b1fe356b8f771adc7ddbf92b7235107d19890df400c519c20c7c0b204e7b2b0a",
+    "plaintext_hex": "74686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f67",
+    "ratchet_token_len": 128,
+    "static_token_len": 128
+  },
+  "identity_hash_hex": "650b5d76b6bec0390d1f8cfca5bd33f9",
+  "identity_prv_hex": "f8953ffaf607627e615603ff1530c82c434cf87c07179dd7689ea776f30b964cfb7ba6164af00c5111a45e69e57d885e1285f8dbfe3a21e95ae17cf676b0f8b7",
+  "known_destinations": {
+    "00112233445566778899aabbccddeeff": {
+      "app_data": "",
+      "packet_hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "public_key": "a6ad9609176a4c5012ae056539065be584d5dc92e78ee151dd64654ccf0cd63596103b09e36c0fb83596fb2a6139075d6510236e6a86129cfc1fd403f74c5b11",
+      "time": 1735689604.5,
+      "uses": -1
+    },
+    "2da0b52e6b3ac4be099359691f115ecd": {
+      "app_data": "6b6e6f776e2064657374696e6174696f6e732066697874757265",
+      "packet_hash": "28bbab00bbb8f886c90179d930e093d1db0bd9a0a24105593515ff157803f42b",
+      "public_key": "4219d9ce29da42bc823b66b24a051c65b482f062a436bdeb3793bbfa629249301cd07b674027511e73469c4edec93634c2965fdeeae8e1c50db4b912c616501b",
+      "time": 1735689601.5,
+      "uses": 0
+    },
+    "97ecde3d888137f8b38331de195b9c19": {
+      "app_data": null,
+      "packet_hash": "509ed089fcb917b80a275a5d90bee1294ceeaf80a3307e41331ef1ef71010685",
+      "public_key": "a6ad9609176a4c5012ae056539065be584d5dc92e78ee151dd64654ccf0cd63596103b09e36c0fb83596fb2a6139075d6510236e6a86129cfc1fd403f74c5b11",
+      "time": 1735689602.5,
+      "uses": 1735689603.5
+    }
+  },
+  "known_destinations_order": [
+    "2da0b52e6b3ac4be099359691f115ecd",
+    "97ecde3d888137f8b38331de195b9c19",
+    "00112233445566778899aabbccddeeff"
+  ],
+  "peer_hash_hex": "1469e89450c361b253aefb0c606b6111",
+  "peer_prv_hex": "d85d036245436a3c33d3228affae06721f8203bc364ee0ee7556368ac62add650ebf8f926abf628da9d92baaa12db89bd6516ee92ec29765f3afafcb8622d697",
+  "proof": {
+    "explicit_hex": "5d1a5f2e6e20b7c9db3b10c8d4e2b6dbac9d81f2f0a54c3e0f7d2f9bb1a3ea178862dffdde4e47e692b5ed46a8f7ced10823370d0a1c8080a5d0a14a107bafce8e54726b20610da81672eee026f29396b1ac4b5659a222a096838d498aef0302",
+    "implicit_hex": "8862dffdde4e47e692b5ed46a8f7ced10823370d0a1c8080a5d0a14a107bafce8e54726b20610da81672eee026f29396b1ac4b5659a222a096838d498aef0302",
+    "packet_hash_hex": "5d1a5f2e6e20b7c9db3b10c8d4e2b6dbac9d81f2f0a54c3e0f7d2f9bb1a3ea17"
+  },
+  "ratchet": {
+    "destination_hash": "2da0b52e6b3ac4be099359691f115ecd",
+    "id_hex": "f289d27f7ea2365cd7b0",
+    "private_hex": "a457d1c7f88b5cf3dcb1b0f3a3e1d5a30a1eef04b32b6812c4b6aee5b3210544",
+    "public_hex": "a2a34df0b31dd95e599e4057e1890517660c49e3d2673fb0e8b73824a65f5839",
+    "received": 1735689602.25
+  }
+}

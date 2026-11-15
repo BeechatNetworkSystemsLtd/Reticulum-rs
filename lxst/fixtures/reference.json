@@ -1,0 +1,288 @@
+{
+  "bitdepth_map": {
+    "0": {
+      "dtype": "float16",
+      "header_bitdepth": 0
+    },
+    "127": {
+      "dtype": "float64",
+      "header_bitdepth": 2
+    },
+    "128": {
+      "dtype": "float128",
+      "header_bitdepth": 3
+    },
+    "15": {
+      "dtype": "float16",
+      "header_bitdepth": 0
+    },
+    "16": {
+      "dtype": "float16",
+      "header_bitdepth": 0
+    },
+    "256": {
+      "dtype": "float128",
+      "header_bitdepth": 3
+    },
+    "31": {
+      "dtype": "float16",
+      "header_bitdepth": 0
+    },
+    "32": {
+      "dtype": "float32",
+      "header_bitdepth": 1
+    },
+    "63": {
+      "dtype": "float32",
+      "header_bitdepth": 1
+    },
+    "64": {
+      "dtype": "float64",
+      "header_bitdepth": 2
+    }
+  },
+  "channel_clamp": {
+    "0": 0,
+    "1": 1,
+    "32": 32,
+    "33": 32,
+    "99": 32
+  },
+  "codec_headers": {
+    "codec2": 2,
+    "null": 255,
+    "opus": 1,
+    "raw": 0
+  },
+  "codec_type_map": {
+    "0x00": true,
+    "0x01": true,
+    "0x02": true,
+    "0x7f": false,
+    "0xff": false
+  },
+  "inputs": {
+    "1ch": {
+      "channels": 1,
+      "float32_hex": "0000003f000080be000000000000003e666666bf",
+      "frames": 5
+    },
+    "2ch": {
+      "channels": 2,
+      "float32_hex": "0000003f000000bf0000803e000080be0000003e000000be0000000000000000000080bf0000803f",
+      "frames": 5
+    },
+    "3ch": {
+      "channels": 3,
+      "float32_hex": "9396413f7b0221bf4480573f48a4643f86bf3f3f5dbd44bf34cf1cbfa50fa2be7dec09bc50f74b3f75b17cbfb9900bbff159163f728a2fbe471655bff7fc5cbe7147a4bec59474bf88e7473f5ac773bfa4f02b3f",
+      "frames": 7
+    },
+    "adapt_down": {
+      "channels": 3,
+      "float32_hex": "0000003f000000bf0000803e",
+      "frames": 1
+    },
+    "adapt_up": {
+      "channels": 1,
+      "float32_hex": "0000003f",
+      "frames": 1
+    }
+  },
+  "msgpack": [
+    {
+      "hex": "8101c415400000003f000080be000000000000003e666666bf",
+      "name": "frame_single",
+      "note": "Packetizer frame packet: {0x01: bytes}"
+    },
+    {
+      "hex": "81009102",
+      "name": "signal_single",
+      "note": "SignallingReceiver.signal: {0x00: [signal]}"
+    },
+    {
+      "hex": "810093000102",
+      "name": "signal_multi"
+    },
+    {
+      "hex": "810002",
+      "name": "signal_not_list",
+      "note": "receivers wrap a bare signal into a list"
+    },
+    {
+      "hex": "810192c415400000003f000080be000000000000003e666666bfc415400000003f000080be000000000000003e666666bf",
+      "name": "frames_list",
+      "note": "LinkSource also accepts a list of frames"
+    },
+    {
+      "hex": "8101c4ff40404040",
+      "name": "bin_size_boundaries",
+      "note": "bin8 at 255 bytes: 81 01 c4 ff .."
+    },
+    {
+      "hex": "8101c50100404040",
+      "name": "bin_size_boundary_256",
+      "note": "bin16 at 256 bytes: 81 01 c5 01 00 .."
+    },
+    {
+      "hex": "8205a2686901c415400000003f000080be000000000000003e666666bf",
+      "name": "unknown_key_ignored",
+      "note": "unknown keys must be ignored by receivers"
+    },
+    {
+      "hex": "93010203",
+      "name": "not_a_map",
+      "note": "non-dict payloads decode to an empty message"
+    }
+  ],
+  "null_passthrough": {
+    "encode_hex": "0000003f000080be000000000000003e666666bf",
+    "encode_note": "Null.encode returns its argument unchanged (numpy float32 buffer)"
+  },
+  "raw_decode": [
+    {
+      "bitdepth": 16,
+      "decoded_dtype": "float16",
+      "decoded_hex": "003800b8003400b4003000b00000000000bc003c",
+      "decoded_shape": [
+        5,
+        2
+      ]
+    },
+    {
+      "bitdepth": 32,
+      "decoded_dtype": "float32",
+      "decoded_hex": "0000003f000000bf0000803e000080be0000003e000000be0000000000000000000080bf0000803f",
+      "decoded_shape": [
+        5,
+        2
+      ]
+    },
+    {
+      "bitdepth": 64,
+      "decoded_dtype": "float64",
+      "decoded_hex": "000000000000e03f000000000000e0bf000000000000d03f000000000000d0bf000000000000c03f000000000000c0bf00000000000000000000000000000000000000000000f0bf000000000000f03f",
+      "decoded_shape": [
+        5,
+        2
+      ]
+    },
+    {
+      "bitdepth": 128,
+      "decoded_dtype": "float128",
+      "decoded_hex": "0000000000000080fe3f0000000000000000000000000080febf0000000000000000000000000080fd3f000000007c000000000000000080fdbf6b03000000000000000000000080fc3f000000006a010000000000000080fcbf74000000000000000000000000000000000000000000000000000000000000000000000001000000000000000080ffbf000000007c000000000000000080ff3f720264085300",
+      "decoded_shape": [
+        5,
+        2
+      ]
+    }
+  ],
+  "raw_encode": [
+    {
+      "bitdepth": 16,
+      "channels": 1,
+      "frame": "1ch",
+      "hex": "00003800b40000003033bb",
+      "len": 11
+    },
+    {
+      "bitdepth": 32,
+      "channels": 1,
+      "frame": "1ch",
+      "hex": "400000003f000080be000000000000003e666666bf",
+      "len": 21
+    },
+    {
+      "bitdepth": 64,
+      "channels": 1,
+      "frame": "1ch",
+      "hex": "80000000000000e03f000000000000d0bf0000000000000000000000000000c03f000000c0ccccecbf",
+      "len": 41
+    },
+    {
+      "bitdepth": 128,
+      "channels": 1,
+      "frame": "1ch",
+      "hex": "c00000000000000080fe3f0000000000000000000000000080fdbf72b8297b0000000000000000000000000000000000000000000000000080fc3f00000000000000000000006666e6febf670000000000",
+      "len": 81
+    },
+    {
+      "bitdepth": 16,
+      "channels": 2,
+      "frame": "2ch",
+      "hex": "01003800b8003400b4003000b00000000000bc003c",
+      "len": 21
+    },
+    {
+      "bitdepth": 32,
+      "channels": 2,
+      "frame": "2ch",
+      "hex": "410000003f000000bf0000803e000080be0000003e000000be0000000000000000000080bf0000803f",
+      "len": 41
+    },
+    {
+      "bitdepth": 64,
+      "channels": 2,
+      "frame": "2ch",
+      "hex": "81000000000000e03f000000000000e0bf000000000000d03f000000000000d0bf000000000000c03f000000000000c0bf00000000000000000000000000000000000000000000f0bf000000000000f03f",
+      "len": 81
+    },
+    {
+      "bitdepth": 128,
+      "channels": 2,
+      "frame": "2ch",
+      "hex": "c10000000000000080fe3f0000000000000000000000000080febf0000000000000000000000000080fd3f000000007c000000000000000080fdbf6b03000000000000000000000080fc3f000000006a010000000000000080fcbf74000000000000000000000000000000000000000000000000000000000000000000000001000000000000000080ffbf000000007c000000000000000080ff3f720264085300",
+      "len": 161
+    },
+    {
+      "bitdepth": 16,
+      "channels": 3,
+      "frame": "3ch",
+      "hex": "020d3a08b9bc3a253bfe3926bae6b810b54fa0603ae6bb5db8b3387cb1a9bae8b222b5a5bb3f3a9ebb6039",
+      "len": 43
+    },
+    {
+      "bitdepth": 32,
+      "channels": 3,
+      "frame": "3ch",
+      "hex": "429396413f7b0221bf4480573f48a4643f86bf3f3f5dbd44bf34cf1cbfa50fa2be7dec09bc50f74b3f75b17cbfb9900bbff159163f728a2fbe471655bff7fc5cbe7147a4bec59474bf88e7473f5ac773bfa4f02b3f",
+      "len": 85
+    },
+    {
+      "bitdepth": 64,
+      "channels": 3,
+      "frame": "3ch",
+      "hex": "8200000060d232e83f000000604f20e4bf0000008008f0ea3f000000008994ec3f000000c0f0f7e73f000000a0ab97e8bf00000080e699e3bf000000a0f441d4bf000000a08f3d81bf00000000ea7ee93f000000a02e96efbf000000201772e1bf000000203ecbe23f000000404ef1c5bf000000e0c8a2eabf000000e09e9fcbbf00000020ee88d4bf000000a09892eebf00000000f1fce83f00000040eb78eebf00000080147ee53f",
+      "len": 169
+    },
+    {
+      "bitdepth": 128,
+      "channels": 3,
+      "frame": "3ch",
+      "hex": "c200000000009396c1fe3f00000000000000000000007b02a1febf00000000000000000000004480d7fe3f7c056602ac03000000000048a4e4fe3f000000004500000000000086bfbffe3f01007c05b0d200000000005dbdc4febf6a1000000000000000000034cf9cfebf6a11000000000000000000a50fa2fdbf00000000000000000000007dec89f8bf7c06a6010000000000000050f7cbfe3f010064016401000000000075b1fcfebf0000000000000000000000b9908bfebf7702780359000000000000f15996fe3f8c3c640153000000000000728aaffcbf7c086a10000000000000004716d5febf7c086a1100000000000000f7fcdcfcbf00000000000000000000007147a4fdbf00007c06a6010000000000c594f4febf000001006401000000000088e7c7fe3f00000000000000000000005ac7f3febf7304770278030000000000a4f0abfe3f01008c3c7700",
+      "len": 337
+    },
+    {
+      "bitdepth": 16,
+      "channels": 2,
+      "frame": "2ch",
+      "hex": "01003800b8003400b4003000b00000000000bc003c",
+      "len": 21,
+      "note": "channels=None adopts frame channels, default bitdepth 16"
+    },
+    {
+      "bitdepth": 32,
+      "channels": 2,
+      "frame": "adapt_down",
+      "hex": "410000003f000000bf",
+      "len": 9
+    },
+    {
+      "bitdepth": 32,
+      "channels": 3,
+      "frame": "adapt_up",
+      "hex": "420000003f0000003f0000003f",
+      "len": 13
+    }
+  ],
+  "version": 1
+}

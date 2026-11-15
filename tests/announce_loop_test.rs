@@ -86,7 +86,10 @@ async fn announce_once(origin: &mut Transport, relays: &[&Transport]) -> (Vec<u3
 
     origin.send_announce(&destination, None).await;
 
-    time::sleep(Duration::from_secs(5)).await;
+    // Python `Transport` retransmits an announce once, PATHFINDER_G (5 s)
+    // plus the random window after the first rebroadcast; the second
+    // snapshot is safely past that final wave.
+    time::sleep(Duration::from_secs(10)).await;
     let after_5s = load();
     time::sleep(Duration::from_secs(5)).await;
     let after_10s = load();

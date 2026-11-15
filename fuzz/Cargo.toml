@@ -1,0 +1,47 @@
+[package]
+name = "reticulum-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+reticulum = { path = ".." }
+
+[[bin]]
+name = "packet_deserialize"
+path = "fuzz_targets/packet_deserialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "announce_validate"
+path = "fuzz_targets/announce_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tunnel_synthesize"
+path = "fuzz_targets/tunnel_synthesize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ifac_strip"
+path = "fuzz_targets/ifac_strip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hdlc_decode"
+path = "fuzz_targets/hdlc_decode.rs"
+test = false
+doc = false
+bench = false

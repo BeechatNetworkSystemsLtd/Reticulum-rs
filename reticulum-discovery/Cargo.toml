@@ -1,0 +1,19 @@
+[package]
+name = "reticulum-discovery"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Reticulum network interface discovery (Python RNS/Discovery.py parity)"
+
+[dependencies]
+reticulum = { version = "*", path = ".." }
+lxmf = { version = "*", path = "../lxmf" }
+
+tokio = { version = "1.44", features = ["full"] }
+rand_core = "0.6.4"
+log = "0.4"
+rmp = "0.8.14"
+rmpv = "1.3"
+
+[dev-dependencies]
+env_logger = "0.10"

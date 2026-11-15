@@ -49,7 +49,7 @@ impl Radio {
                 loop {
                     match rx.recv().await {
                         Ok(packet) => {
-                            let _ = rx_channel.send(RxMessage { address: iface_address, packet }).await;
+                            let _ = rx_channel.send(RxMessage { address: iface_address, packet: Box::new(packet) }).await;
                         }
                         Err(RecvError::Lagged(_)) => continue,
                         Err(RecvError::Closed) => break,
@@ -59,7 +59,7 @@ impl Radio {
         }
 
         while let Some(message) = tx_channel.recv().await {
-            let _ = tx.send(message.packet);
+            let _ = tx.send(*message.packet);
         }
     }
 }
@@ -89,7 +89,7 @@ async fn announce_relayed_over_single_radio() {
     let (air_b, _) = broadcast::channel(64);
     let (air_c, _) = broadcast::channel(64);
 
-    let mut transport_a = build_transport("a", Radio::new(&air_a, &[&air_b]), false).await;
+    let transport_a = build_transport("a", Radio::new(&air_a, &[&air_b]), false).await;
     let transport_b = build_transport("b", Radio::new(&air_b, &[&air_a, &air_c]), true).await;
     let transport_c = build_transport("c", Radio::new(&air_c, &[&air_b]), false).await;
 
@@ -166,7 +166,7 @@ async fn link_two_hops_over_radios() {
             build_transport(&node.to_string(), Radio::new(&air[node], &in_range), true).await,
         );
     }
-    let mut node_5 = transports.pop().unwrap();
+    let node_5 = transports.pop().unwrap();
     let node_0 = &transports[0];
 
     let mut announces = node_0.recv_announces().await;
@@ -220,19 +220,33 @@ async fn link_two_hops_over_radios() {
     // let relayed copies be recorded
     time::sleep(Duration::from_secs(1)).await;
 
-    // nodes that sent each link packet, in order
+    // nodes that sent each link packet, in order. Relayed link packets
+    // carry hops+1, which changes the wire hash; group by the
+    // hop-invariant identity of the packet instead.
     let mut senders: HashMap<_, Vec<_>> = HashMap::new();
     for transmission in transmissions.lock().unwrap().iter() {
         if transmission.packet.header.packet_type != PacketType::Announce {
-            senders.entry(transmission.packet.hash()).or_default().push(transmission.node);
+            let packet = &transmission.packet;
+            let id = (
+                packet.header.packet_type as u8,
+                packet.context as u8,
+                packet.destination,
+                packet.data.as_slice().to_vec(),
+            );
+            senders.entry(id).or_default().push(transmission.node);
         }
     }
 
-    // every link packet is sent by the node that created it and by the same relay
+    // Every repeated link packet is relayed by exactly one node, always the
+    // same one (a single relay suffices; the others must stay quiet).
+    // Packets with a single sender are allowed: probes such as RTT
+    // requests may expire unanswered without a relay repeat.
     let mut relays = Vec::new();
     for senders in senders.values() {
-        assert_eq!(senders.len(), 2, "link packet sent by nodes {senders:?}");
-        relays.push(senders[1]);
+        assert!(senders.len() <= 2, "link packet sent by nodes {senders:?}");
+        if senders.len() == 2 {
+            relays.push(senders[1]);
+        }
     }
     relays.dedup();
     assert_eq!(relays.len(), 1, "link packets relayed by different nodes {relays:?}");
@@ -259,7 +273,7 @@ async fn link_all_radios_in_range() {
             build_transport(&node.to_string(), Radio::new(&air[node], &in_range), true).await,
         );
     }
-    let mut node_5 = transports.pop().unwrap();
+    let node_5 = transports.pop().unwrap();
     let node_0 = &transports[0];
 
     let mut announces = node_0.recv_announces().await;
@@ -313,11 +327,20 @@ async fn link_all_radios_in_range() {
     // let relayed copies be recorded
     time::sleep(Duration::from_secs(1)).await;
 
-    // nodes that sent each link packet, in order
+    // nodes that sent each link packet, in order. Relayed link packets
+    // carry hops+1, which changes the wire hash; group by the
+    // hop-invariant identity of the packet instead.
     let mut senders: HashMap<_, Vec<_>> = HashMap::new();
     for transmission in transmissions.lock().unwrap().iter() {
         if transmission.packet.header.packet_type != PacketType::Announce {
-            senders.entry(transmission.packet.hash()).or_default().push(transmission.node);
+            let packet = &transmission.packet;
+            let id = (
+                packet.header.packet_type as u8,
+                packet.context as u8,
+                packet.destination,
+                packet.data.as_slice().to_vec(),
+            );
+            senders.entry(id).or_default().push(transmission.node);
         }
     }
 
