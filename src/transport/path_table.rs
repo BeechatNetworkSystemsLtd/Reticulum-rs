@@ -137,6 +137,8 @@ fn remember_blob(blobs: &mut Vec<[u8; RANDOM_BLOB_LEN]>, blob: Option<[u8; RANDO
 
 pub struct PathTable {
     map: HashMap<AddressHash, PathEntry>,
+    // unused since announces are accepted by random hash, to be removed
+    #[allow(dead_code)]
     reroute_eager: bool,
     now: fn() -> core::time::Duration,
 }
@@ -294,6 +296,10 @@ impl PathTable {
     /// `timebase_from_random_blobs` of the stored blobs, then when both
     /// gravities are set and the new one is strictly heavier, then when
     /// the path is unresponsive or `reroute_eager` is set.
+    ///
+    /// Returns whether the announce was accepted as new path information
+    /// (installed or replaced). Rejected copies heard before, or older,
+    /// return `false`; only accepted announces are worth retransmitting.
     pub fn handle_announce_with_mode(
         &mut self,
         announce: &Packet,
@@ -301,14 +307,14 @@ impl PathTable {
         iface: AddressHash,
         mode: InterfaceMode,
         gravity: Option<i64>,
-    ) {
+    ) -> bool {
         let hops = announce.header.hops + 1;
         let new_blob = announce_random_blob(announce);
         let emitted = crate::iface::control::announce_emitted(announce);
 
         let mut random_blobs = if let Some(existing) = self.map.get(&announce.destination) {
             if !self.should_replace_path(existing, hops, new_blob, emitted, gravity) {
-                return;
+                return false;
             }
             // Move the history out of the old entry so an accepted update
             // keeps the Vec backing allocation instead of cloning it.
@@ -335,7 +341,7 @@ impl PathTable {
             random_blobs,
             gravity,
         };
-
+        // updates existing entry if it exists
         self.map.insert(announce.destination, new_entry);
 
         log::info!(
@@ -344,6 +350,8 @@ impl PathTable {
             hops,
             received_from,
         );
+
+        true
     }
 
     /// Fewer hops replace the path. More hops do not. Equal hops replace it
@@ -486,7 +494,6 @@ impl PathTable {
         if direct {
             return (original_packet.clone(), Some(iface));
         }
-
         (
             Packet {
                 header: Header {
@@ -506,7 +513,10 @@ impl PathTable {
         )
     }
 
-    pub fn handle_packet(&mut self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
+    /// Returns the packet to send towards its destination and the interface of the path:
+    /// if the destination is more than one hop away, the packet is put in transport with
+    /// the next hop as transport id, otherwise it is sent as it is.
+    pub fn handle_packet(&self, original_packet: &Packet) -> (Packet, Option<AddressHash>) {
         if original_packet.header.header_type == HeaderType::Type2 {
             return (original_packet.clone(), None);
         }

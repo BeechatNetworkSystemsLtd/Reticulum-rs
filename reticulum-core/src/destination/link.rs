@@ -841,9 +841,12 @@ impl Link {
     }
 
     /// Stale threshold, using `unknown_rtt` until an RTT has been measured.
+    /// A configured threshold below the RTT-derived one caps it: operators
+    /// can always recover dead links faster than `2 * keepalive(rtt)`
+    /// (Python derives stale purely from the RTT).
     pub fn effective_stale(&self, unknown_rtt: Duration) -> Duration {
         if self.rtt_known {
-            self.stale_time()
+            self.stale_time().min(unknown_rtt)
         } else {
             unknown_rtt
         }

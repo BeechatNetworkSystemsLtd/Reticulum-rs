@@ -57,7 +57,6 @@ futures-util = { version = "0.3", optional = true, default-features = false, fea
 
 # Logging
 log = "0.4.27"
-env_logger = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
@@ -92,11 +91,9 @@ iface-rnode = []
 # RNode ble:// via btleplug. Default builds do not link a BLE stack.
 iface-rnode-ble = ["iface-rnode", "dep:btleplug", "dep:uuid", "dep:futures-util", "dep:dbus", "dep:dbus-tokio", "dep:windows"]
 
-[build-dependencies]
-tonic-build = "0.13.0"
-
 [dev-dependencies]
 reticulum-discovery = { path = "reticulum-discovery" }
+env_logger = "0.10"
 serde_json = "1.0.150"
 criterion = "0.5"
 tokio = { version = "1.44.2", features = ["test-util", "signal", "process"] }
@@ -159,3 +156,7 @@ path = "examples/channel_server.rs"
 [[example]]
 name = "channel_client"
 path = "examples/channel_client.rs"
+
+[[example]]
+name = "group"
+path = "examples/group.rs"

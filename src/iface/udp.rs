@@ -64,8 +64,8 @@ impl UdpInterface {
 
             let cancel = context.cancel.clone();
             let stop = CancellationToken::new();
-
             let socket = socket.unwrap();
+
             let read_socket = Arc::new(socket);
             let write_socket = read_socket.clone();
 

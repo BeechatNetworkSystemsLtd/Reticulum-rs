@@ -260,6 +260,26 @@ impl DestinationAnnounce {
             AnnounceData { app_data, ratchet },
         ))
     }
+
+    /// Returns the random hash of an announce: 5 random bytes followed by the
+    /// low 5 bytes of the emission time.
+    pub fn random_hash(packet: &Packet) -> Option<[u8; RAND_HASH_LENGTH]> {
+        let offset = PUBLIC_KEY_LENGTH * 2 + NAME_HASH_LENGTH;
+
+        packet
+            .data
+            .as_slice()
+            .get(offset..(offset + RAND_HASH_LENGTH))
+            .map(|rand_hash| rand_hash.try_into().expect("random hash length"))
+    }
+
+    /// Returns the emission time (unix seconds) of an announce from its random
+    /// hash, as `Transport.timebase_from_random_blob` does in Python.
+    pub fn emitted(random_hash: &[u8; RAND_HASH_LENGTH]) -> u64 {
+        let mut timestamp = [0u8; 8];
+        timestamp[3..].copy_from_slice(&random_hash[RAND_HASH_LENGTH / 2..]);
+        u64::from_be_bytes(timestamp)
+    }
 }
 
 pub struct Destination<I: HashIdentity, D: Direction, T: Type> {
@@ -977,14 +997,13 @@ pub type GroupOutputDestination = Destination<EmptyIdentity, Output, Group>;
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
+
     use rand_core::OsRng;
 
     use crate::buffer::OutputBuffer;
     use crate::hash::Hash;
     use crate::identity::PrivateIdentity;
     use crate::serde::Serialize;
-
-    use std::println;
 
     use super::DestinationAnnounce;
     use super::DestinationName;

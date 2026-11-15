@@ -149,8 +149,14 @@ pub struct TransportConfig {
     /// So newer routes are preferred over older ones.
     reroute_eager: bool,
 
-    /// Attempt to reopen lost links once they have been closed.
+    /// Attempt to reopen stale links. Not compatible with Python nodes in the link
+    /// path, which drop repeated link requests.
     restart_outlinks: bool,
+
+    /// Relay GROUP-destination packets for peers (multi-hop groups).
+    /// Off by default: receivers then accept group packets only from
+    /// nodes in direct range (Python groups are single-hop by default).
+    group_forwarding: bool,
 
     /// Resend announces of remote destinations at a slower pace once
     /// the initial round of announces is over.
@@ -475,6 +481,7 @@ impl TransportConfig {
             retransmit: false,
             reroute_eager: false,
             restart_outlinks: false,
+            group_forwarding: false,
             announce_forever: false,
             blackhole_publish: false,
             blackhole_sources: Vec::new(),
@@ -535,6 +542,14 @@ impl TransportConfig {
         self
     }
 
+    /// Relay GROUP-destination packets on all interfaces, so single-radio
+    /// nodes extend the group's range. Each node relays a packet only
+    /// once; duplicate copies are dropped by the packet cache.
+    pub fn set_group_forwarding(mut self, group_forwarding: bool) -> Self {
+        self.group_forwarding = group_forwarding;
+        self
+    }
+
     pub fn set_announce_forever(mut self, announce_forever: bool) -> Self {
         self.announce_forever = announce_forever;
         self
@@ -590,6 +605,7 @@ impl Default for TransportConfig {
             retransmit: false,
             reroute_eager: false,
             restart_outlinks: false,
+            group_forwarding: false,
             announce_forever: false,
             blackhole_publish: false,
             blackhole_sources: Vec::new(),
@@ -2391,7 +2407,6 @@ impl Transport {
 
         Ok(())
     }
-
     pub async fn get_in_destination(
         &self,
         address: &AddressHash,
@@ -2533,6 +2548,9 @@ impl Drop for Transport {
 }
 
 impl TransportHandler {
+    /// Sends a packet originating from this node: packets of a local link on the
+    /// interface of the link, packets for a destination with a known path on the
+    /// interface of the path, and any other packets are sent on all interfaces
     pub(crate) async fn send_packet(&self, packet: Packet) {
         let message = TxMessage {
             tx_type: TxMessageType::Broadcast(None),
@@ -2548,7 +2566,41 @@ impl TransportHandler {
     /// only try-locks, and a held guard makes that miss.
     async fn send_from_link(&self, link: &mut Link, packet: Packet) {
         link.mark_outbound(packet.context == PacketContext::KeepAlive);
-        self.send_packet(packet).await;
+
+        // Link requests are addressed to the destination: multi-hop
+        // paths carry them in transport (Type2 + next-hop id), exactly
+        // as `Transport::link` sends the first request.
+        if packet.header.packet_type == PacketType::LinkRequest {
+            let (packet, iface) = self.path_table.handle_packet(&packet);
+            match iface {
+                Some(iface) => {
+                    self.send(TxMessage {
+                        tx_type: TxMessageType::Direct(iface),
+                        packet: Box::new(packet),
+                    })
+                    .await;
+                }
+                None => self.send_packet(packet).await,
+            }
+            return;
+        }
+
+        // Link packets travel only on the path interface of the link's
+        // endpoint (Python `Link.attached_interface`), header unchanged:
+        // intermediaries relay them by link id, never in transport.
+        let endpoint = link.destination().address_hash;
+        let iface = self.path_table.get(&endpoint).map(|entry| entry.iface);
+        match iface {
+            Some(iface) => {
+                self.send(TxMessage {
+                    tx_type: TxMessageType::Direct(iface),
+                    packet: Box::new(packet),
+                })
+                .await;
+            }
+            // No path to the endpoint: fall back to a broadcast.
+            None => self.send_packet(packet).await,
+        }
     }
 
     /// Python `Packet.send` sets `last_outbound` when the destination is a
@@ -3732,6 +3784,39 @@ async fn handle_data<'a>(
     }
 
     if packet.header.destination_type == DestinationType::Group {
+        if handler.config.group_forwarding {
+            // Relayed on all interfaces including the one the packet was
+            // received on, so single radio nodes relay too; each node
+            // relays a packet only once, since copies already in the
+            // packet cache are dropped.
+            if handler.config.retransmit && (packet.header.hops as usize) + 1 < PATHFINDER_M {
+                let mut forwarded = packet.clone();
+                forwarded.header.hops += 1;
+
+                log::trace!(
+                    "tp({}): forwarding GROUP packet {} with {} hops",
+                    handler.config.name,
+                    forwarded.hash(),
+                    forwarded.header.hops
+                );
+
+                handler
+                    .send(TxMessage {
+                        tx_type: TxMessageType::Broadcast(None),
+                        packet: Box::new(forwarded),
+                    })
+                    .await;
+            }
+        } else if packet.header.hops > 0 {
+            log::debug!(
+                "tp({}): dropped GROUP packet {} with {} hops",
+                handler.config.name,
+                packet.hash(),
+                packet.header.hops
+            );
+            return;
+        }
+
         // GROUP destinations are addressed by name hash like PLAIN ones;
         // payloads are encrypted with the destination's symmetric group
         // key when one is loaded (Python `Destination.prv`).
@@ -3859,6 +3944,19 @@ async fn handle_announce<'a>(
     handler: &mut MutexGuard<'a, TransportHandler>,
     iface: AddressHash,
 ) {
+    // PLAIN and GROUP destinations can not be announced
+    if packet.header.destination_type == DestinationType::Plain
+        || packet.header.destination_type == DestinationType::Group
+    {
+        log::debug!(
+            "tp({}): dropped invalid {:?} announce for {}",
+            handler.config.name,
+            packet.header.destination_type,
+            packet.destination
+        );
+        return;
+    }
+
     if handler.has_destination(&packet.destination) {
         // destination is local
         return;
@@ -3976,6 +4074,16 @@ async fn handle_announce<'a>(
             .count_protocol_violation(&iface);
         return;
     };
+
+    // Every copy heard from other nodes may complete a pending
+    // retransmission, even if the announce itself is not new. Cancels
+    // rebroadcasts once the announce has propagated past this node
+    // (loop prevention on shared media).
+    if handler.config.retransmit {
+        handler
+            .announce_table
+            .heard_rebroadcast(&packet.destination, packet.header.hops);
+    }
     {
         let dest_hash = destination.identity.address_hash;
         let public_key = destination.identity.to_bytes();
@@ -4035,10 +4143,28 @@ async fn handle_announce<'a>(
         // (Python `Transport.cache(force_cache=True, packet_type="announce")`).
         handler.packet_cache.lock().await.cache_announce(packet);
 
-        if !rate_blocked {
-            handler
-                .announce_table
-                .add(packet, packet.destination, dest_hash);
+        let (mode, gravity) = {
+            let manager = handler.iface_manager.lock().await;
+            let mode = manager.iface_mode(&iface);
+            let gravity = manager
+                .with_control(&iface, |control| control.gravity)
+                .unwrap_or(0);
+            (mode, gravity)
+        };
+        let accepted = handler.path_table.handle_announce_with_mode(
+            packet,
+            packet.transport,
+            iface,
+            mode,
+            Some(gravity),
+        );
+
+        // Only a newly learned path is worth retransmitting; copies of a
+        // known announce must not restart the rebroadcast cycle, or relays
+        // circulate them forever (Python gates the announce table on an
+        // unknown destination hash).
+        if !rate_blocked && accepted {
+            handler.announce_table.add(packet, packet.destination);
         }
 
         // If we have a waiting discovery path request for this destination,
@@ -4068,22 +4194,6 @@ async fn handle_announce<'a>(
                 packet.destination
             );
         }
-
-        let (mode, gravity) = {
-            let manager = handler.iface_manager.lock().await;
-            let mode = manager.iface_mode(&iface);
-            let gravity = manager
-                .with_control(&iface, |control| control.gravity)
-                .unwrap_or(0);
-            (mode, gravity)
-        };
-        handler.path_table.handle_announce_with_mode(
-            packet,
-            packet.transport,
-            iface,
-            mode,
-            Some(gravity),
-        );
 
         // If the receiving interface is a tunnel, associate the path with
         // the tunnel for later restore
@@ -4126,6 +4236,8 @@ async fn handle_announce<'a>(
             ratchet: announce.ratchet,
         });
     }
+
+
 }
 
 /// Current unix time in seconds as f64 (Python `time.time()`).
@@ -4659,7 +4771,6 @@ async fn handle_link_request<'a>(
             );
             return;
         }
-
         log::trace!(
             "tp({}): handle link request for remote destination {}",
             handler.config.name,
@@ -4731,6 +4842,8 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     }
 
     links_to_remove.clear();
+    // out-links are kept by destination, their interfaces by link id
+    let mut closed_link_ids = Vec::new();
 
     let mut expired_links: Vec<AddressHash> = Vec::new();
 
@@ -4772,6 +4885,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                         handler.send_from_link(&mut link, packet).await
                     }
                     links_to_remove.push(*link_entry.0);
+                    closed_link_ids.push(*link.id());
                 }
             }
             LinkStatus::Pending if link.elapsed() > timer_config.out_link_repeat => {
@@ -4828,6 +4942,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
             LinkStatus::Closed => {
                 link.close(&handler.link_out_event_tx);
                 links_to_remove.push(*link_entry.0);
+                closed_link_ids.push(*link.id());
             }
             _ => {}
         }
@@ -4836,6 +4951,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     for addr in &links_to_remove {
         handler.out_links.remove(addr);
     }
+
 
     // Python closes a pending link that never activated and, when this
     // instance is not a transport, expires the path and rediscovers it.
@@ -6059,18 +6175,12 @@ async fn manage_transport(
                         // circulate (e.g. LinkRequest ping-pong between originator and
                         // relay).
                         //
-                        // A node accepts an in-transit packet when the transport field
-                        // designates it as the next hop. For relay next hops this is the
-                        // node's own identity hash; for the final hop to a non-relay
-                        // destination host (whose announce carried no transport id) the
-                        // path table records the destination address itself, so we also
-                        // accept when it matches a locally hosted destination.
+                        // A packet in transport is only accepted by the node it is
+                        // addressed to, the next hop. Packets on the last hop to their
+                        // destination and link packets have no transport id.
                         if let Some(transport) = packet.transport {
-                            if packet.header.destination_type != DestinationType::Link
-                                && packet.header.packet_type != PacketType::Announce
-                                && packet.header.packet_type != PacketType::Proof
+                            if packet.header.packet_type != PacketType::Announce
                                 && transport != *handler.config.identity.address_hash()
-                                && !handler.has_destination(&transport)
                             {
                                 log::trace!(
                                     "tp({}): ignoring in-transit packet not addressed to this node: dst={}, type={:?}",
@@ -6969,6 +7079,67 @@ mod tests {
                 .filter_duplicate_packets(&duplicate)
                 .await
         );
+    }
+
+    #[tokio::test]
+    async fn group_data_delivery() {
+        use crate::destination::{DestinationName, GroupInputDestination, GroupKey};
+
+        let mut transport = TransportConfig::default().build();
+        let handler = transport.get_handler();
+        let mut received_data = transport.received_data_events();
+
+        let key = GroupKey::generate(OsRng);
+        let name = DestinationName::new("example", "group");
+
+        let destination = transport.add_group_destination(name).await;
+        destination.lock().await.load_group_key(*key.as_bytes());
+        let address = destination.lock().await.desc.address_hash;
+
+        // A packet from another member, crafted like
+        // `send_to_group_destination` builds it, received directly.
+        let group_packet = |key: &GroupKey, data: &[u8]| {
+            let sender = GroupInputDestination::new(reticulum_core::identity::EmptyIdentity, name);
+            let sender = {
+                let mut guard = sender;
+                guard.load_group_key(*key.as_bytes());
+                guard
+            };
+            let mut buffer = [0u8; PACKET_MDU];
+            let token = sender.encrypt_group(data, &mut buffer[..]).expect("token");
+            crate::packet::Packet {
+                header: crate::packet::Header {
+                    header_type: crate::packet::HeaderType::Type1,
+                    propagation_type: crate::packet::PropagationType::Broadcast,
+                    destination_type: crate::packet::DestinationType::Group,
+                    packet_type: crate::packet::PacketType::Data,
+                    ..Default::default()
+                },
+                destination: address,
+                data: crate::packet::PacketDataBuffer::new_from_slice(token),
+                ..Default::default()
+            }
+        };
+
+        let packet = group_packet(&key, b"hello group");
+        handle_data(&packet, AddressHash::new_empty(), handler.clone(), handler.lock().await).await;
+
+        let data = received_data.try_recv().expect("delivered group data");
+        assert_eq!(data.destination, address);
+        assert_eq!(data.data.as_slice(), b"hello group");
+
+        // Without group forwarding, relayed GROUP packets are dropped
+        let mut transported = group_packet(&key, b"transported");
+        transported.header.hops = 1;
+
+        handle_data(&transported, AddressHash::new_empty(), handler.clone(), handler.lock().await).await;
+        assert!(received_data.try_recv().is_err());
+
+        // Packets encrypted with another key are not delivered
+        let packet = group_packet(&GroupKey::generate(OsRng), b"wrong key");
+
+        handle_data(&packet, AddressHash::new_empty(), handler.clone(), handler.lock().await).await;
+        assert!(received_data.try_recv().is_err());
     }
 }
 // ---------------------------------------------------------------------------

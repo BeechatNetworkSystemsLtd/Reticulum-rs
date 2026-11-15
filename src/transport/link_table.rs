@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use tokio::time::{Duration, Instant};
 
+use reticulum_core::packet::PacketType;
+
 use crate::destination::link::LinkId;
 use crate::hash::AddressHash;
 use crate::identity::{Identity, Signature};
@@ -115,6 +117,7 @@ impl LinkTable {
         remaining_hops: u8,
         next_hop_bitrate: u64,
     ) {
+        debug_assert_eq!(link_request.header.packet_type, PacketType::LinkRequest);
         let link_id = LinkId::from(link_request);
 
         // Python overwrites the link-table entry on every transported
@@ -133,6 +136,7 @@ impl LinkTable {
         };
         let proof_timeout =
             now + airtime + ESTABLISHMENT_TIMEOUT_PER_HOP * remaining_hops.max(1) as u32;
+
 
         let entry = LinkEntry {
             next_hop,
@@ -345,7 +349,7 @@ impl LinkTable {
         let mut timed_out = vec![];
         let now = Instant::now();
 
-        for (link_id, entry) in &self.0 {
+        for (link_id, entry) in &mut self.0 {
             if entry.validated {
                 if now.saturating_duration_since(entry.last_activity) > LINK_TIMEOUT {
                     stale.push(*link_id);
