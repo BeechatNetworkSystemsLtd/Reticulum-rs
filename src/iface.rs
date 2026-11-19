@@ -3,6 +3,8 @@ pub mod hdlc;
 pub mod tcp_client;
 pub mod tcp_server;
 pub mod udp;
+pub mod unix_socker_server;
+pub mod unix_socket_client;
 
 use std::sync::Arc;
 use std::sync::Mutex;
