@@ -5,10 +5,14 @@ use tokio::time::Instant;
 
 use crate::hash::AddressHash;
 
+/// How often each destination may announce.
 #[derive(Clone, Copy, Debug)]
 pub struct AnnounceRateLimit {
+  /// Minimum interval between announces of one destination.
   pub target: Duration,
+  /// Announces allowed sooner than `target` before the destination is blocked for `target`.
   pub grace: u32,
+  /// Added to the block each time the destination announces while blocked.
   pub penalty: Option<Duration>
 }
 

@@ -62,18 +62,32 @@ pub struct ReceivedData {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TimerConfig {
+    /// How often links are checked: staleness, keepalives and link request repeats.
     pub link_check: Duration,
+    /// An in-link goes stale after this long without hearing the other side.
     pub in_link_stale: Duration,
+    /// A stale in-link is closed after this much longer.
     pub in_link_close: Duration,
+    /// With `restart_outlinks`, a stale out-link is restarted once the destination has
+    /// not been heard for this long.
     pub out_link_restart: Duration,
+    /// An out-link goes stale after this long without hearing the destination.
     pub out_link_stale: Duration,
+    /// A stale out-link is closed after this much longer (without `restart_outlinks`).
     pub out_link_close: Duration,
+    /// First wait before an unanswered link request is repeated.
     pub out_link_repeat: Duration,
+    /// Keepalive interval of an active out-link.
     pub out_link_keep: Duration,
+    /// How often closed interfaces are removed.
     pub iface_cleanup: Duration,
+    /// How often announce rebroadcasts that are due are sent. Relays only.
     pub announces_retransmit: Duration,
+    /// With `announce_forever`, how often known announces are rebroadcast again.
     pub old_announces_retransmit: Duration,
+    /// How long a packet is remembered, so copies of it are dropped as duplicates.
     pub keep_packet_cached: Duration,
+    /// How often the packet cache, link table and path requests are pruned.
     pub packet_cache_cleanup: Duration,
 }
 
@@ -113,14 +127,19 @@ pub enum NetworkProfile {
 /// preallocate their capacity; a subscriber further behind loses the oldest (`Lagged`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChannelCapacity {
+    /// Announces heard, for [`Transport::recv_announces`].
     pub announces: usize,
     /// In-link and out-link events; they carry all link data, so too small loses data.
     pub link_events: usize,
+    /// Data received on local destinations, for [`Transport::received_data_events`].
     pub received_data: usize,
+    /// Every packet received on any interface, for [`Transport::iface_rx`].
     pub iface_messages: usize,
+    /// Packets queued from the interfaces to the transport.
     pub iface_rx: usize,
     /// Per interface; 1 paces the transport by the interface instead of queueing stale packets.
     pub iface_tx: usize,
+    /// Payloads of each link bound to a channel.
     pub link_payloads: usize,
 }
 
@@ -165,8 +184,15 @@ impl Default for ChannelCapacity {
 }
 
 pub struct TransportConfig {
+    /// Name of the node in log messages.
     name: String,
+
+    /// The node's transport identity. As a relay, its address goes in the packets it
+    /// forwards.
     identity: PrivateIdentity,
+
+    /// Relay for other nodes: rebroadcast announces and forward packets routed through
+    /// this node. Off for a leaf node.
     retransmit: bool,
 
     /// If `false`, `Transport` will replace known routes to distant destinations
@@ -190,8 +216,10 @@ pub struct TransportConfig {
 
     announce_rate_limit: Option<AnnounceRateLimit>,
 
+    /// Link and maintenance timers.
     timer_config: TimerConfig,
 
+    /// Sizes of the transport's channels.
     channel_capacity: ChannelCapacity,
 }
 
