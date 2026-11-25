@@ -138,15 +138,18 @@ pub struct AnnounceTable {
     map: BTreeMap<AddressHash, AnnounceEntry>,
     responses: BTreeMap<AddressHash, AnnounceEntry>,
     cache: AnnounceCache,
+    /// See [`TimerConfig::path_response_window`](crate::transport::TimerConfig::path_response_window).
+    response_window: Duration,
 }
 
 impl AnnounceTable {
     /// `capacity` bounds each of the two generations of the cache of completed announces.
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize, response_window: Duration) -> Self {
         Self {
             map: BTreeMap::new(),
             responses: BTreeMap::new(),
             cache: AnnounceCache::new(capacity.max(1)),
+            response_window,
         }
     }
 
@@ -190,8 +193,18 @@ impl AnnounceTable {
         response.timeout = Instant::now() + Duration::from_secs(60);
         response.response_to_iface = Some(to_iface);
         response.local_rebroadcasts = 0;
+        let window = self.response_window.as_millis() as u64;
+        let wait = if window == 0 { 0 } else { rand_core::RngCore::next_u64(&mut rand_core::OsRng) % window };
+        response.retry_at = Instant::now() + Duration::from_millis(wait);
 
         self.responses.insert(destination, response);
+    }
+
+    /// Another node answered for `destination`: drop our pending path response.
+    pub fn response_heard(&mut self, destination: &AddressHash) {
+        if self.responses.remove(destination).is_some() {
+            log::trace!("Announce cache: path response for {} answered by another node", destination);
+        }
     }
 
     pub fn add_response(
@@ -273,15 +286,19 @@ impl AnnounceTable {
 
         let n_announces = messages.len();
 
-        for entry in self.responses.values_mut() {
+        // a response is sent once, after its random wait
+        let now = Instant::now();
+        self.responses.retain(|_, entry| {
+            if now < entry.retry_at {
+                return true;
+            }
             if let Some(message) = entry.retransmit(transport_id) {
                 messages.push(message);
             }
-        }
+            false
+        });
 
         let n_responses = messages.len() - n_announces;
-
-        self.responses.clear(); // every response is only retransmitted once
 
         if !(messages.is_empty() && completed.is_empty()) {
             log::trace!(
@@ -345,7 +362,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_rebroadcast_is_retried_once_after_the_grace_period() {
         let transport_id = AddressHash::new([9; 16]);
-        let mut table = AnnounceTable::new(16);
+        let mut table = AnnounceTable::new(16, Duration::ZERO);
         let (packet, destination) = announce(1);
         table.add(&packet, destination);
 
@@ -360,7 +377,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn hearing_the_announce_relayed_further_cancels_the_retry() {
         let transport_id = AddressHash::new([9; 16]);
-        let mut table = AnnounceTable::new(16);
+        let mut table = AnnounceTable::new(16, Duration::ZERO);
         let (packet, destination) = announce(2);
         table.add(&packet, destination);
         assert!(table.new_packet(&destination, &transport_id).is_some());
@@ -369,6 +386,26 @@ mod tests {
         table.heard_rebroadcast(&destination, packet.header.hops + 2);
         tokio::time::advance(RETRY_GRACE * 2).await;
         assert!(table.tx_to_retransmit(&transport_id).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_path_response_waits_and_is_dropped_when_another_node_answered() {
+        let transport_id = AddressHash::new([9; 16]);
+        let iface = AddressHash::new([1; 16]);
+        let mut table = AnnounceTable::new(16, Duration::from_millis(1500));
+        let (first, answered) = announce(3);
+        let (second, unanswered) = announce(4);
+        for (packet, destination) in [(first, answered), (second, unanswered)] {
+            table.add(&packet, destination);
+            assert!(table.add_response(destination, iface, 1));
+        }
+        table.response_heard(&answered);
+        tokio::time::advance(Duration::from_millis(1500)).await;
+        let responses = |sent: Vec<TxMessage>| -> Vec<AddressHash> {
+            sent.into_iter().filter(|message| message.packet.context == PacketContext::PathResponse).map(|message| message.packet.destination).collect()
+        };
+        assert_eq!(responses(table.tx_to_retransmit(&transport_id)), vec![unanswered], "only the response nobody else gave");
+        assert!(responses(table.tx_to_retransmit(&transport_id)).is_empty(), "once");
     }
 
     #[test]

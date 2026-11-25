@@ -91,6 +91,13 @@ pub struct TimerConfig {
     pub keep_packet_cached: Duration,
     /// How often the packet cache, link table and path requests are pruned.
     pub packet_cache_cleanup: Duration,
+    /// A first announce rebroadcast waits a random time up to this, so neighbours that heard
+    /// the announce together do not rebroadcast together and collide. Zero: sent at once.
+    pub rebroadcast_window: Duration,
+    /// A path response waits a random time up to this, and is dropped if another node
+    /// answers first, so not every neighbour answers. Zero: answered at the next
+    /// `announces_retransmit`.
+    pub path_response_window: Duration,
     /// A path not refreshed for this long accepts an older announce, so a node that
     /// rebooted with its clock behind is heard again. `None`: never.
     pub path_refresh: Option<Duration>,
@@ -112,6 +119,8 @@ impl Default for TimerConfig {
             old_announces_retransmit: Duration::from_secs(60),
             keep_packet_cached: Duration::from_secs(180),
             packet_cache_cleanup: Duration::from_secs(90),
+            rebroadcast_window: Duration::ZERO,
+            path_response_window: Duration::ZERO,
             path_refresh: None,
         }
     }
@@ -434,11 +443,12 @@ impl Transport {
         let name = config.name.clone();
         let reroute_eager = config.reroute_eager;
         let path_refresh = config.timer_config.path_refresh;
+        let path_response_window = config.timer_config.path_response_window;
         let announce_rate_limit = config.announce_rate_limit;
         let handler = Arc::new(Mutex::new(TransportHandler {
             config,
             iface_manager: iface_manager.clone(),
-            announce_table: AnnounceTable::new(MAX_DESTINATIONS),
+            announce_table: AnnounceTable::new(MAX_DESTINATIONS, path_response_window),
             channel_table: HashMap::new(),
             link_table: LinkTable::new(),
             path_table: PathTable::new(reroute_eager, path_refresh),
@@ -1358,6 +1368,9 @@ async fn handle_announce<'a>(
     // even if the announce itself is not new
     if handler.config.retransmit {
         handler.announce_table.heard_rebroadcast(&dest_hash, packet.header.hops);
+        if packet.context == PacketContext::PathResponse && !handler.config.timer_config.path_response_window.is_zero() {
+            handler.announce_table.response_heard(&dest_hash);
+        }
     }
 
     match handler.path_table.handle_announce(packet, packet.transport, iface) {
@@ -1416,7 +1429,18 @@ async fn handle_announce<'a>(
         if handler.config.retransmit {
             let transport_id = *handler.config.identity.address_hash();
             if let Some(message) = handler.announce_table.new_packet(&dest_hash, &transport_id) {
-                handler.send(message).await;
+                let window = handler.config.timer_config.rebroadcast_window.as_millis() as u64;
+                if window == 0 {
+                    handler.send(message).await;
+                } else {
+                    handler.packet_cache.lock().await.update(&message.packet);
+                    let iface_manager = handler.iface_manager.clone();
+                    let wait = Duration::from_millis(OsRng.next_u64() % window);
+                    tokio::spawn(async move {
+                        time::sleep(wait).await;
+                        iface_manager.lock().await.send(message).await;
+                    });
+                }
             }
         }
     }
