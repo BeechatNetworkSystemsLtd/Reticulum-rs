@@ -62,6 +62,8 @@ struct OutLinkTimer {
     next_request: time::Instant,
     /// The current wait between link requests; doubles up to `out_link_repeat_max`.
     request_wait: Duration,
+    /// Link requests repeated so far.
+    repeats: u32,
 }
 
 /// `duration` ±`percent` %, so that links (and nodes) do not send in step.
@@ -73,6 +75,9 @@ fn jittered(duration: Duration, percent: u8) -> Duration {
     let permille = 1000 - spread + OsRng.next_u64() % (2 * spread + 1);
     Duration::from_millis((duration.as_millis() as u64).saturating_mul(permille) / 1000)
 }
+
+/// Repeats of an unanswered link request after which its path is in doubt.
+const REPEATS_BEFORE_PATH_REQUEST: u32 = 2;
 
 #[derive(Clone)]
 pub struct ReceivedData {
@@ -263,6 +268,12 @@ pub struct TransportConfig {
     /// with Python nodes, which drop relayed GROUP packets. Off by default.
     group_forwarding: bool,
 
+    /// Recover links over lossy, multi-hop paths. A link that goes stale probes at once
+    /// and still carries data. Its path is marked unresponsive, so an announce through
+    /// another node replaces it. A path is asked for again when a link goes stale, or after
+    /// a link request went unanswered twice. Off by default.
+    link_recovery: bool,
+
     /// Limit on how often each destination may announce. `None`: no limit.
     announce_rate_limit: Option<AnnounceRateLimit>,
 
@@ -378,6 +389,7 @@ impl TransportConfig {
             restart_outlinks: false,
             announce_forever: false,
             group_forwarding: false,
+            link_recovery: false,
             announce_rate_limit: None,
             timer_config: TimerConfig::default(),
             channel_capacity: ChannelCapacity::default(),
@@ -406,6 +418,11 @@ impl TransportConfig {
 
     pub fn set_group_forwarding(mut self, group_forwarding: bool) -> Self {
         self.group_forwarding = group_forwarding;
+        self
+    }
+
+    pub fn set_link_recovery(mut self, link_recovery: bool) -> Self {
+        self.link_recovery = link_recovery;
         self
     }
 
@@ -445,6 +462,7 @@ impl Default for TransportConfig {
             restart_outlinks: false,
             announce_forever: false,
             group_forwarding: false,
+            link_recovery: false,
             announce_rate_limit: None,
             timer_config: Default::default(),
             channel_capacity: Default::default(),
@@ -617,9 +635,10 @@ impl Transport {
         let handler = self.handler.lock().await;
         for link in handler.out_links.values() {
             let link = link.lock().await;
-            if link.destination().address_hash == *destination
-                && link.status() == LinkStatus::Active
-            {
+            // with link recovery, a stale link only missed keepalives and may still carry data
+            let usable = link.status() == LinkStatus::Active
+                || (handler.config.link_recovery && link.status() == LinkStatus::Stale);
+            if link.destination().address_hash == *destination && usable {
                 let packet = link.data_packet(payload);
                 if let Ok(packet) = packet {
                     handler.send_packet(packet).await;
@@ -1734,6 +1753,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     // out-links are kept by destination, their interfaces by link id
     let mut closed_link_ids = Vec::new();
     let mut to_send = Vec::new();
+    let mut unresponsive = Vec::new();
     let mut live = std::collections::HashSet::new();
 
     // fire timers due before the next check, which runs once per `link_check`
@@ -1748,11 +1768,17 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                 next_keepalive: now + jittered(timer_config.out_link_keep, timer_config.jitter_percent),
                 next_request: now + jittered(timer_config.out_link_repeat, timer_config.jitter_percent).saturating_sub(link.elapsed()),
                 request_wait: timer_config.out_link_repeat,
+                repeats: 0,
             });
 
             match link.status() {
                 LinkStatus::Active if link.elapsed() > timer_config.out_link_stale => {
                     link.stale();
+                    if config.link_recovery {
+                        // probe now, then every `out_link_probe`
+                        timer.next_keepalive = now;
+                        unresponsive.push((*destination, true));
+                    }
                 }
                 LinkStatus::Stale => {
                     if config.restart_outlinks {
@@ -1782,8 +1808,14 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
                         timer.request_wait.as_millis()
                     );
                     to_send.push(link.request());
+                    timer.repeats += 1;
                     timer.request_wait = (timer.request_wait * 2).min(timer_config.out_link_repeat_max);
                     timer.next_request = now + jittered(timer.request_wait, timer_config.jitter_percent);
+                    // a path in doubt; requested only if there is none, since every request costs
+                    // each neighbour an answer
+                    if config.link_recovery && timer.repeats >= REPEATS_BEFORE_PATH_REQUEST {
+                        unresponsive.push((*destination, false));
+                    }
                 }
                 LinkStatus::Closed => {
                     link.close(link_out_event_tx);
@@ -1817,6 +1849,11 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
 
     for packet in to_send {
         handler.send_packet(packet).await;
+    }
+
+    for (destination, ask) in unresponsive {
+        let ask = ask || handler.path_table.get(&destination).is_none();
+        handler.path_unresponsive(&destination, ask).await;
     }
 }
 

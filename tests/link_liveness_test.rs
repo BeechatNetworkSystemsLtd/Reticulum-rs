@@ -14,7 +14,7 @@ use reticulum::{
     },
     identity::PrivateIdentity,
     iface::{Interface, InterfaceContext, RxMessage},
-    packet::{Packet, PacketContext, PacketType},
+    packet::{DestinationType, Packet, PacketContext, PacketType},
     transport::{TimerConfig, Transport, TransportConfig},
 };
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -93,7 +93,7 @@ fn timers() -> TimerConfig {
 
 /// Node 0 with an active link to node 2 through node 1; node 2's radio can be muted.
 async fn linked() -> (Vec<Transport>, Arc<AtomicBool>, reticulum::destination::link::LinkId, broadcast::Receiver<reticulum::destination::link::LinkEventData>, reticulum::hash::AddressHash) {
-    let (transports, muted, link_id, events, address, _) = linked_with(timers()).await;
+    let (transports, muted, link_id, events, address, _) = linked_with(timers(), false).await;
     (transports, muted, link_id, events, address)
 }
 
@@ -138,7 +138,7 @@ async fn announced(transports: &mut [Transport]) -> reticulum::destination::Dest
     }
 }
 
-async fn linked_with(timers: TimerConfig) -> (Vec<Transport>, Arc<AtomicBool>, reticulum::destination::link::LinkId, broadcast::Receiver<reticulum::destination::link::LinkEventData>, reticulum::hash::AddressHash, broadcast::Receiver<Packet>) {
+async fn linked_with(timers: TimerConfig, link_recovery: bool) -> (Vec<Transport>, Arc<AtomicBool>, reticulum::destination::link::LinkId, broadcast::Receiver<reticulum::destination::link::LinkEventData>, reticulum::hash::AddressHash, broadcast::Receiver<Packet>) {
     setup();
     let air: Vec<_> = (0..3).map(|_| broadcast::channel(1024).0).collect();
     let muted: Vec<_> = (0..3).map(|_| Arc::new(AtomicBool::new(false))).collect();
@@ -153,6 +153,7 @@ async fn linked_with(timers: TimerConfig) -> (Vec<Transport>, Arc<AtomicBool>, r
         let transport = TransportConfig::new(node.to_string(), &PrivateIdentity::new_from_rand(OsRng))
             .set_retransmit(node == 1)
             .set_timer_config(timers)
+            .set_link_recovery(link_recovery)
             .build();
         transport.iface_manager().lock().await.spawn(Radio::new(&air[node], &in_range, muted[node].clone()), Radio::spawn);
         transports.push(transport);
@@ -275,7 +276,7 @@ fn keepalive_requests(sent: &mut broadcast::Receiver<Packet>) -> usize {
 /// destination more often once stale.
 #[tokio::test]
 async fn a_dead_link_is_probed_and_closed_within_its_bound() {
-    let (_transports, muted, link_id, mut events, _address, mut sent) = linked_with(radio_timers()).await;
+    let (_transports, muted, link_id, mut events, _address, mut sent) = linked_with(radio_timers(), false).await;
     let _ = keepalive_requests(&mut sent);
     muted.store(true, Ordering::SeqCst);
     let start = time::Instant::now();
@@ -322,3 +323,77 @@ async fn an_unanswered_link_request_is_repeated_less_often_up_to_a_cap() {
     assert!(gaps[0] < 3_500 && gaps[1..].iter().all(|gap| (3_000..=5_500).contains(gap)), "gaps {gaps:?}");
 }
 
+/// Stale after 4 s without hearing the destination, then a probe only every 10 s and closed
+/// 30 s later: long enough to see what a stale link does.
+fn stale_timers() -> TimerConfig {
+    TimerConfig {
+        out_link_keep: Duration::from_secs(3),
+        out_link_stale: Duration::from_secs(4),
+        out_link_probe: Duration::from_secs(10),
+        out_link_close: Duration::from_secs(30),
+        in_link_stale: Duration::from_secs(30),
+        in_link_close: Duration::from_secs(10),
+        ..Default::default()
+    }
+}
+
+/// What node 0 did once its link to node 2 went stale, with `link_recovery` on or off.
+struct WhileStale {
+    /// A keepalive went out within 1.5 s of the link going stale.
+    probed_at_once: bool,
+    /// Data could still be sent over the link.
+    carried_data: bool,
+    /// Node 0 asked again for the path to node 2.
+    asked_for_path: bool,
+}
+
+async fn while_stale(link_recovery: bool) -> WhileStale {
+    let (transports, muted, link_id, _events, address, mut sent) = linked_with(stale_timers(), link_recovery).await;
+    muted.store(true, Ordering::SeqCst);
+    while sent.try_recv().is_ok() {}
+    // what node 0 sends from the mute on, and when the link went stale
+    let (mut keepalives, mut stale_at, mut asked_for_path) = (Vec::new(), None, false);
+    let start = time::Instant::now();
+    while stale_at.is_none_or(|at: time::Instant| at.elapsed() < Duration::from_secs(3)) {
+        assert!(start.elapsed() < Duration::from_secs(15), "stale while the destination is silent");
+        if stale_at.is_none() && status(&transports[0], &link_id).await == Some(LinkStatus::Stale) {
+            stale_at = Some(time::Instant::now());
+        }
+        let Ok(Ok(packet)) = time::timeout(Duration::from_millis(50), sent.recv()).await else { continue };
+        if packet.context == PacketContext::KeepAlive && packet.data.as_slice() == [0xFF] {
+            keepalives.push(time::Instant::now());
+        }
+        // a path request: plain, its data starts with the destination asked for
+        if stale_at.is_some() && packet.header.destination_type == DestinationType::Plain && packet.data.as_slice().starts_with(address.as_slice()) {
+            asked_for_path = true;
+        }
+    }
+    let stale_at = stale_at.expect("stale");
+    // the link check runs once a second: a probe sent with the change to stale is seen just
+    // before or after it
+    let probed_at_once = keepalives.iter().any(|at| {
+        let (early, late) = (stale_at.saturating_duration_since(*at), at.saturating_duration_since(stale_at));
+        early <= Duration::from_millis(300) && late <= Duration::from_millis(1500)
+    });
+    let carried_data = !transports[0].send_to_out_links(&address, b"still there?").await.is_empty();
+    WhileStale { probed_at_once, carried_data, asked_for_path }
+}
+
+/// With link recovery, a link that goes stale probes its destination at once, still
+/// carries data, and asks again for the path to a destination behind a relay.
+#[tokio::test]
+async fn a_recovering_link_probes_carries_data_and_asks_for_the_path_when_stale() {
+    let stale = while_stale(true).await;
+    assert!(stale.probed_at_once, "probed at once");
+    assert!(stale.carried_data, "data sent over the stale link");
+    assert!(stale.asked_for_path, "the path asked for again");
+}
+
+/// Without link recovery (the default) a stale link waits for its next probe, carries no
+/// data, and the path is not asked for.
+#[tokio::test]
+async fn without_link_recovery_a_stale_link_only_waits() {
+    let stale = while_stale(false).await;
+    assert!(!stale.carried_data, "no data over a stale link");
+    assert!(!stale.asked_for_path, "no path request");
+}
