@@ -14,7 +14,7 @@ use reticulum::{
     },
     identity::PrivateIdentity,
     iface::{Interface, InterfaceContext, RxMessage},
-    packet::Packet,
+    packet::{Packet, PacketContext, PacketType},
     transport::{TimerConfig, Transport, TransportConfig},
 };
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -93,6 +93,12 @@ fn timers() -> TimerConfig {
 
 /// Node 0 with an active link to node 2 through node 1; node 2's radio can be muted.
 async fn linked() -> (Vec<Transport>, Arc<AtomicBool>, reticulum::destination::link::LinkId, broadcast::Receiver<reticulum::destination::link::LinkEventData>, reticulum::hash::AddressHash) {
+    let (transports, muted, link_id, events, address, _) = linked_with(timers()).await;
+    (transports, muted, link_id, events, address)
+}
+
+/// Node 0 and node 2 (behind relay 1) with `timers`, and what node 0 sends on the air.
+async fn nodes_with(timers: TimerConfig) -> (Vec<Transport>, Arc<AtomicBool>, broadcast::Receiver<Packet>) {
     setup();
     let air: Vec<_> = (0..3).map(|_| broadcast::channel(1024).0).collect();
     let muted: Vec<_> = (0..3).map(|_| Arc::new(AtomicBool::new(false))).collect();
@@ -106,7 +112,47 @@ async fn linked() -> (Vec<Transport>, Arc<AtomicBool>, reticulum::destination::l
             .collect();
         let transport = TransportConfig::new(node.to_string(), &PrivateIdentity::new_from_rand(OsRng))
             .set_retransmit(node == 1)
-            .set_timer_config(timers())
+            .set_timer_config(timers)
+            .build();
+        transport.iface_manager().lock().await.spawn(Radio::new(&air[node], &in_range, muted[node].clone()), Radio::spawn);
+        transports.push(transport);
+    }
+    let sent = air[0].subscribe();
+    (transports, muted[2].clone(), sent)
+}
+
+/// Node 0 learns node 2's destination from its announce.
+async fn announced(transports: &mut [Transport]) -> reticulum::destination::DestinationDesc {
+    let mut announces = transports[0].recv_announces().await;
+    let destination = transports[2]
+        .add_destination(PrivateIdentity::new_from_rand(OsRng), DestinationName::new("test", "liveness"))
+        .await;
+    let address = destination.lock().await.desc.address_hash;
+    transports[2].send_announce(&destination, None).await;
+    loop {
+        let event = time::timeout(Duration::from_secs(5), announces.recv()).await.expect("announce").expect("event");
+        let desc = event.destination.lock().await.desc;
+        if desc.address_hash == address {
+            return desc;
+        }
+    }
+}
+
+async fn linked_with(timers: TimerConfig) -> (Vec<Transport>, Arc<AtomicBool>, reticulum::destination::link::LinkId, broadcast::Receiver<reticulum::destination::link::LinkEventData>, reticulum::hash::AddressHash, broadcast::Receiver<Packet>) {
+    setup();
+    let air: Vec<_> = (0..3).map(|_| broadcast::channel(1024).0).collect();
+    let muted: Vec<_> = (0..3).map(|_| Arc::new(AtomicBool::new(false))).collect();
+    let mut transports = Vec::new();
+    for node in 0..3 {
+        let in_range: Vec<_> = air
+            .iter()
+            .enumerate()
+            .filter(|&(other, _)| other != node && !(node != 1 && other != 1))
+            .map(|(_, air)| air)
+            .collect();
+        let transport = TransportConfig::new(node.to_string(), &PrivateIdentity::new_from_rand(OsRng))
+            .set_retransmit(node == 1)
+            .set_timer_config(timers)
             .build();
         transport.iface_manager().lock().await.spawn(Radio::new(&air[node], &in_range, muted[node].clone()), Radio::spawn);
         transports.push(transport);
@@ -137,7 +183,8 @@ async fn linked() -> (Vec<Transport>, Arc<AtomicBool>, reticulum::destination::l
     })
     .await
     .expect("link activated");
-    (transports, muted[2].clone(), link_id, events, address)
+    let sent = air[0].subscribe();
+    (transports, muted[2].clone(), link_id, events, address, sent)
 }
 
 async fn status(transport: &Transport, link_id: &reticulum::destination::link::LinkId) -> Option<LinkStatus> {
@@ -196,3 +243,82 @@ async fn a_stale_link_is_active_again_when_the_destination_is_heard() {
         assert!(!(event.id == link_id && matches!(event.event, LinkEvent::Closed)), "the link was not closed");
     }
 }
+
+/// The hub's radio timers, scaled down: keepalive every 3 s (±10 %), stale after 4 s, probes
+/// every 1 s, closed 8 s after the destination was last heard.
+fn radio_timers() -> TimerConfig {
+    TimerConfig {
+        out_link_keep: Duration::from_secs(3),
+        out_link_stale: Duration::from_secs(4),
+        out_link_probe: Duration::from_secs(1),
+        out_link_close: Duration::from_secs(4),
+        out_link_repeat: Duration::from_secs(2),
+        out_link_repeat_max: Duration::from_secs(4),
+        in_link_stale: Duration::from_secs(6),
+        in_link_close: Duration::from_secs(4),
+        jitter_percent: 10,
+        ..Default::default()
+    }
+}
+
+fn keepalive_requests(sent: &mut broadcast::Receiver<Packet>) -> usize {
+    let mut count = 0;
+    while let Ok(packet) = sent.try_recv() {
+        if packet.context == PacketContext::KeepAlive && packet.data.as_slice() == [0xFF] {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// A link whose destination went silent is closed within stale + close, and probes the
+/// destination more often once stale.
+#[tokio::test]
+async fn a_dead_link_is_probed_and_closed_within_its_bound() {
+    let (_transports, muted, link_id, mut events, _address, mut sent) = linked_with(radio_timers()).await;
+    let _ = keepalive_requests(&mut sent);
+    muted.store(true, Ordering::SeqCst);
+    let start = time::Instant::now();
+    time::timeout(Duration::from_secs(15), async {
+        loop {
+            let event = events.recv().await.expect("link event");
+            if event.id == link_id && matches!(event.event, LinkEvent::Closed) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("closed");
+    let took = start.elapsed();
+    let probes = keepalive_requests(&mut sent);
+    // 8 s after it last heard the destination (up to one keepalive interval before the
+    // mute), checked once a second.
+    assert!(took <= Duration::from_secs(10), "closed after {took:?}");
+    // At 3 s intervals 8 s hold two or three keepalives; probing at 1 s while stale adds more.
+    assert!(probes >= 4, "{probes} keepalives before closing");
+}
+
+/// An unanswered link request is repeated after 2 s, 4 s, then every 4 s (±10 %), not
+/// every 2 s: a destination out of reach costs little.
+#[tokio::test]
+async fn an_unanswered_link_request_is_repeated_less_often_up_to_a_cap() {
+    let (mut transports, muted, mut sent) = nodes_with(radio_timers()).await;
+    let desc = announced(&mut transports).await;
+    muted.store(true, Ordering::SeqCst);
+    while sent.try_recv().is_ok() {}
+    let link_id = *transports[0].link(desc).await.lock().await.id();
+    let start = time::Instant::now();
+    let mut at = Vec::new();
+    while start.elapsed() < Duration::from_secs(19) {
+        match time::timeout(Duration::from_millis(200), sent.recv()).await {
+            Ok(Ok(packet)) if packet.header.packet_type == PacketType::LinkRequest => at.push(start.elapsed()),
+            _ => {}
+        }
+    }
+    assert_eq!(status(&transports[0], &link_id).await, Some(LinkStatus::Pending));
+    let gaps: Vec<u64> = at.windows(2).map(|pair| (pair[1] - pair[0]).as_millis() as u64).collect();
+    // sent at 0, then about 2, 6, 10, 14, 18 s (checked once a second)
+    assert!((5..=7).contains(&at.len()), "{} requests at {at:?}", at.len());
+    assert!(gaps[0] < 3_500 && gaps[1..].iter().all(|gap| (3_000..=5_500).contains(gap)), "gaps {gaps:?}");
+}
+

@@ -56,12 +56,35 @@ const MULTIHOP_LINK_EVENTS: usize = 2048;
 const KEEP_ALIVE_REQUEST: u8 = 0xFF;
 const KEEP_ALIVE_RESPONSE: u8 = 0xFE;
 
+/// When an out-link next sends a keepalive, or repeats its link request.
+struct OutLinkTimer {
+    next_keepalive: time::Instant,
+    next_request: time::Instant,
+    /// The current wait between link requests; doubles up to `out_link_repeat_max`.
+    request_wait: Duration,
+}
+
+/// `duration` ±`percent` %, so that links (and nodes) do not send in step.
+fn jittered(duration: Duration, percent: u8) -> Duration {
+    if percent == 0 {
+        return duration;
+    }
+    let spread = u64::from(percent.min(100)) * 10;
+    let permille = 1000 - spread + OsRng.next_u64() % (2 * spread + 1);
+    Duration::from_millis((duration.as_millis() as u64).saturating_mul(permille) / 1000)
+}
+
 #[derive(Clone)]
 pub struct ReceivedData {
     pub destination: AddressHash,
     pub data: PacketDataBuffer,
 }
 
+/// Link timers. An out-link sends a keepalive every `out_link_keep`, goes stale after
+/// `out_link_stale` of silence, then probes every `out_link_probe` and closes after
+/// `out_link_close`. An unanswered link request is repeated after `out_link_repeat`, then
+/// at waits that double up to `out_link_repeat_max`. Link intervals are spread by
+/// `jitter_percent`.
 #[derive(Debug, Clone, Copy)]
 pub struct TimerConfig {
     /// How often links are checked: staleness, keepalives and link request repeats.
@@ -79,8 +102,13 @@ pub struct TimerConfig {
     pub out_link_close: Duration,
     /// First wait before an unanswered link request is repeated.
     pub out_link_repeat: Duration,
+    /// Longest wait between later link request repeats. The default, one `link_check`,
+    /// repeats a request at every check once `out_link_repeat` has passed.
+    pub out_link_repeat_max: Duration,
     /// Keepalive interval of an active out-link.
     pub out_link_keep: Duration,
+    /// Keepalive interval while an out-link is stale.
+    pub out_link_probe: Duration,
     /// How often closed interfaces are removed.
     pub iface_cleanup: Duration,
     /// How often announce rebroadcasts that are due are sent. Relays only.
@@ -91,6 +119,9 @@ pub struct TimerConfig {
     pub keep_packet_cached: Duration,
     /// How often the packet cache, link table and path requests are pruned.
     pub packet_cache_cleanup: Duration,
+    /// Keepalive and link request intervals vary by up to this many percent either way, so
+    /// links and nodes do not send in step. 0: no variation.
+    pub jitter_percent: u8,
     /// A first announce rebroadcast waits a random time up to this, so neighbours that heard
     /// the announce together do not rebroadcast together and collide. Zero: sent at once.
     pub rebroadcast_window: Duration,
@@ -113,12 +144,15 @@ impl Default for TimerConfig {
             out_link_stale: Duration::from_secs(10),
             out_link_close: Duration::from_secs(5),
             out_link_repeat: Duration::from_secs(6),
+            out_link_repeat_max: Duration::from_secs(1),
             out_link_keep: Duration::from_secs(5),
+            out_link_probe: Duration::from_secs(5),
             iface_cleanup: Duration::from_secs(10),
             announces_retransmit: Duration::from_secs(1),
             old_announces_retransmit: Duration::from_secs(60),
             keep_packet_cached: Duration::from_secs(180),
             packet_cache_cleanup: Duration::from_secs(90),
+            jitter_percent: 0,
             rebroadcast_window: Duration::ZERO,
             path_response_window: Duration::ZERO,
             path_refresh: None,
@@ -229,6 +263,7 @@ pub struct TransportConfig {
     /// with Python nodes, which drop relayed GROUP packets. Off by default.
     group_forwarding: bool,
 
+    /// Limit on how often each destination may announce. `None`: no limit.
     announce_rate_limit: Option<AnnounceRateLimit>,
 
     /// Link and maintenance timers.
@@ -297,6 +332,8 @@ pub(crate) struct TransportHandler {
     proofs: HashMap<LinkId, (time::Instant, time::Instant)>,
     /// Last path request sent per destination.
     path_asked: HashMap<AddressHash, time::Instant>,
+    /// Keepalive and link request schedule per out-link.
+    out_link_timers: HashMap<LinkId, OutLinkTimer>,
 
     announce_limits: AnnounceLimits,
 
@@ -459,6 +496,7 @@ impl Transport {
             group_previous_keys: HashMap::new(),
             proofs: HashMap::new(),
             path_asked: HashMap::new(),
+            out_link_timers: HashMap::new(),
             announce_limits: AnnounceLimits::new(announce_rate_limit),
             out_links: HashMap::new(),
             in_links: HashMap::new(),
@@ -1695,50 +1733,78 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     links_to_remove.clear();
     // out-links are kept by destination, their interfaces by link id
     let mut closed_link_ids = Vec::new();
+    let mut to_send = Vec::new();
+    let mut live = std::collections::HashSet::new();
 
-    for link_entry in &handler.out_links {
-        let mut link = link_entry.1.lock().await;
+    // fire timers due before the next check, which runs once per `link_check`
+    let due = now + timer_config.link_check / 2;
+    {
+        let TransportHandler { out_links, out_link_timers, config, link_out_event_tx, .. } = &mut *handler;
+        for (destination, link) in out_links.iter() {
+            let mut link = link.lock().await;
+            let link_id = *link.id();
+            live.insert(link_id);
+            let timer = out_link_timers.entry(link_id).or_insert_with(|| OutLinkTimer {
+                next_keepalive: now + jittered(timer_config.out_link_keep, timer_config.jitter_percent),
+                next_request: now + jittered(timer_config.out_link_repeat, timer_config.jitter_percent).saturating_sub(link.elapsed()),
+                request_wait: timer_config.out_link_repeat,
+            });
 
-        match link.status() {
-            LinkStatus::Active if link.elapsed() > timer_config.out_link_stale => {
-                link.stale();
-            }
-            LinkStatus::Stale => {
-                if handler.config.restart_outlinks {
-                    if link.elapsed() > timer_config.out_link_restart {
-                        link.restart();
-                    }
-                } else if link.elapsed() > timer_config.out_link_stale + timer_config.out_link_close {
-                    if let Some(packet) = link.teardown(&handler.link_out_event_tx).unwrap_or_else(|err| {
-                        log::error!(
-                            "tp({}): teardown stale out-link error: {err:?}",
-                            handler.config.name
-                        );
-                        None
-                    }) {
-                        handler.send_packet(packet).await
-                    }
-                    links_to_remove.push(*link_entry.0);
-                    closed_link_ids.push(*link.id());
+            match link.status() {
+                LinkStatus::Active if link.elapsed() > timer_config.out_link_stale => {
+                    link.stale();
                 }
+                LinkStatus::Stale => {
+                    if config.restart_outlinks {
+                        if link.elapsed() > timer_config.out_link_restart {
+                            link.restart();
+                        }
+                    } else if link.elapsed() > timer_config.out_link_stale + timer_config.out_link_close {
+                        if let Some(packet) = link.teardown(link_out_event_tx).unwrap_or_else(|err| {
+                            log::error!(
+                                "tp({}): teardown stale out-link error: {err:?}",
+                                config.name
+                            );
+                            None
+                        }) {
+                            to_send.push(packet);
+                        }
+                        links_to_remove.push(*destination);
+                        closed_link_ids.push(link_id);
+                        continue;
+                    }
+                }
+                LinkStatus::Pending if due >= timer.next_request => {
+                    log::debug!(
+                        "tp({}): repeat link request {} (wait {} ms)",
+                        config.name,
+                        link_id,
+                        timer.request_wait.as_millis()
+                    );
+                    to_send.push(link.request());
+                    timer.request_wait = (timer.request_wait * 2).min(timer_config.out_link_repeat_max);
+                    timer.next_request = now + jittered(timer.request_wait, timer_config.jitter_percent);
+                }
+                LinkStatus::Closed => {
+                    link.close(link_out_event_tx);
+                    links_to_remove.push(*destination);
+                    closed_link_ids.push(link_id);
+                    continue;
+                }
+                _ => {}
             }
-            LinkStatus::Pending
-                if link.elapsed() > timer_config.out_link_repeat + Duration::from_millis(OsRng.next_u32() as u64 % 1000) =>
-            {
-                log::debug!(
-                    "tp({}): repeat link request {}",
-                    handler.config.name,
-                    link.id()
-                );
-                handler.send_packet(link.request()).await;
+
+            if matches!(link.status(), LinkStatus::Active | LinkStatus::Stale) && due >= timer.next_keepalive {
+                to_send.push(link.keep_alive_packet(KEEP_ALIVE_REQUEST));
+                let interval = if link.status() == LinkStatus::Stale {
+                    timer_config.out_link_probe
+                } else {
+                    timer_config.out_link_keep
+                };
+                timer.next_keepalive = now + jittered(interval, timer_config.jitter_percent);
             }
-            LinkStatus::Closed => {
-                link.close(&handler.link_out_event_tx);
-                links_to_remove.push(*link_entry.0);
-                closed_link_ids.push(*link.id());
-            }
-            _ => {}
         }
+        out_link_timers.retain(|link_id, _| live.contains(link_id) && !closed_link_ids.contains(link_id));
     }
 
     for addr in &links_to_remove {
@@ -1748,17 +1814,9 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     for link_id in &closed_link_ids {
         handler.link_ifaces.remove(link_id);
     }
-}
 
-async fn handle_keep_links<'a>(handler: MutexGuard<'a, TransportHandler>) {
-    for link in handler.out_links.values() {
-        let link = link.lock().await;
-
-        if matches!(link.status(), LinkStatus::Active | LinkStatus::Stale) {
-            handler
-                .send_packet(link.keep_alive_packet(KEEP_ALIVE_REQUEST))
-                .await;
-        }
+    for packet in to_send {
+        handler.send_packet(packet).await;
     }
 }
 
@@ -1926,27 +1984,7 @@ async fn manage_transport(
         });
     }
 
-    {
-        let handler = handler.clone();
-        let cancel = cancel.clone();
-
-        tokio::spawn(async move {
-            loop {
-                if cancel.is_cancelled() {
-                    break;
-                }
-
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        break;
-                    },
-                    _ = time::sleep(timer_config.out_link_keep) => {
-                        handle_keep_links(handler.lock().await).await;
-                    }
-                }
-            }
-        });
-    }
+    // out-link keepalives are sent by the link check
 
     {
         let handler = handler.clone();
