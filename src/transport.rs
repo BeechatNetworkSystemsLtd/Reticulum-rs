@@ -34,7 +34,7 @@ use self::announce_table::AnnounceTable;
 use self::link_table::LinkTable;
 use self::packet_cache::PacketCache;
 use self::path_requests::{create_path_request_destination, PathRequests, TagBytes};
-use self::path_table::PathTable;
+use self::path_table::{PathTable, PathUpdate};
 
 // TODO: Configure via features
 const PACKET_TRACE: bool = false;
@@ -42,6 +42,8 @@ pub const PATHFINDER_M: usize = 128; // Max hops
 const REPROVE_WINDOW: Duration = Duration::from_secs(60);
 const REPROVE_GAP: Duration = Duration::from_secs(2);
 const PATH_ASK_GAP: Duration = Duration::from_secs(10);
+/// Our own links ask again for a path that stopped working at most this often.
+const PATH_REASK_GAP: Duration = Duration::from_secs(30);
 /// Most remote destinations kept (paths, announces); the least recently heard goes, unless
 /// we have a link to it.
 pub const MAX_DESTINATIONS: usize = 1024;
@@ -89,6 +91,9 @@ pub struct TimerConfig {
     pub keep_packet_cached: Duration,
     /// How often the packet cache, link table and path requests are pruned.
     pub packet_cache_cleanup: Duration,
+    /// A path not refreshed for this long accepts an older announce, so a node that
+    /// rebooted with its clock behind is heard again. `None`: never.
+    pub path_refresh: Option<Duration>,
 }
 
 impl Default for TimerConfig {
@@ -107,6 +112,7 @@ impl Default for TimerConfig {
             old_announces_retransmit: Duration::from_secs(60),
             keep_packet_cached: Duration::from_secs(180),
             packet_cache_cleanup: Duration::from_secs(90),
+            path_refresh: None,
         }
     }
 }
@@ -280,7 +286,7 @@ pub(crate) struct TransportHandler {
     group_previous_keys: HashMap<AddressHash, (GroupKey, time::Instant)>,
     /// In-links we proved: first and last proof time.
     proofs: HashMap<LinkId, (time::Instant, time::Instant)>,
-    /// Last path request per unknown destination we were asked to relay a link to.
+    /// Last path request sent per destination.
     path_asked: HashMap<AddressHash, time::Instant>,
 
     announce_limits: AnnounceLimits,
@@ -427,6 +433,7 @@ impl Transport {
         let cancel = CancellationToken::new();
         let name = config.name.clone();
         let reroute_eager = config.reroute_eager;
+        let path_refresh = config.timer_config.path_refresh;
         let announce_rate_limit = config.announce_rate_limit;
         let handler = Arc::new(Mutex::new(TransportHandler {
             config,
@@ -434,7 +441,7 @@ impl Transport {
             announce_table: AnnounceTable::new(MAX_DESTINATIONS),
             channel_table: HashMap::new(),
             link_table: LinkTable::new(),
-            path_table: PathTable::new(reroute_eager),
+            path_table: PathTable::new(reroute_eager, path_refresh),
             single_in_destinations: HashMap::new(),
             single_out_destinations: HashMap::new(),
             announced: HashMap::new(),
@@ -685,6 +692,12 @@ impl Transport {
 
     pub async fn link_close(&self, link_id: LinkId) -> Result<(), RnsError> {
         self.handler.lock().await.link_close(link_id).await
+    }
+
+    /// The application lost its link to `destination`: its path is marked unresponsive,
+    /// and a multi-hop path is requested again.
+    pub async fn mark_path_unresponsive(&self, destination: &AddressHash) {
+        self.handler.lock().await.path_unresponsive(destination, true).await
     }
 
     pub async fn request_path(
@@ -954,6 +967,22 @@ impl TransportHandler {
             log::warn!("tp({}): close link {link_id} not found", self.config.name)
         }
         Ok(())
+    }
+
+    /// A link to `destination` went silent: its path is marked unresponsive. With `ask`, a
+    /// new path is requested, at most once per `PATH_REASK_GAP`.
+    async fn path_unresponsive(&mut self, destination: &AddressHash, ask: bool) {
+        let hops = self.path_table.mark_unresponsive(destination);
+        if !ask || hops.is_some_and(|hops| hops <= 1) {
+            return;
+        }
+        let now = time::Instant::now();
+        if self.path_asked.get(destination).is_some_and(|at| now.duration_since(*at) < PATH_REASK_GAP) {
+            return;
+        }
+        self.path_asked.insert(*destination, now);
+        log::debug!("tp({}): asking for the path to {destination} again", self.config.name);
+        self.request_path(destination, None, None).await;
     }
 
     async fn filter_duplicate_packets(&self, packet: &Packet) -> bool {
@@ -1331,16 +1360,26 @@ async fn handle_announce<'a>(
         handler.announce_table.heard_rebroadcast(&dest_hash, packet.header.hops);
     }
 
-    if !handler
-        .path_table
-        .handle_announce(packet, packet.transport, iface)
-    {
-        log::trace!(
-            "tp({}): ignored announce for {}, heard before or older",
-            handler.config.name,
-            packet.destination
-        );
-        return;
+    match handler.path_table.handle_announce(packet, packet.transport, iface) {
+        PathUpdate::New => {}
+        PathUpdate::Ignored => {
+            log::trace!(
+                "tp({}): ignored announce for {}, heard before or older",
+                handler.config.name,
+                packet.destination
+            );
+            return;
+        }
+        // a known announce through another node: a new path, but not passed on
+        PathUpdate::Rerouted => {
+            log::debug!(
+                "tp({}): path to {} moved to {:?}",
+                handler.config.name,
+                packet.destination,
+                packet.transport
+            );
+            return;
+        }
     }
 
     handler.announced.insert(packet.destination, destination.desc);
@@ -1627,7 +1666,7 @@ async fn handle_check_links<'a>(mut handler: MutexGuard<'a, TransportHandler>) {
     }
     let now = time::Instant::now();
     handler.proofs.retain(|_, (first, _)| now.duration_since(*first) < REPROVE_WINDOW);
-    handler.path_asked.retain(|_, at| now.duration_since(*at) < PATH_ASK_GAP);
+    handler.path_asked.retain(|_, at| now.duration_since(*at) < PATH_ASK_GAP.max(PATH_REASK_GAP));
 
     links_to_remove.clear();
     // out-links are kept by destination, their interfaces by link id
