@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use alloc::sync::Arc;
 use rand_core::{OsRng, RngCore};
-use tokio::sync::{broadcast, Mutex, MutexGuard};
+use tokio::sync::{broadcast, Mutex, MutexGuard, Notify};
 use tokio::time;
 use tokio_util::sync::CancellationToken;
 
@@ -23,6 +23,7 @@ use crate::packet::{DestinationType, Packet, PacketContext, PacketDataBuffer, Pa
 
 mod announce_limits;
 mod announce_table;
+mod group_relay;
 mod link_table;
 mod packet_cache;
 mod path_requests;
@@ -31,6 +32,8 @@ mod path_table;
 use self::announce_limits::AnnounceLimits;
 pub use self::announce_limits::AnnounceRateLimit;
 use self::announce_table::AnnounceTable;
+use self::group_relay::{GroupRelay, Scheduled};
+pub use self::group_relay::{GroupRelayConfig, GroupRelayStats};
 use self::link_table::LinkTable;
 use self::packet_cache::PacketCache;
 use self::path_requests::{create_path_request_destination, PathRequests, TagBytes};
@@ -83,6 +86,8 @@ const REPEATS_BEFORE_PATH_REQUEST: u32 = 2;
 pub struct ReceivedData {
     pub destination: AddressHash,
     pub data: PacketDataBuffer,
+    /// Hops the packet travelled to reach this node (0: from a direct neighbour).
+    pub hops: u8,
 }
 
 /// Link timers. An out-link sends a keepalive every `out_link_keep`, goes stale after
@@ -263,10 +268,13 @@ pub struct TransportConfig {
     /// the initial round of announces is over.
     announce_forever: bool,
 
-    /// Multi-hop GROUP messaging: relayed GROUP packets are accepted, and with
-    /// `retransmit` GROUP packets are also relayed to other nodes. Not compatible
-    /// with Python nodes, which drop relayed GROUP packets. Off by default.
+    /// Multi-hop GROUP messaging: relayed GROUP packets are accepted, and with `retransmit`
+    /// those of our GROUP destinations that decrypt are relayed (see `group_relay`). Python
+    /// nodes drop relayed GROUP packets. Off by default.
     group_forwarding: bool,
+
+    /// Relay waits, cancelling and hop limit for `group_forwarding`.
+    group_relay: GroupRelayConfig,
 
     /// Recover links over lossy, multi-hop paths. A link that goes stale probes at once
     /// and still carries data. Its path is marked unresponsive, so an announce through
@@ -357,6 +365,11 @@ pub(crate) struct TransportHandler {
 
     packet_cache: Mutex<PacketCache>,
 
+    /// Waiting GROUP relays; the relay task in `manage_transport` sends them.
+    group_relay: Arc<std::sync::Mutex<GroupRelay>>,
+    /// Wakes the relay task for a relay due before the one it sleeps for.
+    group_relay_wake: Arc<Notify>,
+
     path_requests: PathRequests,
 
     link_in_event_tx: BroadcastLinkEventSink,
@@ -376,6 +389,7 @@ pub struct Transport {
     iface_messages_tx: broadcast::Sender<RxMessage>,
     handler: Arc<Mutex<TransportHandler>>,
     iface_manager: Arc<Mutex<InterfaceManager>>,
+    group_relay: Arc<std::sync::Mutex<GroupRelay>>,
     cancel: CancellationToken,
 }
 
@@ -389,6 +403,7 @@ impl TransportConfig {
             restart_outlinks: false,
             announce_forever: false,
             group_forwarding: false,
+            group_relay: GroupRelayConfig::default(),
             link_recovery: false,
             announce_rate_limit: None,
             timer_config: TimerConfig::default(),
@@ -418,6 +433,11 @@ impl TransportConfig {
 
     pub fn set_group_forwarding(mut self, group_forwarding: bool) -> Self {
         self.group_forwarding = group_forwarding;
+        self
+    }
+
+    pub fn set_group_relay(mut self, group_relay: GroupRelayConfig) -> Self {
+        self.group_relay = group_relay;
         self
     }
 
@@ -462,6 +482,7 @@ impl Default for TransportConfig {
             restart_outlinks: false,
             announce_forever: false,
             group_forwarding: false,
+            group_relay: GroupRelayConfig::default(),
             link_recovery: false,
             announce_rate_limit: None,
             timer_config: Default::default(),
@@ -500,6 +521,7 @@ impl Transport {
         let path_refresh = config.timer_config.path_refresh;
         let path_response_window = config.timer_config.path_response_window;
         let announce_rate_limit = config.announce_rate_limit;
+        let group_relay = Arc::new(std::sync::Mutex::new(GroupRelay::new(config.group_relay)));
         let handler = Arc::new(Mutex::new(TransportHandler {
             config,
             iface_manager: iface_manager.clone(),
@@ -520,6 +542,8 @@ impl Transport {
             in_links: HashMap::new(),
             link_ifaces: HashMap::new(),
             packet_cache: Mutex::new(PacketCache::new()),
+            group_relay: group_relay.clone(),
+            group_relay_wake: Arc::new(Notify::new()),
             path_requests,
             announce_tx,
             link_in_event_tx: link_in_event_tx.clone().into(),
@@ -546,6 +570,7 @@ impl Transport {
             received_data_tx,
             iface_messages_tx,
             handler,
+            group_relay,
             cancel,
         }
     }
@@ -853,6 +878,16 @@ impl Transport {
         Ok(())
     }
 
+    /// Direct neighbours, which raise the copies that cancel a GROUP relay (see
+    /// [`GroupRelayConfig`]). 0: not known.
+    pub fn set_group_neighbours(&self, neighbours: u8) {
+        self.group_relay.lock().expect("group relay lock").set_neighbours(neighbours);
+    }
+
+    pub fn group_relay_stats(&self) -> GroupRelayStats {
+        self.group_relay.lock().expect("group relay lock").stats()
+    }
+
     /// Rotates a GROUP destination's key; the previous key is still accepted for
     /// `keep_previous`. False if the destination is unknown.
     pub async fn set_group_key(
@@ -1086,6 +1121,14 @@ impl TransportHandler {
 
         let is_new = self.packet_cache.lock().await.update(packet);
 
+        if !is_new
+            && packet.header.packet_type == PacketType::Data
+            && packet.header.destination_type == DestinationType::Group
+        {
+            // another node's relay: counts towards cancelling ours
+            self.group_relay.lock().expect("group relay lock").heard_copy(&packet.hash());
+        }
+
         is_new || allow_duplicate
     }
 
@@ -1295,6 +1338,7 @@ async fn handle_data<'a>(
             handler.received_data_tx.send(ReceivedData {
                 destination: packet.destination,
                 data: packet.data,
+                hops: packet.header.hops,
             }).ok();
         } else {
             data_handled = send_to_next_hop(packet, &handler).await;
@@ -1302,27 +1346,7 @@ async fn handle_data<'a>(
     }
 
     if packet.header.destination_type == DestinationType::Group {
-        if handler.config.group_forwarding {
-            // relayed on all interfaces including the one it was received on, so
-            // that single radio nodes relay too; each node relays a packet only
-            // once, since copies already in the packet cache are dropped
-            if handler.config.retransmit && (packet.header.hops as usize) + 1 < PATHFINDER_M {
-                let mut forwarded = *packet;
-                forwarded.header.hops = forwarded.header.hops.saturating_add(1);
-
-                log::trace!(
-                    "tp({}): forwarding GROUP packet {} with {} hops",
-                    handler.config.name,
-                    packet.hash(),
-                    forwarded.header.hops
-                );
-
-                handler.send(TxMessage {
-                    tx_type: TxMessageType::Broadcast(None),
-                    packet: forwarded,
-                }).await;
-            }
-        } else if packet.header.hops > 0 {
+        if !handler.config.group_forwarding && packet.header.hops > 0 {
             log::debug!(
                 "tp({}): dropped GROUP packet {} with {} hops",
                 handler.config.name,
@@ -1360,7 +1384,13 @@ async fn handle_data<'a>(
                     handler.received_data_tx.send(ReceivedData {
                         destination: packet.destination,
                         data: PacketDataBuffer::new_from_slice(plain_text),
+                        hops: packet.header.hops,
                     }).ok();
+                    // only what we can read is relayed: a node without the key, or junk,
+                    // is never amplified
+                    if handler.config.group_forwarding && handler.config.retransmit {
+                        relay_group(packet, &handler).await;
+                    }
                 }
                 Err(err) => log::debug!(
                     "tp({}): the GROUP destination {} could not decrypt data: {:?}",
@@ -1380,6 +1410,31 @@ async fn handle_data<'a>(
             packet.header.destination_type as u8,
             packet.context as u8,
         );
+    }
+}
+
+/// Schedules our one relay of a GROUP packet we could read, on every interface (the one it
+/// came on too, so a node with a single interface relays). Copies never get here: the packet cache
+/// drops them (the hash leaves out the hops), so each packet is relayed at most once and our
+/// own never come back.
+async fn relay_group(packet: &Packet, handler: &TransportHandler) {
+    let hash = packet.hash();
+    let scheduled = {
+        let mut relay = handler.group_relay.lock().expect("group relay lock");
+        if !relay.may_relay(packet.header.hops) {
+            return;
+        }
+        let mut forwarded = *packet;
+        forwarded.header.hops = forwarded.header.hops.saturating_add(1);
+        let roll = (OsRng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+        let message = TxMessage { tx_type: TxMessageType::Broadcast(None), packet: forwarded };
+        relay.schedule(hash, message, roll, time::Instant::now())
+    };
+    log::trace!("tp({}): GROUP packet {} relay {:?}", handler.config.name, hash, scheduled);
+    match scheduled {
+        Scheduled::Now(message) => handler.send(message).await,
+        Scheduled::Waiting { first: true } => handler.group_relay_wake.notify_one(),
+        Scheduled::Waiting { first: false } | Scheduled::Dropped => {}
     }
 }
 
@@ -2021,6 +2076,40 @@ async fn manage_transport(
         });
     }
 
+    // one task sends all waiting GROUP relays, sleeping until the first is due
+    let group_relay = {
+        let handler = handler.lock().await;
+        let waits = handler.config.group_forwarding
+            && handler.config.retransmit
+            && handler.group_relay.lock().expect("group relay lock").waits();
+        waits.then(|| (handler.group_relay.clone(), handler.group_relay_wake.clone(), handler.iface_manager.clone()))
+    };
+    if let Some((relay, wake, iface_manager)) = group_relay {
+        let cancel = cancel.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let next = relay.lock().expect("group relay lock").next_due();
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        break;
+                    },
+                    // a sooner relay; a wake sent before we wait is kept, not lost
+                    _ = wake.notified() => {},
+                    _ = sleep_until(next) => {
+                        let due = relay.lock().expect("group relay lock").due(time::Instant::now());
+                        if !due.is_empty() {
+                            let iface_manager = iface_manager.lock().await;
+                            for message in due {
+                                iface_manager.send(message).await;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // out-link keepalives are sent by the link check
 
     {
@@ -2484,5 +2573,13 @@ mod tests {
 
         handle_data(&packet, AddressHash::new_empty(), handler.lock().await).await;
         assert!(received_data.try_recv().is_err());
+    }
+}
+
+/// Sleeps until `at`; forever without one.
+async fn sleep_until(at: Option<time::Instant>) {
+    match at {
+        Some(at) => time::sleep_until(at).await,
+        None => std::future::pending().await,
     }
 }
